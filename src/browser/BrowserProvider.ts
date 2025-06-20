@@ -15,7 +15,7 @@ import {
   browserLogger,
   logBrowserError,
   logBrowserOperation,
-} from "./logger.js";
+} from "../utils/logger.js";
 import type { ActiveBrowser, BrowserEngine, BrowserOptions } from "./types.js";
 
 export class BrowserProvider {

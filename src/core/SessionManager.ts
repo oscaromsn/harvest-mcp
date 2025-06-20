@@ -8,9 +8,12 @@ import {
   type SessionStartParams,
   type SessionState,
 } from "../types/index.js";
+import { createComponentLogger } from "../utils/logger.js";
 import { parseCookieFile } from "./CookieParser.js";
 import { DAGManager } from "./DAGManager.js";
 import { parseHARFile } from "./HARParser.js";
+
+const logger = createComponentLogger("session-manager");
 
 export class SessionManager {
   private sessions = new Map<string, HarvestSession>();
@@ -199,7 +202,7 @@ export class SessionManager {
 
     for (const sessionId of expiredSessions) {
       this.sessions.delete(sessionId);
-      console.log(`Cleaned up expired session: ${sessionId}`);
+      logger.info({ sessionId }, "Cleaned up expired session");
     }
   }
 
@@ -217,7 +220,10 @@ export class SessionManager {
 
     if (oldestSession) {
       this.sessions.delete(oldestSession.id);
-      console.log(`Removed oldest session to make room: ${oldestSession.id}`);
+      logger.info(
+        { sessionId: oldestSession.id },
+        "Removed oldest session to make room"
+      );
     }
   }
 

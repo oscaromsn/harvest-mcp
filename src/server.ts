@@ -14,7 +14,6 @@ import { identifyEndUrl } from "./agents/URLIdentificationAgent.js";
 import { generateWrapperScript } from "./core/CodeGenerator.js";
 import { manualSessionManager } from "./core/ManualSessionManager.js";
 import { SessionManager } from "./core/SessionManager.js";
-import { serverLogger } from "./utils/logger.js";
 import {
   type BrowserSessionInfo,
   type CookieDependency,
@@ -26,6 +25,7 @@ import {
   SessionIdSchema,
   SessionStartSchema,
 } from "./types/index.js";
+import { serverLogger } from "./utils/logger.js";
 
 /**
  * Harvest MCP Server

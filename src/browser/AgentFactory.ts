@@ -5,9 +5,9 @@
  */
 
 import type { Page } from "playwright";
+import { logBrowserError, logBrowserOperation } from "../utils/logger.js";
 import { BrowserAgent } from "./BrowserAgent.js";
 import { BrowserProvider } from "./BrowserProvider.js";
-import { logBrowserError, logBrowserOperation } from "./logger.js";
 import type { BrowserAgentConfig, BrowserOptions } from "./types.js";
 
 export class AgentFactory {

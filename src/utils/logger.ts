@@ -6,38 +6,84 @@
 import pino from "pino";
 
 // Determine if we're running in MCP mode (stdio transport)
-const isMcpMode = process.env.MCP_STDIO === "true" || process.argv.includes("--stdio");
+// Default to MCP mode for safety - ensures logs don't interfere with JSON-RPC
+const isMcpMode =
+  process.env.MCP_STDIO === "true" ||
+  process.argv.includes("--stdio") ||
+  process.env.NODE_ENV !== "development" ||
+  !process.stdout.isTTY;
 
 // Create the base logger with harvest-mcp specific configuration
 const loggerOptions: Record<string, unknown> = {
   level: process.env.HARVEST_LOG_LEVEL || process.env.LOG_LEVEL || "info",
+  name: "harvest-mcp",
 };
 
-// In MCP mode, log to stderr to avoid stdio interference
-// In development, use pino-pretty for readable output 
+// Create logger with proper stream routing for MCP compliance
+let logger: pino.Logger;
+
 if (isMcpMode) {
-  // MCP mode: log to stderr in JSON format to avoid stdio conflicts
-  loggerOptions.transport = {
-    target: "pino/file",
-    options: {
-      destination: 2, // stderr
+  // MCP mode: Use direct stderr destination to ensure no stdout contamination
+  // This is critical for MCP protocol compliance - stdout must be pure JSON-RPC
+  logger = pino(loggerOptions, pino.destination(2)); // stderr (file descriptor 2)
+
+  // Add startup verification log to stderr
+  logger.info("Logger configured for MCP mode - all logs routed to stderr");
+
+  // Debug: Log environment info to help identify external log sources
+  logger.debug(
+    {
+      mcpEnvVar: process.env.MCP_STDIO,
+      stdoutTTY: process.stdout.isTTY,
+      stdinTTY: process.stdin.isTTY,
+      nodeEnv: process.env.NODE_ENV,
+      argv: process.argv.slice(2),
     },
-  };
+    "MCP mode detection details"
+  );
 } else if (process.env.NODE_ENV === "development") {
   // Development mode: use pino-pretty for readable output
-  loggerOptions.transport = {
+  const prettyTransport = pino.transport({
     target: "pino-pretty",
     options: {
       colorize: true,
       translateTime: "HH:MM:ss",
       ignore: "pid,hostname",
     },
-  };
+  });
+  logger = pino(loggerOptions, prettyTransport);
+} else {
+  // Production mode (non-MCP): standard JSON logging to stdout
+  logger = pino(loggerOptions);
 }
 
-export const logger = pino(loggerOptions).child({
-  name: "harvest-mcp",
-});
+export { logger };
+
+// Validate logger configuration at startup
+if (isMcpMode) {
+  // In MCP mode, verify that stdout is reserved for JSON-RPC only
+  // Any application logs should go to stderr to prevent interference
+  const originalConsoleError = console.error;
+
+  // Override console methods to ensure no accidental stdout pollution
+  console.log = (...args: unknown[]) => {
+    logger.warn(
+      "Intercepted console.log call in MCP mode - redirecting to stderr"
+    );
+    originalConsoleError("[MCP-SAFE]", ...args);
+  };
+
+  // Log successful configuration
+  logger.info(
+    {
+      mode: "MCP",
+      stdoutReserved: "JSON-RPC only",
+      stderrUsage: "Application logs",
+      mcpCompliant: true,
+    },
+    "Logger successfully configured for MCP stdio transport compliance"
+  );
+}
 
 // Create specialized loggers for different components
 export const serverLogger = logger.child({ component: "server" });

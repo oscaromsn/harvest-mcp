@@ -5,6 +5,9 @@ import type {
 } from "openai/resources/chat/completions";
 import type { FunctionDefinition } from "openai/resources/shared";
 import { HarvestError } from "../types/index.js";
+import { createComponentLogger } from "../utils/logger.js";
+
+const logger = createComponentLogger("llm-client");
 
 /**
  * Client for OpenAI API integration with function calling support
@@ -41,7 +44,7 @@ export class LLMClient {
     const maxRetries = 3;
     let lastError: Error | null = null;
 
-    console.error(`[LLM] Starting function call: ${functionName}`);
+    logger.info({ functionName }, "Starting function call");
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
@@ -57,15 +60,14 @@ export class LLMClient {
           temperature: 0.1, // Low temperature for more consistent results
         };
 
-        console.error(
-          `[LLM] Attempt ${attempt}/${maxRetries} - Calling ${this.model} with function: ${functionName}`
+        logger.info(
+          { attempt, maxRetries, model: this.model, functionName },
+          "Calling LLM with function"
         );
         const response = await this.client.chat.completions.create(params);
 
         const duration = Date.now() - startTime;
-        console.error(
-          `[LLM] Function call successful in ${duration}ms (attempt ${attempt})`
-        );
+        logger.info({ duration, attempt }, "Function call successful");
 
         const choice = response.choices[0];
         if (!choice?.message?.function_call) {
@@ -85,9 +87,7 @@ export class LLMClient {
 
         try {
           const result = JSON.parse(functionCall.arguments || "{}") as T;
-          console.error(
-            `[LLM] Successfully parsed function result for ${functionName}`
-          );
+          logger.debug({ functionName }, "Successfully parsed function result");
           return result;
         } catch (error) {
           throw new HarvestError(
@@ -100,14 +100,16 @@ export class LLMClient {
         lastError = error instanceof Error ? error : new Error(String(error));
 
         if (error instanceof HarvestError) {
-          console.error(
-            `[LLM] HarvestError on attempt ${attempt}: ${error.message}`
+          logger.error(
+            { attempt, error: error.message },
+            "HarvestError on attempt"
           );
           throw error; // Don't retry HarvestErrors
         }
 
-        console.error(
-          `[LLM] Attempt ${attempt}/${maxRetries} failed: ${lastError.message}`
+        logger.error(
+          { attempt, maxRetries, error: lastError.message },
+          "Attempt failed"
         );
 
         if (attempt === maxRetries) {
@@ -116,15 +118,16 @@ export class LLMClient {
 
         // Wait before retrying (exponential backoff)
         const waitTime = 2 ** (attempt - 1) * 1000; // 1s, 2s, 4s
-        console.error(`[LLM] Waiting ${waitTime}ms before retry...`);
+        logger.info({ waitTime, attempt }, "Waiting before retry");
         await new Promise((resolve) => setTimeout(resolve, waitTime));
       }
     }
 
     // All retries failed
     const totalTime = Date.now() - startTime;
-    console.error(
-      `[LLM] All attempts failed for ${functionName} after ${totalTime}ms`
+    logger.error(
+      { functionName, totalTime, maxRetries },
+      "All attempts failed"
     );
 
     throw new HarvestError(
@@ -143,7 +146,7 @@ export class LLMClient {
     temperature = 0.7
   ): Promise<string> {
     const startTime = Date.now();
-    console.error(`[LLM] Starting text generation with ${this.model}`);
+    logger.info({ model: this.model }, "Starting text generation");
 
     try {
       const allMessages: ChatCompletionMessageParam[] = messages || [
@@ -159,7 +162,7 @@ export class LLMClient {
       const response = await this.client.chat.completions.create(params);
 
       const duration = Date.now() - startTime;
-      console.error(`[LLM] Text generation completed in ${duration}ms`);
+      logger.info({ duration }, "Text generation completed");
 
       const choice = response.choices[0];
       if (!choice?.message?.content) {

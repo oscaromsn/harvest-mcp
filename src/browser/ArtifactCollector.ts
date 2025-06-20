@@ -7,7 +7,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { BrowserContext, Page, Request, Response } from "playwright";
-import { logBrowserError, logBrowserOperation } from "./logger.js";
+import { logBrowserError, logBrowserOperation } from "../utils/logger.js";
 import type { Artifact, ArtifactCollection } from "./types.js";
 
 export interface HarEntry {

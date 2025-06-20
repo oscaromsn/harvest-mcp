@@ -375,3 +375,68 @@ curl -X POST http://localhost:3000/mcp \
   -H "Content-Type: application/json" \
   -d '{"method": "session_start", "params": {"harPath": "/path/to/session.har", "prompt": "Generate API client"}}'
 ```
+
+---
+
+## MCP Protocol Compliance & Logging
+
+Harvest MCP Server strictly adheres to the Model Context Protocol specification for stdio transport logging requirements.
+
+### ⚠️ Critical MCP Logging Rules
+
+**Stdout Usage**: Reserved **exclusively** for JSON-RPC messages
+- No application logs, debug output, or console messages allowed
+- Any stdout contamination breaks MCP client communication
+- Violations cause Zod validation errors: "Invalid literal value, expected '2.0'"
+
+**Stderr Usage**: All application logging goes here
+- Structured JSON logs via Pino logger
+- Safe for debugging and monitoring
+- MCP clients may capture or ignore stderr
+
+### Implementation Details
+
+The logger configuration in `src/utils/logger.ts` automatically detects MCP mode and routes logs appropriately:
+
+**MCP Mode Detection**:
+```typescript
+const isMcpMode = 
+  process.env.MCP_STDIO === "true" ||
+  process.argv.includes("--stdio") ||
+  (process.stdout.isTTY === false && process.stdin.isTTY === false);
+```
+
+**Stream Routing**:
+- **MCP Mode**: `pino.destination(2)` → stderr only
+- **Development**: Pretty-printed logs with colors
+- **Production**: Standard JSON logging
+
+### Troubleshooting Log Interference
+
+If you see Zod validation errors like:
+```
+"Invalid literal value, expected '2.0'"
+"Unrecognized keys: 'level', 'time', 'pid', 'hostname', 'name', 'msg'"
+```
+
+**Causes**:
+1. Application logs leaking to stdout
+2. External MCP wrapper/client logging 
+3. Incorrect Pino transport configuration
+4. Console.log calls in MCP mode
+
+**Solutions**:
+1. Verify `MCP_STDIO=true` environment variable is set
+2. Check that all logs go to stderr: `bun run start 2>logs.txt 1>stdout.txt`
+3. Ensure stdout contains only JSON-RPC messages
+4. Look for external MCP client debug/verbose logging modes
+
+### Logging Best Practices
+
+✅ **Do**: Use structured logging via Pino logger
+✅ **Do**: Log errors, debugging info to stderr 
+✅ **Do**: Test stdout cleanliness: `MCP_STDIO=true bun start 1>/dev/null`
+
+❌ **Don't**: Use console.log/console.error in application code
+❌ **Don't**: Write any non-JSON-RPC content to stdout
+❌ **Don't**: Enable verbose logging from MCP SDK or external tools

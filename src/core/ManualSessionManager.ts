@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
   Artifact,
@@ -13,6 +14,7 @@ import {
   type MemoryUsage,
   memoryMonitor,
 } from "../utils/memoryMonitor.js";
+import { getSafeOutputDirectory } from "../utils/pathUtils.js";
 import { artifactCollector } from "./ArtifactCollector.js";
 import {
   type BrowserAgentConfig,
@@ -30,7 +32,8 @@ export class ManualSessionManager {
   private defaultOutputDir: string;
 
   private constructor() {
-    this.defaultOutputDir = join(process.cwd(), "manual-session-artifacts");
+    // Use temp directory as safer default for manual sessions
+    this.defaultOutputDir = join(tmpdir(), "harvest-manual-sessions");
 
     // Global cleanup handler for process termination
     process.on("SIGINT", () => this.cleanupAllSessions());
@@ -63,17 +66,11 @@ export class ManualSessionManager {
     );
 
     try {
-      // Create output directory
-      const datePart = new Date().toISOString().split("T")[0];
-      if (!datePart) {
-        throw new Error("Failed to generate date part for output directory");
-      }
-      const outputDir =
-        config.artifactConfig?.outputDir ||
-        join(this.defaultOutputDir, datePart, sessionId);
-
-      await import("node:fs").then((fs) =>
-        fs.promises.mkdir(outputDir, { recursive: true })
+      // Create safe output directory with proper fallbacks
+      const outputDir = await getSafeOutputDirectory(
+        config.artifactConfig?.outputDir,
+        this.defaultOutputDir,
+        sessionId
       );
 
       // Create browser agent with manual-friendly defaults

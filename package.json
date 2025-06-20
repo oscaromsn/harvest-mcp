@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "bun run --watch src/server.ts",
     "build": "bun run lint && bun run format && bun build src/server.ts --outdir dist --target node",
-    "start": "bun run src/server.ts",
+    "start": "MCP_STDIO=true bun run src/server.ts",
     "clean": "rm -rf node_modules/",
     "typecheck": "tsc --noEmit --strict --exactOptionalPropertyTypes --pretty",
     "typecheck:strict": "tsc --noEmit --strict --exactOptionalPropertyTypes --pretty",
@@ -15,7 +15,7 @@
     "format": "biome format --write",
     "lint": "biome lint --write",
     "validate:quick": "bun run typecheck && bun run check && bun test",
-    "validate:mcp": "bun scripts/validate-mcp.js",
+    "validate:mcp": "bun scripts/validate-mcp.ts",
     "ci": "bun run validate:quick && bun run validate:mcp",
     "test": "vitest --workspace=vitest.workspace.ts",
     "test:watch": "vitest --workspace=vitest.workspace.ts --watch",

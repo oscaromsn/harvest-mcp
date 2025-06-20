@@ -3,6 +3,10 @@ import { join } from "node:path";
 import type { BrowserContext, Page } from "playwright";
 import type { Artifact, ArtifactCollection } from "../types/index.js";
 import { logger } from "../utils/logger.js";
+import {
+  createSafeDirectory,
+  isDirectoryWritable,
+} from "../utils/pathUtils.js";
 import type { BrowserAgent } from "./BrowserAgentFactory.js";
 
 export interface ArtifactCollectionConfig {
@@ -91,8 +95,37 @@ export class ArtifactCollector {
   ): Promise<ArtifactCollection> {
     logger.info(`[ArtifactCollector] Collecting artifacts to: ${outputDir}`);
 
-    // Ensure output directory exists
-    await mkdir(outputDir, { recursive: true });
+    // Ensure output directory exists and is writable
+    let safeOutputDir: string;
+    try {
+      // First try to use the provided directory
+      await mkdir(outputDir, { recursive: true });
+      const isWritable = await isDirectoryWritable(outputDir);
+
+      if (isWritable) {
+        safeOutputDir = outputDir;
+      } else {
+        logger.warn(
+          `[ArtifactCollector] Output directory not writable: ${outputDir}, using fallback`
+        );
+        safeOutputDir = await createSafeDirectory(
+          outputDir,
+          "harvest-artifacts"
+        );
+      }
+    } catch (error) {
+      logger.warn(
+        `[ArtifactCollector] Failed to create output directory: ${outputDir}`,
+        { error: error instanceof Error ? error.message : "Unknown error" }
+      );
+      safeOutputDir = await createSafeDirectory(outputDir, "harvest-artifacts");
+    }
+
+    if (safeOutputDir !== outputDir) {
+      logger.info(
+        `[ArtifactCollector] Using fallback directory: ${safeOutputDir}`
+      );
+    }
 
     const artifacts: Artifact[] = [];
 
@@ -101,7 +134,7 @@ export class ArtifactCollector {
       if (config.saveHar !== false) {
         const harArtifact = await this.collectHar(
           agent.context,
-          outputDir,
+          safeOutputDir,
           sessionTitle
         );
         if (harArtifact) {
@@ -113,7 +146,7 @@ export class ArtifactCollector {
       if (config.saveCookies !== false) {
         const cookieArtifact = await this.collectCookies(
           agent.context,
-          outputDir,
+          safeOutputDir,
           sessionTitle
         );
         if (cookieArtifact) {
@@ -125,7 +158,7 @@ export class ArtifactCollector {
       if (config.saveScreenshots !== false) {
         const screenshotArtifact = await this.collectScreenshot(
           agent.page,
-          outputDir,
+          safeOutputDir,
           sessionTitle
         );
         if (screenshotArtifact) {
@@ -141,7 +174,7 @@ export class ArtifactCollector {
 
       return {
         artifacts,
-        outputDir,
+        outputDir: safeOutputDir,
         summary,
       };
     } catch (error) {

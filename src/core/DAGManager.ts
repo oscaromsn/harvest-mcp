@@ -1,5 +1,8 @@
 import { Graph } from "@dagrejs/graphlib";
 import { v4 as uuidv4 } from "uuid";
+import { createComponentLogger } from "../utils/logger.js";
+
+const logger = createComponentLogger("dag-manager");
 import type {
   CookieDAGNode,
   CookieNodeContent,
@@ -172,7 +175,7 @@ export class DAGManager {
 
       return cycles.length > 0 ? cycles : null;
     } catch (error) {
-      console.error("Error detecting cycles:", error);
+      logger.error({ error }, "Error detecting cycles");
       return null;
     }
   }

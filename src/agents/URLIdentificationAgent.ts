@@ -6,6 +6,9 @@ import type {
   URLInfo,
 } from "../types/index.js";
 import { HarvestError } from "../types/index.js";
+import { createComponentLogger } from "../utils/logger.js";
+
+const logger = createComponentLogger("url-identification-agent");
 
 /**
  * Identify the URL responsible for a specific action using LLM analysis
@@ -52,8 +55,9 @@ export async function identifyEndUrl(
       // Fallback: return the first API URL if identification failed
       const fallbackUrl = sortedUrls[0]?.url;
       if (fallbackUrl) {
-        console.error(
-          `[URLIdentificationAgent] LLM identified non-existent URL, using fallback: ${fallbackUrl}`
+        logger.warn(
+          { identifiedUrl, fallbackUrl },
+          "LLM identified non-existent URL, using fallback"
         );
         return fallbackUrl;
       }
@@ -75,9 +79,7 @@ export async function identifyEndUrl(
     const sortedUrls = sortUrlsByRelevance(filterApiUrls(harUrls));
     if (sortedUrls.length > 0 && sortedUrls[0]) {
       const fallbackUrl = sortedUrls[0].url;
-      console.error(
-        `[URLIdentificationAgent] LLM call failed, using fallback URL: ${fallbackUrl}`
-      );
+      logger.warn({ fallbackUrl }, "LLM call failed, using fallback URL");
       return fallbackUrl;
     }
 

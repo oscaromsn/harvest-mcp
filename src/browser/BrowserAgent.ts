@@ -9,7 +9,7 @@ import {
   browserLogger,
   logBrowserError,
   logBrowserOperation,
-} from "./logger.js";
+} from "../utils/logger.js";
 import type { BrowserAgent as IBrowserAgent } from "./types.js";
 
 export class BrowserAgent implements IBrowserAgent {

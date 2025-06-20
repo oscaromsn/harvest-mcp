@@ -21,7 +21,7 @@ describe("Browser Logger", () => {
 
   test("should be able to import logger", async () => {
     // This test ensures the logger module can be imported without errors
-    const loggerModule = await import("../../../src/browser/logger.js");
+    const loggerModule = await import("../../../src/utils/logger.js");
 
     expect(loggerModule.logger).toBeDefined();
     expect(loggerModule.browserLogger).toBeDefined();
@@ -32,7 +32,7 @@ describe("Browser Logger", () => {
 
   test("should create component logger", async () => {
     const { createComponentLogger } = await import(
-      "../../../src/browser/logger.js"
+      "../../../src/utils/logger.js"
     );
 
     const componentLogger = createComponentLogger("test-component");
@@ -44,7 +44,7 @@ describe("Browser Logger", () => {
 
   test("should create session logger", async () => {
     const { createSessionLogger } = await import(
-      "../../../src/browser/logger.js"
+      "../../../src/utils/logger.js"
     );
 
     const sessionLogger = createSessionLogger("test-session-123");
@@ -56,7 +56,7 @@ describe("Browser Logger", () => {
 
   test("should log browser operations", async () => {
     const { logBrowserOperation } = await import(
-      "../../../src/browser/logger.js"
+      "../../../src/utils/logger.js"
     );
 
     expect(() => {
@@ -68,7 +68,7 @@ describe("Browser Logger", () => {
   });
 
   test("should log artifact events", async () => {
-    const { logArtifactEvent } = await import("../../../src/browser/logger.js");
+    const { logArtifactEvent } = await import("../../../src/utils/logger.js");
 
     expect(() => {
       logArtifactEvent("collected", "har", {
@@ -79,7 +79,7 @@ describe("Browser Logger", () => {
   });
 
   test("should log session events", async () => {
-    const { logSessionEvent } = await import("../../../src/browser/logger.js");
+    const { logSessionEvent } = await import("../../../src/utils/logger.js");
 
     expect(() => {
       logSessionEvent("session-123", "started", {
@@ -89,7 +89,7 @@ describe("Browser Logger", () => {
   });
 
   test("should log browser errors", async () => {
-    const { logBrowserError } = await import("../../../src/browser/logger.js");
+    const { logBrowserError } = await import("../../../src/utils/logger.js");
 
     const testError = new Error("Test browser error");
 
@@ -112,8 +112,8 @@ describe("Browser Logger", () => {
       process.env.HARVEST_LOG_LEVEL = "debug";
 
       // Re-import to get logger with new level
-      delete require.cache[require.resolve("../../../src/browser/logger.js")];
-      const { logger } = await import("../../../src/browser/logger.js");
+      delete require.cache[require.resolve("../../../src/utils/logger.js")];
+      const { logger } = await import("../../../src/utils/logger.js");
 
       expect(() => {
         logger.debug("debug message");
