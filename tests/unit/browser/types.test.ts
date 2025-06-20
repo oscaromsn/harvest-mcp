@@ -13,11 +13,11 @@ import type {
   BrowserSessionInfo,
   SessionConfig,
   SessionStopResult,
-} from "../../src/browser/types.js";
+} from "../../../src/browser/types.js";
 import {
   DEFAULT_BROWSER_OPTIONS,
   VIEWPORT_SIZES,
-} from "../../src/browser/types.js";
+} from "../../../src/browser/types.js";
 
 describe("Browser Types", () => {
   describe("BrowserEngine", () => {

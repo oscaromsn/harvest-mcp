@@ -129,8 +129,8 @@ export interface SessionStopResult {
 export interface BrowserAgent {
   page: Page;
   context: BrowserContext;
-  start(): Promise<void>;
-  stop(): Promise<void>;
+  start(): void;
+  stop(): void;
 }
 
 // Internal Browser Provider Types
