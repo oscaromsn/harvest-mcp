@@ -59,7 +59,7 @@ export class BrowserAgent implements IBrowserAgent {
   /**
    * Stop the browser agent
    */
-  stop(): void {
+  async stop(): Promise<void> {
     try {
       if (!this.isStarted) {
         browserLogger.debug("Agent already stopped");

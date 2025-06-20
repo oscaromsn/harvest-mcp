@@ -344,6 +344,51 @@ export const DebugGetNodeDetailsSchema = z.object({
   nodeId: z.string().uuid(),
 });
 
+// ========== Manual Session Schemas ==========
+
+export const ManualSessionStartSchema = z.object({
+  sessionId: z.string().optional(),
+  url: z.string().optional(),
+  config: z
+    .object({
+      timeout: z.number().optional(),
+      browserOptions: z
+        .object({
+          headless: z.boolean().optional(),
+          viewport: z
+            .object({
+              width: z.number().optional(),
+              height: z.number().optional(),
+            })
+            .optional(),
+          contextOptions: z
+            .object({
+              deviceScaleFactor: z.number().optional(),
+            })
+            .optional(),
+        })
+        .optional(),
+      artifactConfig: z
+        .object({
+          enabled: z.boolean().optional(),
+          outputDir: z.string().optional(),
+          saveHar: z.boolean().optional(),
+          saveCookies: z.boolean().optional(),
+          saveScreenshots: z.boolean().optional(),
+          autoScreenshotInterval: z.number().optional(),
+        })
+        .optional(),
+    })
+    .optional(),
+});
+
+export const ManualSessionStopSchema = z.object({
+  sessionId: z.string().uuid("Invalid session ID format"),
+  artifactTypes: z.array(z.enum(["har", "cookies", "screenshot"])).optional(),
+  takeScreenshot: z.boolean().optional(),
+  reason: z.string().optional(),
+});
+
 // ========== Type Exports ==========
 
 export type SessionStartParams = z.infer<typeof SessionStartSchema>;
@@ -354,6 +399,8 @@ export type DebugForceDependencyParams = z.infer<
 export type DebugGetNodeDetailsParams = z.infer<
   typeof DebugGetNodeDetailsSchema
 >;
+export type ManualSessionStartParams = z.infer<typeof ManualSessionStartSchema>;
+export type ManualSessionStopParams = z.infer<typeof ManualSessionStopSchema>;
 
 // ========== Error Types ==========
 
@@ -407,6 +454,7 @@ export type {
   BrowserSessionInfo,
   SessionStopResult,
   BrowserAgent,
+  ManualBrowserAgent,
   ActiveBrowser,
   FallbackConfig,
 } from "../browser/types.js";

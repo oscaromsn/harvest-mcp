@@ -12,11 +12,17 @@ import { identifyDynamicParts } from "./agents/DynamicPartsAgent.js";
 import { identifyInputVariables } from "./agents/InputVariablesAgent.js";
 import { identifyEndUrl } from "./agents/URLIdentificationAgent.js";
 import { generateWrapperScript } from "./core/CodeGenerator.js";
+import { manualSessionManager } from "./core/ManualSessionManager.js";
 import { SessionManager } from "./core/SessionManager.js";
 import {
   type CookieDependency,
   HarvestError,
+  type ManualSessionStartParams,
+  ManualSessionStartSchema,
+  type ManualSessionStopParams,
+  ManualSessionStopSchema,
   type RequestDependency,
+  type SessionConfig,
   SessionIdSchema,
   SessionStartSchema,
 } from "./types/index.js";
@@ -172,6 +178,34 @@ export class HarvestMCPServer {
       SessionIdSchema.shape,
       async (params): Promise<CallToolResult> => {
         return await this.handleGenerateWrapperScript(params);
+      }
+    );
+
+    // Manual Session Tools
+    this.server.tool(
+      "session_start_manual",
+      "Start a manual browser session for interactive exploration with automatic artifact collection",
+      ManualSessionStartSchema.shape,
+      async (params): Promise<CallToolResult> => {
+        return await this.handleStartManualSession(params);
+      }
+    );
+
+    this.server.tool(
+      "session_stop_manual",
+      "Stop a manual browser session and collect all artifacts (HAR files, cookies, screenshots)",
+      ManualSessionStopSchema.shape,
+      async (params): Promise<CallToolResult> => {
+        return await this.handleStopManualSession(params);
+      }
+    );
+
+    this.server.tool(
+      "session_list_manual",
+      "List all active manual browser sessions with their current status",
+      {},
+      async (): Promise<CallToolResult> => {
+        return await this.handleListManualSessions();
       }
     );
   }
@@ -1538,6 +1572,136 @@ export class HarvestMCPServer {
       throw new HarvestError(
         `Code generation failed: ${error instanceof Error ? error.message : "Unknown error"}`,
         "CODE_GENERATION_FAILED",
+        { originalError: error }
+      );
+    }
+  }
+
+  /**
+   * Handle session_start_manual tool call
+   */
+  public async handleStartManualSession(
+    args: unknown
+  ): Promise<CallToolResult> {
+    try {
+      const argsObj = args as ManualSessionStartParams;
+
+      // Start the manual session
+      const sessionInfo = await manualSessionManager.startSession(
+        (argsObj.config as SessionConfig) ?? {}
+      );
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              success: true,
+              sessionId: sessionInfo.id,
+              startTime: sessionInfo.startTime,
+              currentUrl: sessionInfo.currentUrl,
+              pageTitle: sessionInfo.pageTitle,
+              outputDir: sessionInfo.outputDir,
+              message: "Manual browser session started successfully",
+              instructions: sessionInfo.instructions,
+              artifactConfig: sessionInfo.artifactConfig,
+            }),
+          },
+        ],
+      };
+    } catch (error) {
+      throw new HarvestError(
+        `Failed to start manual session: ${error instanceof Error ? error.message : "Unknown error"}`,
+        "MANUAL_SESSION_START_FAILED",
+        { originalError: error }
+      );
+    }
+  }
+
+  /**
+   * Handle session_stop_manual tool call
+   */
+  public async handleStopManualSession(args: unknown): Promise<CallToolResult> {
+    try {
+      const argsObj = args as ManualSessionStopParams;
+
+      // Stop the manual session and collect artifacts
+      const result = await manualSessionManager.stopSession(argsObj.sessionId, {
+        ...(argsObj.artifactTypes && { artifactTypes: argsObj.artifactTypes }),
+        ...(argsObj.takeScreenshot !== undefined && {
+          takeScreenshot: argsObj.takeScreenshot,
+        }),
+        reason: argsObj.reason ?? "manual_stop",
+      });
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              success: true,
+              sessionId: result.id,
+              duration: result.duration,
+              finalUrl: result.finalUrl,
+              finalPageTitle: result.finalPageTitle,
+              artifactsCollected: result.artifacts.length,
+              artifacts: result.artifacts.map((artifact) => ({
+                type: artifact.type,
+                path: artifact.path,
+                size: artifact.size,
+                timestamp: artifact.timestamp,
+              })),
+              summary: result.summary,
+              metadata: result.metadata,
+              message: "Manual browser session stopped and artifacts collected",
+            }),
+          },
+        ],
+      };
+    } catch (error) {
+      throw new HarvestError(
+        `Failed to stop manual session: ${error instanceof Error ? error.message : "Unknown error"}`,
+        "MANUAL_SESSION_STOP_FAILED",
+        { originalError: error }
+      );
+    }
+  }
+
+  /**
+   * Handle session_list_manual tool call
+   */
+  public async handleListManualSessions(): Promise<CallToolResult> {
+    try {
+      const activeSessions = manualSessionManager.listActiveSessions();
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              success: true,
+              activeSessions: activeSessions.length,
+              sessions: activeSessions.map((session) => ({
+                id: session.id,
+                startTime: session.startTime,
+                currentUrl: session.currentUrl,
+                pageTitle: session.pageTitle,
+                duration: session.duration,
+                outputDir: session.outputDir,
+                artifactConfig: session.artifactConfig,
+              })),
+              message:
+                activeSessions.length > 0
+                  ? `Found ${activeSessions.length} active manual session(s)`
+                  : "No active manual sessions",
+            }),
+          },
+        ],
+      };
+    } catch (error) {
+      throw new HarvestError(
+        `Failed to list manual sessions: ${error instanceof Error ? error.message : "Unknown error"}`,
+        "MANUAL_SESSION_LIST_FAILED",
         { originalError: error }
       );
     }

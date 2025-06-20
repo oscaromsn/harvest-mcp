@@ -450,6 +450,7 @@ export class ArtifactCollector {
       const collection: ArtifactCollection = {
         artifacts,
         outputDir,
+        summary: `Collected ${artifacts.length} artifacts to ${outputDir}`,
       };
 
       logBrowserOperation("artifact_collection_complete", {

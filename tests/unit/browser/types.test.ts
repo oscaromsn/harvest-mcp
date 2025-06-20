@@ -144,6 +144,7 @@ describe("Browser Types", () => {
           },
         ],
         outputDir: "/path/to/output",
+        summary: "Test collection with 1 artifact",
       };
 
       expect(collection.artifacts).toHaveLength(1);
