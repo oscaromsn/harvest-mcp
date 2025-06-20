@@ -6,12 +6,12 @@ import { logger } from "../utils/logger.js";
 import type { BrowserAgent } from "./BrowserAgentFactory.js";
 
 export interface ArtifactCollectionConfig {
-  enabled?: boolean;
-  outputDir?: string;
-  saveHar?: boolean;
-  saveCookies?: boolean;
-  saveScreenshots?: boolean;
-  autoScreenshotInterval?: number; // Take screenshots every N seconds
+  enabled?: boolean | undefined;
+  outputDir?: string | undefined;
+  saveHar?: boolean | undefined;
+  saveCookies?: boolean | undefined;
+  saveScreenshots?: boolean | undefined;
+  autoScreenshotInterval?: number | undefined; // Take screenshots every N seconds
 }
 
 /**

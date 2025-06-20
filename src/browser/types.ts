@@ -82,22 +82,22 @@ export interface SessionConfig {
   url?: string;
   timeout?: number; // Auto-cleanup timeout in minutes
   browserOptions?: {
-    headless?: boolean;
+    headless?: boolean | undefined;
     viewport?: {
-      width?: number;
-      height?: number;
+      width?: number | undefined;
+      height?: number | undefined;
     };
     contextOptions?: {
-      deviceScaleFactor?: number;
+      deviceScaleFactor?: number | undefined;
     };
   };
   artifactConfig?: {
-    enabled?: boolean;
-    outputDir?: string;
-    saveHar?: boolean;
-    saveCookies?: boolean;
-    saveScreenshots?: boolean;
-    autoScreenshotInterval?: number; // Take screenshots every N seconds
+    enabled?: boolean | undefined;
+    outputDir?: string | undefined;
+    saveHar?: boolean | undefined;
+    saveCookies?: boolean | undefined;
+    saveScreenshots?: boolean | undefined;
+    autoScreenshotInterval?: number | undefined; // Take screenshots every N seconds
   };
 }
 

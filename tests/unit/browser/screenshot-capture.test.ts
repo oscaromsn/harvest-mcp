@@ -142,13 +142,13 @@ describe("Screenshot Capture", () => {
     expect(screenshotArtifacts).toHaveLength(3);
     expect(screenshotCount).toBe(3);
 
-    screenshotArtifacts.forEach((artifact) => {
+    for (const artifact of screenshotArtifacts) {
       expect(artifact.type).toBe("screenshot");
       expect(artifact.path).toMatch(
         /\/tmp\/screenshots\/timed-screenshot-.*\.png/
       );
       expect(artifact.timestamp).toBeDefined();
-    });
+    }
   });
 
   test("should handle interval-based screenshot capture", async () => {
@@ -182,12 +182,12 @@ describe("Screenshot Capture", () => {
     expect(screenshotCount).toBeGreaterThan(2);
     expect(capturedArtifacts.length).toBeGreaterThan(2);
 
-    capturedArtifacts.forEach((artifact) => {
+    for (const artifact of capturedArtifacts) {
       expect(artifact.type).toBe("screenshot");
       expect(artifact.path).toMatch(
         /\/tmp\/interval-screenshots\/interval-screenshot-.*\.png/
       );
-    });
+    }
   });
 
   test("should capture screenshot with element selector", async () => {
@@ -239,7 +239,9 @@ describe("Screenshot Capture", () => {
     const afterTime = Date.now();
 
     expect(screenshotArtifact.timestamp).toBeDefined();
-    const timestampTime = new Date(screenshotArtifact.timestamp!).getTime();
+    const timestampTime = new Date(
+      screenshotArtifact.timestamp ?? ""
+    ).getTime();
 
     expect(timestampTime).toBeGreaterThanOrEqual(beforeTime);
     expect(timestampTime).toBeLessThanOrEqual(afterTime);

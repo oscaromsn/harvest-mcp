@@ -59,9 +59,18 @@ src/
 │   ├── DAGManager.ts            # Manages dependency graphs using graphlib
 │   ├── HARParser.ts             # Parses HAR files into structured request models
 │   ├── LLMClient.ts             # OpenAI client with function calling capabilities
+│   ├── ManualSessionManager.ts  # Manual browser session lifecycle management
+│   ├── ArtifactCollector.ts     # Real-time artifact collection (HAR, cookies, screenshots)
+│   ├── BrowserAgentFactory.ts   # Browser instance creation and configuration
 │   └── SessionManager.ts        # Stateful session management with FSM pattern
 ├── models/             # Data models and domain objects
 │   └── Request.ts          # HTTP request representation with headers, body, etc.
+├── browser/            # Browser automation components
+│   ├── types.ts             # Browser-specific type definitions and interfaces
+│   ├── BrowserAgent.ts      # Browser automation interface (legacy)
+│   ├── BrowserProvider.ts   # Browser instance provider
+│   ├── logger.ts           # Browser operation logging
+│   └── AgentFactory.ts     # Browser agent creation utilities
 ├── types/              # TypeScript type definitions and schemas
 │   ├── index.ts            # Centralized types, interfaces, and Zod schemas
 ├── tools/              # MCP tool implementations (currently empty)
@@ -98,7 +107,14 @@ tests/
    - **Analysis Tools**: session_start, analysis_run_initial_analysis, analysis_process_next_node, analysis_is_complete
    - **Debug Tools**: debug_get_unresolved_nodes, debug_get_node_details, debug_list_all_requests, debug_force_dependency
    - **Code Generation**: codegen_generate_wrapper_script
-   - **Resources**: session DAG, logs, status, generated code
+   - **Manual Session Tools**: session_start_manual, session_stop_manual, session_list_manual
+   - **Resources**: session DAG, logs, status, generated code, manual session artifacts
+
+4. **Browser Automation** (`src/core/`, `src/browser/`):
+   - `ManualSessionManager`: Manual browser session lifecycle management
+   - `ArtifactCollector`: Real-time HAR, cookie, and screenshot collection
+   - `BrowserAgentFactory`: Browser instance creation with Playwright
+   - `BrowserAgent`: Browser automation interface
 
 ### Session State Flow
 ```
@@ -106,6 +122,13 @@ START → INITIAL_ANALYSIS → [USER_REVIEW] → [DEPENDENCY_GRAPH] → CODE_REA
 ```
 
 Sessions are managed statewide with transitions controlled by SessionManager's FSM implementation.
+
+### Manual Browser Session Workflow
+```
+START_MANUAL → BROWSER_LAUNCH → ARTIFACT_COLLECTION → [USER_INTERACTION] → STOP_MANUAL → ARTIFACT_GENERATION
+```
+
+Manual sessions enable real-time browser interaction with automatic artifact collection for later analysis.
 
 ### Testing Strategy
 - Unit tests: Individual component testing with mocks
@@ -120,3 +143,235 @@ Sessions are managed statewide with transitions controlled by SessionManager's F
 3. **Async Operations**: All agent and LLM operations are async
 4. **State Management**: Session state persists across tool calls
 5. **Testing**: Write tests for all new functionality, maintain coverage
+
+---
+
+## Manual Browser Session Workflows
+
+Harvest MCP provides powerful manual browser session capabilities for interactive exploration and artifact collection. These sessions generate HAR files, cookies, and screenshots that can be used for analysis.
+
+### Basic Manual Session
+
+Start a manual browser session:
+```javascript
+// Using MCP tools
+await session_start_manual({
+  url: "https://example.com",
+  config: {
+    artifactConfig: {
+      enabled: true,
+      saveHar: true,
+      saveCookies: true,
+      saveScreenshots: true
+    }
+  }
+})
+```
+
+Stop the session and collect artifacts:
+```javascript
+await session_stop_manual({
+  sessionId: "uuid-session-id",
+  takeScreenshot: true,
+  reason: "analysis_complete"
+})
+```
+
+### Advanced Configuration
+
+```javascript
+await session_start_manual({
+  url: "https://myapp.com/login", 
+  config: {
+    timeout: 30, // Auto-cleanup after 30 minutes
+    browserOptions: {
+      headless: false, // Visible browser for manual interaction
+      viewport: {
+        width: 1920,
+        height: 1080
+      },
+      contextOptions: {
+        deviceScaleFactor: 1
+      }
+    },
+    artifactConfig: {
+      enabled: true,
+      outputDir: "./session-artifacts",
+      saveHar: true,
+      saveCookies: true, 
+      saveScreenshots: true,
+      autoScreenshotInterval: 30 // Screenshot every 30 seconds
+    }
+  }
+})
+```
+
+### Workflow Integration
+
+1. **Manual Exploration**:
+   ```javascript
+   // Start manual session
+   const session = await session_start_manual({
+     url: "https://api.example.com/docs"
+   })
+   
+   // User manually interacts with the browser:
+   // - Navigate through API documentation
+   // - Fill out forms
+   // - Trigger API calls
+   // - Login flows
+   
+   // Stop session and collect artifacts
+   const result = await session_stop_manual({
+     sessionId: session.sessionId
+   })
+   ```
+
+2. **HAR Analysis**:
+   ```javascript
+   // Use generated HAR file for analysis
+   const analysisSession = await session_start({
+     harPath: result.artifacts.find(a => a.type === 'har').path,
+     prompt: "Generate integration code for the API workflow I just completed"
+   })
+   
+   // Continue with standard harvest analysis workflow...
+   ```
+
+### Manual Session Resources
+
+Access real-time session information via MCP resources:
+
+- `harvest://manual/sessions.json` - List all active manual sessions
+- `harvest://manual/{sessionId}/artifacts.json` - Real-time artifact status 
+- `harvest://manual/{sessionId}/session-log.txt` - Session activity log
+
+### Use Cases
+
+**API Exploration**:
+- Start manual session on API documentation site
+- Follow authentication flows manually
+- Trigger complex API sequences
+- Generate comprehensive HAR files for analysis
+
+**E-commerce Workflows**:
+- Manual session on shopping site
+- Complete purchase flow manually
+- Capture all network traffic and cookies
+- Generate integration code for checkout API
+
+**Authentication Flows**:
+- Manual OAuth/SAML flows
+- Capture authentication cookies
+- Generate auth integration code
+- Test complex login sequences
+
+**SPA Debugging**:
+- Manual interaction with Single Page Applications
+- Capture dynamic network requests
+- Screenshot important UI states
+- Generate API integration for SPA backends
+
+### Session Management
+
+List active sessions:
+```javascript
+const sessions = await session_list_manual()
+// Returns: { totalSessions: 2, sessions: [...] }
+```
+
+Multiple concurrent sessions supported:
+```javascript
+// Start multiple sessions for different workflows
+const loginSession = await session_start_manual({ url: "https://app.com/login" })
+const apiSession = await session_start_manual({ url: "https://api.app.com/docs" })
+const checkoutSession = await session_start_manual({ url: "https://shop.app.com" })
+```
+
+### Artifact Collection
+
+Generated artifacts include:
+
+**HAR Files**: Complete network traffic capture
+- HTTP requests and responses
+- Headers, cookies, timing information
+- Compatible with HAR 1.2 specification
+- Ready for harvest analysis
+
+**Cookie Files**: Authentication state capture
+- JSON format with metadata
+- Domain, path, security flags
+- Compatible with existing harvest cookie parsing
+
+**Screenshots**: Visual documentation
+- Full-page PNG screenshots
+- Automatic interval captures
+- Final state documentation
+
+### Best Practices
+
+1. **Resource Management**:
+   - Always stop sessions when done
+   - Use timeout settings for long-running sessions
+   - Clean up artifacts after analysis
+
+2. **Security**:
+   - Be careful with sensitive authentication flows
+   - Review generated artifacts before sharing
+   - Use secure output directories
+
+3. **Performance**:
+   - Disable artifacts for quick sessions
+   - Use headless mode for automated workflows
+   - Limit concurrent sessions
+
+4. **Debugging**:
+   - Use session logs for troubleshooting
+   - Check session resources for real-time status
+   - Enable auto-screenshots for complex flows
+
+### Error Handling
+
+Common error scenarios:
+```javascript
+// Invalid configuration
+try {
+  await session_start_manual({
+    config: {
+      timeout: -1, // Invalid
+      browserOptions: { viewport: { width: 100 } } // Too small
+    }
+  })
+} catch (error) {
+  // Handle validation errors
+}
+
+// Session not found
+try {
+  await session_stop_manual({ sessionId: "invalid-uuid" })
+} catch (error) {
+  // Handle missing session
+}
+```
+
+### Integration Examples
+
+**Complete API Discovery Workflow**:
+```bash
+# 1. Start manual session
+curl -X POST http://localhost:3000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"method": "session_start_manual", "params": {"url": "https://api.example.com"}}'
+
+# 2. User manually explores API, triggers requests
+
+# 3. Stop session  
+curl -X POST http://localhost:3000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"method": "session_stop_manual", "params": {"sessionId": "uuid"}}'
+
+# 4. Analyze generated HAR
+curl -X POST http://localhost:3000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"method": "session_start", "params": {"harPath": "/path/to/session.har", "prompt": "Generate API client"}}'
+```

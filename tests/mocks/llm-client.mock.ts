@@ -117,7 +117,6 @@ export const updateMockLLMResponse = (
   const currentImplementation = mockClient.callFunction.getMockImplementation();
 
   mockClient.callFunction.mockImplementation(
-    // biome-ignore lint/suspicious/useAwait: Mock function must return Promise to match interface
     async (
       prompt: string,
       functionDef: FunctionDefinition,

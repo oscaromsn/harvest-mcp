@@ -347,46 +347,144 @@ export const DebugGetNodeDetailsSchema = z.object({
 // ========== Manual Session Schemas ==========
 
 export const ManualSessionStartSchema = z.object({
-  sessionId: z.string().optional(),
-  url: z.string().optional(),
+  sessionId: z
+    .string()
+    .uuid("Session ID must be a valid UUID if provided")
+    .optional()
+    .describe("Custom session identifier (auto-generated if not provided)"),
+  url: z
+    .string()
+    .url("URL must be a valid HTTP/HTTPS URL")
+    .optional()
+    .transform((val) => {
+      // Sanitize URL by ensuring it has a protocol
+      if (val && !val.startsWith("http://") && !val.startsWith("https://")) {
+        return `https://${val}`;
+      }
+      return val;
+    })
+    .describe("Starting URL for the browser session"),
   config: z
     .object({
-      timeout: z.number().optional(),
+      timeout: z
+        .number()
+        .min(1, "Timeout must be at least 1 minute")
+        .max(1440, "Timeout cannot exceed 24 hours (1440 minutes)")
+        .optional()
+        .describe("Auto-cleanup timeout in minutes (1-1440, 0 = no timeout)"),
       browserOptions: z
         .object({
-          headless: z.boolean().optional(),
+          headless: z
+            .boolean()
+            .optional()
+            .describe(
+              "Run browser in headless mode (default: false for manual interaction)"
+            ),
           viewport: z
             .object({
-              width: z.number().optional(),
-              height: z.number().optional(),
+              width: z
+                .number()
+                .min(320, "Viewport width must be at least 320px")
+                .max(7680, "Viewport width cannot exceed 7680px")
+                .optional()
+                .describe("Browser viewport width (320-7680px)"),
+              height: z
+                .number()
+                .min(240, "Viewport height must be at least 240px")
+                .max(4320, "Viewport height cannot exceed 4320px")
+                .optional()
+                .describe("Browser viewport height (240-4320px)"),
             })
-            .optional(),
+            .optional()
+            .describe("Browser viewport configuration"),
           contextOptions: z
             .object({
-              deviceScaleFactor: z.number().optional(),
+              deviceScaleFactor: z
+                .number()
+                .min(0.25, "Device scale factor must be at least 0.25")
+                .max(4, "Device scale factor cannot exceed 4")
+                .optional()
+                .describe(
+                  "Device scale factor for coordinate accuracy (0.25-4)"
+                ),
             })
-            .optional(),
+            .optional()
+            .describe("Browser context options"),
         })
-        .optional(),
+        .optional()
+        .describe("Browser configuration options"),
       artifactConfig: z
         .object({
-          enabled: z.boolean().optional(),
-          outputDir: z.string().optional(),
-          saveHar: z.boolean().optional(),
-          saveCookies: z.boolean().optional(),
-          saveScreenshots: z.boolean().optional(),
-          autoScreenshotInterval: z.number().optional(),
+          enabled: z
+            .boolean()
+            .optional()
+            .describe("Enable artifact collection (default: true)"),
+          outputDir: z
+            .string()
+            .min(1, "Output directory path cannot be empty")
+            .refine(
+              (path) => !path.includes(".."),
+              "Output directory path cannot contain '..' for security"
+            )
+            .optional()
+            .describe(
+              "Custom output directory for artifacts (relative or absolute path)"
+            ),
+          saveHar: z
+            .boolean()
+            .optional()
+            .describe("Save HAR files (default: true)"),
+          saveCookies: z
+            .boolean()
+            .optional()
+            .describe("Save cookies (default: true)"),
+          saveScreenshots: z
+            .boolean()
+            .optional()
+            .describe("Save screenshots (default: true)"),
+          autoScreenshotInterval: z
+            .number()
+            .min(1, "Auto-screenshot interval must be at least 1 second")
+            .max(
+              3600,
+              "Auto-screenshot interval cannot exceed 1 hour (3600 seconds)"
+            )
+            .optional()
+            .describe(
+              "Take screenshots automatically every N seconds (1-3600, 0 = disabled)"
+            ),
         })
-        .optional(),
+        .optional()
+        .describe("Configuration for artifact collection during the session"),
     })
-    .optional(),
+    .optional()
+    .describe("Session configuration options"),
 });
 
 export const ManualSessionStopSchema = z.object({
-  sessionId: z.string().uuid("Invalid session ID format"),
-  artifactTypes: z.array(z.enum(["har", "cookies", "screenshot"])).optional(),
-  takeScreenshot: z.boolean().optional(),
-  reason: z.string().optional(),
+  sessionId: z
+    .string()
+    .uuid("Session ID must be a valid UUID")
+    .describe("ID of the session to stop"),
+  artifactTypes: z
+    .array(z.enum(["har", "cookies", "screenshot"]))
+    .min(1, "At least one artifact type must be specified if provided")
+    .optional()
+    .describe(
+      "Specific types of artifacts to collect (default: all enabled types)"
+    ),
+  takeScreenshot: z
+    .boolean()
+    .optional()
+    .describe(
+      "Take a final screenshot before stopping (default: true if screenshots enabled)"
+    ),
+  reason: z
+    .string()
+    .min(1, "Reason cannot be empty if provided")
+    .max(200, "Reason cannot exceed 200 characters")
+    .optional()
+    .describe("Reason for stopping the session (for logging purposes)"),
 });
 
 // ========== Type Exports ==========

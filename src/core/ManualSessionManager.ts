@@ -8,6 +8,11 @@ import type {
   SessionStopResult,
 } from "../types/index.js";
 import { logger } from "../utils/logger.js";
+import {
+  MemoryMonitor,
+  type MemoryUsage,
+  memoryMonitor,
+} from "../utils/memoryMonitor.js";
 import { artifactCollector } from "./ArtifactCollector.js";
 import {
   type BrowserAgentConfig,
@@ -47,6 +52,15 @@ export class ManualSessionManager {
     const startTime = Date.now();
 
     logger.info(`[ManualSessionManager] Starting manual session: ${sessionId}`);
+
+    // Take memory snapshot before session start
+    const preStartSnapshot = memoryMonitor.takeSnapshot(
+      sessionId,
+      "session_start_begin"
+    );
+    logger.info(
+      `[ManualSessionManager] Memory before session start: ${MemoryMonitor.formatMemorySize(preStartSnapshot.usage.heapUsed)}`
+    );
 
     try {
       // Create output directory
@@ -150,6 +164,17 @@ export class ManualSessionManager {
         `[ManualSessionManager] Manual session started successfully: ${sessionId}`
       );
 
+      // Take memory snapshot after session creation
+      const postStartSnapshot = memoryMonitor.takeSnapshot(
+        sessionId,
+        "session_start_complete"
+      );
+      const memoryGrowth =
+        postStartSnapshot.usage.heapUsed - preStartSnapshot.usage.heapUsed;
+      logger.info(
+        `[ManualSessionManager] Memory after session start: ${MemoryMonitor.formatMemorySize(postStartSnapshot.usage.heapUsed)} (growth: ${MemoryMonitor.formatMemorySize(memoryGrowth)})`
+      );
+
       return {
         id: sessionId,
         startTime,
@@ -191,6 +216,15 @@ export class ManualSessionManager {
 
     logger.info(
       `[ManualSessionManager] Stopping session: ${sessionId} (duration: ${Math.round(duration / 1000)}s, reason: ${options.reason || "manual"})`
+    );
+
+    // Take memory snapshot before cleanup
+    const preStopSnapshot = memoryMonitor.takeSnapshot(
+      sessionId,
+      "session_stop_begin"
+    );
+    logger.info(
+      `[ManualSessionManager] Memory before session stop: ${MemoryMonitor.formatMemorySize(preStopSnapshot.usage.heapUsed)}`
     );
 
     try {
@@ -250,6 +284,25 @@ export class ManualSessionManager {
 
       // Remove from active sessions
       this.activeSessions.delete(sessionId);
+
+      // Take memory snapshot after cleanup
+      const postStopSnapshot = memoryMonitor.takeSnapshot(
+        sessionId,
+        "session_stop_complete"
+      );
+      const memoryReclaimed =
+        preStopSnapshot.usage.heapUsed - postStopSnapshot.usage.heapUsed;
+      logger.info(
+        `[ManualSessionManager] Memory after session stop: ${MemoryMonitor.formatMemorySize(postStopSnapshot.usage.heapUsed)} (reclaimed: ${MemoryMonitor.formatMemorySize(memoryReclaimed)})`
+      );
+
+      // Check for memory leaks
+      const leakDetection = memoryMonitor.detectMemoryLeaks();
+      if (leakDetection.isLeaking) {
+        logger.warn(
+          `[ManualSessionManager] Potential memory leak detected: ${leakDetection.recommendation}`
+        );
+      }
 
       logger.info(
         `[ManualSessionManager] Session stopped successfully: ${sessionId}`
@@ -434,11 +487,15 @@ export class ManualSessionManager {
       const cookieFiles = artifacts.filter((a) => a.type === "cookies");
       const screenshots = artifacts.filter((a) => a.type === "screenshot");
 
-      if (harFiles.length > 0) summary += `- HAR files: ${harFiles.length}\n`;
-      if (cookieFiles.length > 0)
+      if (harFiles.length > 0) {
+        summary += `- HAR files: ${harFiles.length}\n`;
+      }
+      if (cookieFiles.length > 0) {
         summary += `- Cookie files: ${cookieFiles.length}\n`;
-      if (screenshots.length > 0)
+      }
+      if (screenshots.length > 0) {
         summary += `- Screenshots: ${screenshots.length}\n`;
+      }
 
       summary += `\nArtifacts saved to: ${session.outputDir}`;
     }
@@ -486,7 +543,7 @@ export class ManualSessionManager {
     );
 
     await Promise.allSettled(cleanupPromises);
-    logger.info(`[ManualSessionManager] All sessions cleaned up`);
+    logger.info("[ManualSessionManager] All sessions cleaned up");
   }
 
   /**
@@ -503,11 +560,71 @@ export class ManualSessionManager {
     try {
       await session.agent.stop();
     } catch (error) {
-      logger.error(`[ManualSessionManager] Error force stopping agent:`, error);
+      logger.error("[ManualSessionManager] Error force stopping agent:", error);
     }
 
     this.cleanupSessionTimers(sessionId);
     this.activeSessions.delete(sessionId);
+  }
+
+  /**
+   * Get memory usage statistics for all sessions
+   */
+  getMemoryStats(): {
+    current: MemoryUsage;
+    peak: MemoryUsage;
+    average: MemoryUsage;
+    snapshotCount: number;
+    activeSessions: number;
+    leakDetection: ReturnType<typeof memoryMonitor.detectMemoryLeaks>;
+  } {
+    const stats = memoryMonitor.getMemoryStats();
+    const leakDetection = memoryMonitor.detectMemoryLeaks();
+
+    return {
+      ...stats,
+      activeSessions: this.activeSessions.size,
+      leakDetection,
+    };
+  }
+
+  /**
+   * Force garbage collection and cleanup
+   */
+  performCleanup(): {
+    gcForced: boolean;
+    memoryBefore: number;
+    memoryAfter: number;
+    memoryReclaimed: number;
+  } {
+    const memoryBefore = memoryMonitor.getCurrentMemoryUsage().heapUsed;
+    const gcForced = memoryMonitor.forceGarbageCollection();
+
+    // Give GC time to work
+    setTimeout(() => {
+      // Intentionally empty - just waiting for GC
+    }, 100);
+
+    const memoryAfter = memoryMonitor.getCurrentMemoryUsage().heapUsed;
+    const memoryReclaimed = memoryBefore - memoryAfter;
+
+    logger.info(
+      `[ManualSessionManager] Cleanup performed - GC: ${gcForced ? "forced" : "not available"}, Memory reclaimed: ${MemoryMonitor.formatMemorySize(memoryReclaimed)}`
+    );
+
+    return {
+      gcForced,
+      memoryBefore,
+      memoryAfter,
+      memoryReclaimed,
+    };
+  }
+
+  /**
+   * Get session-specific memory usage
+   */
+  getSessionMemoryUsage(sessionId: string) {
+    return memoryMonitor.getSessionMemoryUsage(sessionId);
   }
 }
 

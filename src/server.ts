@@ -15,11 +15,10 @@ import { generateWrapperScript } from "./core/CodeGenerator.js";
 import { manualSessionManager } from "./core/ManualSessionManager.js";
 import { SessionManager } from "./core/SessionManager.js";
 import {
+  type BrowserSessionInfo,
   type CookieDependency,
   HarvestError,
-  type ManualSessionStartParams,
   ManualSessionStartSchema,
-  type ManualSessionStopParams,
   ManualSessionStopSchema,
   type RequestDependency,
   type SessionConfig,
@@ -349,6 +348,204 @@ export class HarvestMCPServer {
               uri: `harvest://${sessionId}/generated_code.ts`,
               text: session.state.generatedCode,
               mimeType: "text/typescript",
+            },
+          ],
+        };
+      }
+    );
+
+    // Manual session artifacts resource
+    this.server.resource(
+      "harvest://manual/{sessionId}/artifacts.json",
+      "Real-time artifact collection status and metadata for a manual browser session",
+      (_uri, args) => {
+        const sessionId = args?.sessionId as string;
+        if (!sessionId) {
+          throw new HarvestError(
+            "Session ID is required",
+            "MISSING_SESSION_ID"
+          );
+        }
+
+        const sessionInfo = manualSessionManager.getSessionInfo(sessionId);
+        if (!sessionInfo) {
+          throw new HarvestError(
+            `Manual session not found: ${sessionId}`,
+            "MANUAL_SESSION_NOT_FOUND",
+            { sessionId }
+          );
+        }
+
+        const artifactsData = {
+          sessionId,
+          status: "active",
+          startTime: sessionInfo.startTime,
+          duration: sessionInfo.duration,
+          currentUrl: sessionInfo.currentUrl,
+          pageTitle: sessionInfo.pageTitle,
+          outputDir: sessionInfo.outputDir,
+          artifactConfig: {
+            enabled: sessionInfo.artifactConfig?.enabled ?? true,
+            saveHar: sessionInfo.artifactConfig?.saveHar ?? true,
+            saveCookies: sessionInfo.artifactConfig?.saveCookies ?? true,
+            saveScreenshots:
+              sessionInfo.artifactConfig?.saveScreenshots ?? true,
+            autoScreenshotInterval:
+              sessionInfo.artifactConfig?.autoScreenshotInterval,
+          },
+          expectedArtifacts: {
+            har: sessionInfo.artifactConfig?.saveHar !== false ? 1 : 0,
+            cookies: sessionInfo.artifactConfig?.saveCookies !== false ? 1 : 0,
+            screenshots:
+              sessionInfo.artifactConfig?.saveScreenshots !== false
+                ? "multiple"
+                : 0,
+          },
+          metadata: {
+            lastUpdated: new Date().toISOString(),
+            sessionActive: true,
+            browserType: "chromium",
+            viewport: {
+              width: 1280,
+              height: 720,
+            },
+          },
+        };
+
+        return {
+          contents: [
+            {
+              uri: `harvest://manual/${sessionId}/artifacts.json`,
+              text: JSON.stringify(artifactsData, null, 2),
+              mimeType: "application/json",
+            },
+          ],
+        };
+      }
+    );
+
+    // Manual session activity log resource
+    this.server.resource(
+      "harvest://manual/{sessionId}/session-log.txt",
+      "Real-time activity log for a manual browser session",
+      (_uri, args) => {
+        const sessionId = args?.sessionId as string;
+        if (!sessionId) {
+          throw new HarvestError(
+            "Session ID is required",
+            "MISSING_SESSION_ID"
+          );
+        }
+
+        const sessionInfo = manualSessionManager.getSessionInfo(sessionId);
+        if (!sessionInfo) {
+          throw new HarvestError(
+            `Manual session not found: ${sessionId}`,
+            "MANUAL_SESSION_NOT_FOUND",
+            { sessionId }
+          );
+        }
+
+        // Generate activity log based on session state
+        const logEntries = [
+          `[${new Date(sessionInfo.startTime).toISOString()}] INFO: Manual browser session started`,
+          `[${new Date(sessionInfo.startTime).toISOString()}] INFO: Session ID: ${sessionId}`,
+          `[${new Date(sessionInfo.startTime).toISOString()}] INFO: Initial URL: ${sessionInfo.currentUrl || "about:blank"}`,
+          `[${new Date(sessionInfo.startTime).toISOString()}] INFO: Output directory: ${sessionInfo.outputDir}`,
+          `[${new Date(sessionInfo.startTime).toISOString()}] INFO: Artifact collection enabled: ${sessionInfo.artifactConfig?.enabled !== false}`,
+        ];
+
+        if (sessionInfo.artifactConfig?.enabled !== false) {
+          if (sessionInfo.artifactConfig?.saveHar !== false) {
+            logEntries.push(
+              `[${new Date(sessionInfo.startTime).toISOString()}] INFO: HAR file collection: enabled`
+            );
+          }
+          if (sessionInfo.artifactConfig?.saveCookies !== false) {
+            logEntries.push(
+              `[${new Date(sessionInfo.startTime).toISOString()}] INFO: Cookie collection: enabled`
+            );
+          }
+          if (sessionInfo.artifactConfig?.saveScreenshots !== false) {
+            logEntries.push(
+              `[${new Date(sessionInfo.startTime).toISOString()}] INFO: Screenshot collection: enabled`
+            );
+          }
+          if (sessionInfo.artifactConfig?.autoScreenshotInterval) {
+            logEntries.push(
+              `[${new Date(sessionInfo.startTime).toISOString()}] INFO: Auto-screenshot interval: ${sessionInfo.artifactConfig.autoScreenshotInterval}s`
+            );
+          }
+        }
+
+        logEntries.push(
+          `[${new Date().toISOString()}] INFO: Session duration: ${Math.floor(sessionInfo.duration / 60000)}m ${Math.floor((sessionInfo.duration % 60000) / 1000)}s`
+        );
+        logEntries.push(
+          `[${new Date().toISOString()}] INFO: Current page: ${sessionInfo.pageTitle || "Unknown"}`
+        );
+        logEntries.push(
+          `[${new Date().toISOString()}] INFO: Current URL: ${sessionInfo.currentUrl || "Unknown"}`
+        );
+        logEntries.push(
+          `[${new Date().toISOString()}] STATUS: Session is active and ready for manual interaction`
+        );
+
+        const logText = logEntries.join("\n");
+
+        return {
+          contents: [
+            {
+              uri: `harvest://manual/${sessionId}/session-log.txt`,
+              text: logText,
+              mimeType: "text/plain",
+            },
+          ],
+        };
+      }
+    );
+
+    // Manual sessions list resource
+    this.server.resource(
+      "harvest://manual/sessions.json",
+      "List of all active manual browser sessions",
+      () => {
+        const activeSessions = manualSessionManager.listActiveSessions();
+
+        const sessionsData = {
+          totalSessions: activeSessions.length,
+          lastUpdated: new Date().toISOString(),
+          sessions: activeSessions.map((session) => ({
+            id: session.id,
+            startTime: session.startTime,
+            duration: session.duration,
+            currentUrl: session.currentUrl,
+            pageTitle: session.pageTitle,
+            outputDir: session.outputDir,
+            artifactConfig: session.artifactConfig,
+            status: "active",
+          })),
+          summary: {
+            longestRunningSession:
+              activeSessions.length > 0
+                ? Math.max(...activeSessions.map((s) => s.duration))
+                : 0,
+            averageDuration:
+              activeSessions.length > 0
+                ? Math.round(
+                    activeSessions.reduce((sum, s) => sum + s.duration, 0) /
+                      activeSessions.length
+                  )
+                : 0,
+          },
+        };
+
+        return {
+          contents: [
+            {
+              uri: "harvest://manual/sessions.json",
+              text: JSON.stringify(sessionsData, null, 2),
+              mimeType: "application/json",
             },
           ],
         };
@@ -1584,32 +1781,17 @@ export class HarvestMCPServer {
     args: unknown
   ): Promise<CallToolResult> {
     try {
-      const argsObj = args as ManualSessionStartParams;
+      const argsObj = this.validateManualSessionStartArgs(args);
+      const sessionConfig = this.buildSessionConfig(argsObj);
+      const sessionInfo =
+        await manualSessionManager.startSession(sessionConfig);
 
-      // Start the manual session
-      const sessionInfo = await manualSessionManager.startSession(
-        (argsObj.config as SessionConfig) ?? {}
-      );
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({
-              success: true,
-              sessionId: sessionInfo.id,
-              startTime: sessionInfo.startTime,
-              currentUrl: sessionInfo.currentUrl,
-              pageTitle: sessionInfo.pageTitle,
-              outputDir: sessionInfo.outputDir,
-              message: "Manual browser session started successfully",
-              instructions: sessionInfo.instructions,
-              artifactConfig: sessionInfo.artifactConfig,
-            }),
-          },
-        ],
-      };
+      return this.buildManualSessionStartResponse(sessionInfo, argsObj, args);
     } catch (error) {
+      if (error instanceof HarvestError) {
+        throw error; // Re-throw HarvestError with original context
+      }
+
       throw new HarvestError(
         `Failed to start manual session: ${error instanceof Error ? error.message : "Unknown error"}`,
         "MANUAL_SESSION_START_FAILED",
@@ -1619,11 +1801,197 @@ export class HarvestMCPServer {
   }
 
   /**
+   * Validate manual session start arguments
+   */
+  private validateManualSessionStartArgs(args: unknown) {
+    const validationResult = ManualSessionStartSchema.safeParse(args);
+    if (!validationResult.success) {
+      const errorDetails = validationResult.error.issues
+        .map((issue) => `${issue.path.join(".")}: ${issue.message}`)
+        .join("; ");
+
+      throw new HarvestError(
+        `Invalid parameters for manual session start: ${errorDetails}`,
+        "MANUAL_SESSION_INVALID_PARAMS",
+        {
+          validationErrors: validationResult.error.issues,
+          receivedArgs: args,
+        }
+      );
+    }
+    return validationResult.data;
+  }
+
+  /**
+   * Build session configuration from validated arguments
+   */
+  private buildSessionConfig(
+    argsObj: z.infer<typeof ManualSessionStartSchema>
+  ): SessionConfig {
+    const sessionConfig: SessionConfig = {};
+
+    if (argsObj.url) {
+      sessionConfig.url = argsObj.url;
+    }
+
+    if (argsObj.config) {
+      this.applyConfigOptions(sessionConfig, argsObj.config);
+    }
+
+    return sessionConfig;
+  }
+
+  /**
+   * Apply configuration options to session config
+   */
+  private applyConfigOptions(
+    sessionConfig: SessionConfig,
+    config: NonNullable<z.infer<typeof ManualSessionStartSchema>["config"]>
+  ): void {
+    if (config.timeout !== undefined) {
+      sessionConfig.timeout = config.timeout;
+    }
+
+    if (config.browserOptions) {
+      sessionConfig.browserOptions = this.buildBrowserOptions(
+        config.browserOptions
+      );
+    }
+
+    if (config.artifactConfig) {
+      sessionConfig.artifactConfig = this.buildArtifactConfig(
+        config.artifactConfig
+      );
+    }
+  }
+
+  /**
+   * Build browser options configuration
+   */
+  private buildBrowserOptions(
+    browserOptions: NonNullable<
+      NonNullable<
+        z.infer<typeof ManualSessionStartSchema>["config"]
+      >["browserOptions"]
+    >
+  ): NonNullable<SessionConfig["browserOptions"]> {
+    const options: NonNullable<SessionConfig["browserOptions"]> = {};
+
+    if (browserOptions.headless !== undefined) {
+      options.headless = browserOptions.headless;
+    }
+    if (browserOptions.viewport) {
+      options.viewport = browserOptions.viewport;
+    }
+    if (browserOptions.contextOptions) {
+      options.contextOptions = browserOptions.contextOptions;
+    }
+
+    return options;
+  }
+
+  /**
+   * Build artifact configuration
+   */
+  private buildArtifactConfig(
+    artifactConfig: NonNullable<
+      NonNullable<
+        z.infer<typeof ManualSessionStartSchema>["config"]
+      >["artifactConfig"]
+    >
+  ): NonNullable<SessionConfig["artifactConfig"]> {
+    const config: NonNullable<SessionConfig["artifactConfig"]> = {};
+
+    if (artifactConfig.enabled !== undefined) {
+      config.enabled = artifactConfig.enabled;
+    }
+    if (artifactConfig.outputDir !== undefined) {
+      config.outputDir = artifactConfig.outputDir;
+    }
+    if (artifactConfig.saveHar !== undefined) {
+      config.saveHar = artifactConfig.saveHar;
+    }
+    if (artifactConfig.saveCookies !== undefined) {
+      config.saveCookies = artifactConfig.saveCookies;
+    }
+    if (artifactConfig.saveScreenshots !== undefined) {
+      config.saveScreenshots = artifactConfig.saveScreenshots;
+    }
+    if (artifactConfig.autoScreenshotInterval !== undefined) {
+      config.autoScreenshotInterval = artifactConfig.autoScreenshotInterval;
+    }
+
+    return config;
+  }
+
+  /**
+   * Build response for manual session start
+   */
+  private buildManualSessionStartResponse(
+    sessionInfo: BrowserSessionInfo,
+    argsObj: z.infer<typeof ManualSessionStartSchema>,
+    originalArgs: unknown
+  ): CallToolResult {
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            success: true,
+            sessionId: sessionInfo.id,
+            startTime: sessionInfo.startTime,
+            currentUrl: sessionInfo.currentUrl,
+            pageTitle: sessionInfo.pageTitle,
+            outputDir: sessionInfo.outputDir,
+            message: "Manual browser session started successfully",
+            instructions: sessionInfo.instructions,
+            artifactConfig: sessionInfo.artifactConfig,
+            validation: {
+              parametersValidated: true,
+              urlSanitized:
+                argsObj.url !== (originalArgs as Record<string, unknown>)?.url,
+            },
+          }),
+        },
+      ],
+    };
+  }
+
+  /**
    * Handle session_stop_manual tool call
    */
   public async handleStopManualSession(args: unknown): Promise<CallToolResult> {
     try {
-      const argsObj = args as ManualSessionStopParams;
+      // Validate and parse arguments with enhanced error handling
+      const validationResult = ManualSessionStopSchema.safeParse(args);
+      if (!validationResult.success) {
+        const errorDetails = validationResult.error.issues
+          .map((issue) => `${issue.path.join(".")}: ${issue.message}`)
+          .join("; ");
+
+        throw new HarvestError(
+          `Invalid parameters for manual session stop: ${errorDetails}`,
+          "MANUAL_SESSION_STOP_INVALID_PARAMS",
+          {
+            validationErrors: validationResult.error.issues,
+            receivedArgs: args,
+          }
+        );
+      }
+
+      const argsObj = validationResult.data;
+
+      // Check if session exists before attempting to stop
+      const sessionInfo = manualSessionManager.getSessionInfo(
+        argsObj.sessionId
+      );
+      if (!sessionInfo) {
+        throw new HarvestError(
+          `Manual session not found: ${argsObj.sessionId}`,
+          "MANUAL_SESSION_NOT_FOUND",
+          { sessionId: argsObj.sessionId }
+        );
+      }
 
       // Stop the manual session and collect artifacts
       const result = await manualSessionManager.stopSession(argsObj.sessionId, {
@@ -1642,6 +2010,7 @@ export class HarvestMCPServer {
               success: true,
               sessionId: result.id,
               duration: result.duration,
+              durationFormatted: `${Math.floor(result.duration / 60000)}m ${Math.floor((result.duration % 60000) / 1000)}s`,
               finalUrl: result.finalUrl,
               finalPageTitle: result.finalPageTitle,
               artifactsCollected: result.artifacts.length,
@@ -1649,16 +2018,25 @@ export class HarvestMCPServer {
                 type: artifact.type,
                 path: artifact.path,
                 size: artifact.size,
+                sizeFormatted: this.formatFileSize(artifact.size),
                 timestamp: artifact.timestamp,
               })),
               summary: result.summary,
-              metadata: result.metadata,
+              metadata: {
+                ...result.metadata,
+                parametersValidated: true,
+                requestedArtifactTypes: argsObj.artifactTypes,
+              },
               message: "Manual browser session stopped and artifacts collected",
             }),
           },
         ],
       };
     } catch (error) {
+      if (error instanceof HarvestError) {
+        throw error; // Re-throw HarvestError with original context
+      }
+
       throw new HarvestError(
         `Failed to stop manual session: ${error instanceof Error ? error.message : "Unknown error"}`,
         "MANUAL_SESSION_STOP_FAILED",
@@ -1680,16 +2058,41 @@ export class HarvestMCPServer {
             type: "text",
             text: JSON.stringify({
               success: true,
-              activeSessions: activeSessions.length,
+              totalSessions: activeSessions.length,
               sessions: activeSessions.map((session) => ({
                 id: session.id,
                 startTime: session.startTime,
+                startTimeFormatted: new Date(session.startTime).toISOString(),
                 currentUrl: session.currentUrl,
                 pageTitle: session.pageTitle,
                 duration: session.duration,
+                durationFormatted: `${Math.floor(session.duration / 60000)}m ${Math.floor((session.duration % 60000) / 1000)}s`,
                 outputDir: session.outputDir,
-                artifactConfig: session.artifactConfig,
+                artifactConfig: {
+                  enabled: session.artifactConfig?.enabled ?? true,
+                  saveHar: session.artifactConfig?.saveHar ?? true,
+                  saveCookies: session.artifactConfig?.saveCookies ?? true,
+                  saveScreenshots:
+                    session.artifactConfig?.saveScreenshots ?? true,
+                  autoScreenshotInterval:
+                    session.artifactConfig?.autoScreenshotInterval,
+                },
+                status: "active",
               })),
+              summary: {
+                totalActiveSessions: activeSessions.length,
+                longestRunningSession:
+                  activeSessions.length > 0
+                    ? Math.max(...activeSessions.map((s) => s.duration))
+                    : 0,
+                averageDuration:
+                  activeSessions.length > 0
+                    ? Math.round(
+                        activeSessions.reduce((sum, s) => sum + s.duration, 0) /
+                          activeSessions.length
+                      )
+                    : 0,
+              },
               message:
                 activeSessions.length > 0
                   ? `Found ${activeSessions.length} active manual session(s)`
@@ -2030,6 +2433,21 @@ export class HarvestMCPServer {
         },
       ],
     };
+  }
+
+  /**
+   * Format file size in human readable format
+   */
+  private formatFileSize(bytes: number | undefined): string {
+    if (!bytes || bytes === 0) {
+      return "0 B";
+    }
+
+    const k = 1024;
+    const sizes = ["B", "KB", "MB", "GB"];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+
+    return `${(bytes / k ** i).toFixed(1)} ${sizes[i]}`;
   }
 
   /**

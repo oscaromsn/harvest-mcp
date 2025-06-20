@@ -276,7 +276,7 @@ describe("HAR Generation", () => {
     } as unknown as Request;
 
     if (requestHandler) {
-      (requestHandler as Function)(mockRequest);
+      (requestHandler as (request: Request) => void)(mockRequest);
     }
 
     const outputPath = "/tmp/test-har-postdata.har";
@@ -326,7 +326,7 @@ describe("HAR Generation", () => {
     } as unknown as Request;
 
     if (requestHandler) {
-      (requestHandler as Function)(mockRequest);
+      (requestHandler as (request: Request) => void)(mockRequest);
     }
 
     const outputPath = "/tmp/test-har-no-postdata.har";
@@ -373,7 +373,7 @@ describe("HAR Generation", () => {
     } as unknown as Request;
 
     if (requestHandler) {
-      (requestHandler as Function)(mockRequest);
+      (requestHandler as (request: Request) => void)(mockRequest);
     }
 
     expect(collector.getHarEntryCount()).toBe(1);
