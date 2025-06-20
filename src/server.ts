@@ -14,6 +14,7 @@ import { identifyEndUrl } from "./agents/URLIdentificationAgent.js";
 import { generateWrapperScript } from "./core/CodeGenerator.js";
 import { manualSessionManager } from "./core/ManualSessionManager.js";
 import { SessionManager } from "./core/SessionManager.js";
+import { serverLogger } from "./utils/logger.js";
 import {
   type BrowserSessionInfo,
   type CookieDependency,
@@ -590,18 +591,18 @@ export class HarvestMCPServer {
    */
   private setupErrorHandling(): void {
     this.server.server.onerror = (error) => {
-      console.error("[MCP Server Error]", error);
+      serverLogger.error({ error }, "MCP Server Error");
     };
 
     // Handle graceful shutdown
     process.on("SIGINT", () => {
-      console.log("Shutting down Harvest MCP server...");
+      serverLogger.info("Shutting down Harvest MCP server...");
       this.sessionManager.clearAllSessions();
       process.exit(0);
     });
 
     process.on("SIGTERM", () => {
-      console.log("Shutting down Harvest MCP server...");
+      serverLogger.info("Shutting down Harvest MCP server...");
       this.sessionManager.clearAllSessions();
       process.exit(0);
     });
@@ -2457,13 +2458,13 @@ export class HarvestMCPServer {
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
 
-    console.error("Harvest MCP Server started and listening on stdio");
+    serverLogger.info("Harvest MCP Server started and listening on stdio");
   }
 }
 
 // Start the server
 const server = new HarvestMCPServer();
 server.start().catch((error) => {
-  console.error("Failed to start server:", error);
+  serverLogger.error({ error }, "Failed to start server");
   process.exit(1);
 });
