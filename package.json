@@ -41,6 +41,9 @@
     "@dagrejs/graphlib": "^2.2.4",
     "@modelcontextprotocol/sdk": "^1.12.3",
     "openai": "^5.5.0",
+    "pino": "^9.6.0",
+    "playwright": "^1.52.0",
+    "sharp": "^0.33.5",
     "uuid": "^11.1.0",
     "zod": "^3.25.67"
   }
