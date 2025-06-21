@@ -4,7 +4,7 @@
  * Provides basic browser automation interface with page and context access
  */
 
-import type { BrowserContext, Page } from "playwright";
+import type { Browser, BrowserContext, Page } from "playwright";
 import {
   browserLogger,
   logBrowserError,
@@ -15,11 +15,19 @@ import type { BrowserAgent as IBrowserAgent } from "./types.js";
 export class BrowserAgent implements IBrowserAgent {
   public readonly page: Page;
   public readonly context: BrowserContext;
+  public readonly browser: Browser;
   private isStarted = false;
 
   constructor(page: Page, context: BrowserContext) {
     this.page = page;
     this.context = context;
+    const browser = context.browser();
+    if (!browser) {
+      throw new Error(
+        "Browser context must have an associated browser instance"
+      );
+    }
+    this.browser = browser;
 
     logBrowserOperation("agent_created", {
       url: this.getCurrentUrl(),

@@ -133,6 +133,7 @@ export interface SessionStopResult {
 export interface BrowserAgent {
   readonly page: Page;
   readonly context: BrowserContext;
+  readonly browser: Browser;
   start(): void;
   stop(): Promise<void>;
   getCurrentUrl(): string;
@@ -142,13 +143,8 @@ export interface BrowserAgent {
   getSessionMetadata(): Record<string, unknown>;
 }
 
-// Manual Session Browser Agent Interface
-export interface ManualBrowserAgent {
-  browser: Browser;
-  context: BrowserContext;
-  page: Page;
-  stop(): Promise<void>;
-}
+// Manual Session Browser Agent Interface (alias for BrowserAgent)
+export type ManualBrowserAgent = BrowserAgent;
 
 // Internal Browser Provider Types
 export interface ActiveBrowser {
