@@ -27,7 +27,7 @@ describe("HAR Generation", () => {
     expect(harData.log).toBeDefined();
     expect(harData.log.version).toBe("1.2");
     expect(harData.log.creator).toBeDefined();
-    expect(harData.log.creator.name).toBe("Harvest MCP Browser Agent");
+    expect(harData.log.creator.name).toBe("harvest-mcp");
     expect(harData.log.creator.version).toBe("1.0.0");
     expect(harData.log.pages).toHaveLength(1);
     expect(harData.log.entries).toBeDefined();

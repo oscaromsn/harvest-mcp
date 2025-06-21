@@ -16,13 +16,16 @@ import { manualSessionManager } from "./core/ManualSessionManager.js";
 import { SessionManager } from "./core/SessionManager.js";
 import {
   type BrowserSessionInfo,
+  type CleanupResult,
   type CookieDependency,
+  type HarValidationResult,
   HarvestError,
   ManualSessionStartSchema,
   ManualSessionStopSchema,
   type RequestDependency,
   type SessionConfig,
   SessionIdSchema,
+  type SessionStartResponse,
   SessionStartSchema,
 } from "./types/index.js";
 import { serverLogger } from "./utils/logger.js";
@@ -206,6 +209,99 @@ export class HarvestMCPServer {
       {},
       async (): Promise<CallToolResult> => {
         return await this.handleListManualSessions();
+      }
+    );
+
+    this.server.tool(
+      "session_health_check_manual",
+      "Check the health status of a manual browser session",
+      {
+        sessionId: z.string().uuid("Session ID must be a valid UUID"),
+      },
+      async (params): Promise<CallToolResult> => {
+        return await this.handleCheckManualSessionHealth(params);
+      }
+    );
+
+    this.server.tool(
+      "session_recover_manual",
+      "Attempt to recover an unhealthy manual browser session",
+      {
+        sessionId: z.string().uuid("Session ID must be a valid UUID"),
+      },
+      async (params): Promise<CallToolResult> => {
+        return await this.handleRecoverManualSession(params);
+      }
+    );
+
+    // Simplified workflow tools
+    this.server.tool(
+      "workflow_quick_capture",
+      "Simplified workflow: Start manual session, capture interactions, and prepare for analysis",
+      {
+        url: z.string().url("URL must be a valid HTTP/HTTPS URL").optional(),
+        duration: z
+          .number()
+          .min(1)
+          .max(30)
+          .default(5)
+          .describe("Session duration in minutes (1-30, default: 5)"),
+        description: z
+          .string()
+          .min(1)
+          .describe("Brief description of the workflow to capture"),
+      },
+      async (params): Promise<CallToolResult> => {
+        return await this.handleQuickCaptureWorkflow(params);
+      }
+    );
+
+    this.server.tool(
+      "workflow_analyze_har",
+      "Simplified workflow: Analyze HAR file with automatic fallbacks and clear feedback",
+      {
+        harPath: z.string().min(1).describe("Path to the HAR file"),
+        cookiePath: z
+          .string()
+          .optional()
+          .describe("Path to cookie file (optional)"),
+        description: z
+          .string()
+          .min(1)
+          .describe("Description of what the workflow should accomplish"),
+        autoFix: z
+          .boolean()
+          .default(true)
+          .describe("Automatically attempt to fix common issues"),
+      },
+      async (params): Promise<CallToolResult> => {
+        return await this.handleAnalyzeHarWorkflow(params);
+      }
+    );
+
+    // System monitoring tools
+    this.server.tool(
+      "system_memory_status",
+      "Get current memory usage and session statistics",
+      {},
+      async (): Promise<CallToolResult> => {
+        return await this.handleMemoryStatus();
+      }
+    );
+
+    this.server.tool(
+      "system_cleanup",
+      "Perform system cleanup to free memory and resources",
+      {
+        aggressive: z
+          .boolean()
+          .default(false)
+          .describe(
+            "Perform aggressive cleanup (may close long-running sessions)"
+          ),
+      },
+      async (params): Promise<CallToolResult> => {
+        return await this.handleSystemCleanup(params);
       }
     );
   }
@@ -616,16 +712,42 @@ export class HarvestMCPServer {
       const validatedArgs = SessionStartSchema.parse(args);
       const sessionId = await this.sessionManager.createSession(validatedArgs);
 
+      // Get session to check HAR validation results
+      const session = this.sessionManager.getSession(sessionId);
+      const harValidation = session.harData.validation;
+
+      const response: SessionStartResponse = {
+        sessionId,
+        message: "Session created successfully",
+        harPath: validatedArgs.harPath,
+        prompt: validatedArgs.prompt,
+        harValidation: harValidation
+          ? {
+              quality: harValidation.quality,
+              stats: harValidation.stats,
+              isValid: harValidation.isValid,
+            }
+          : undefined,
+      };
+
+      // Add warnings or recommendations if HAR quality is concerning
+      if (harValidation) {
+        if (harValidation.quality === "empty") {
+          response.warning = "HAR file is empty or contains no usable requests";
+          response.recommendations = harValidation.recommendations || [];
+        } else if (harValidation.quality === "poor") {
+          response.warning = "HAR file has limited useful content";
+          response.recommendations = (
+            harValidation.recommendations || []
+          ).slice(0, 3); // Limit recommendations
+        }
+      }
+
       return {
         content: [
           {
             type: "text",
-            text: JSON.stringify({
-              sessionId,
-              message: "Session created successfully",
-              harPath: validatedArgs.harPath,
-              prompt: validatedArgs.prompt,
-            }),
+            text: JSON.stringify(response),
           },
         ],
       };
@@ -854,6 +976,68 @@ export class HarvestMCPServer {
       const argsObj = args as { sessionId: string };
       const session = this.sessionManager.getSession(argsObj.sessionId);
 
+      // Check HAR data quality before proceeding
+      if (session.harData.validation) {
+        const validation = session.harData.validation;
+
+        if (validation.quality === "empty") {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error: "Cannot analyze empty HAR file",
+                  message: "No meaningful network requests found in HAR file",
+                  issues: validation.issues,
+                  recommendations: validation.recommendations,
+                  stats: validation.stats,
+                  nextSteps: [
+                    "1. Capture a new HAR file with meaningful interactions",
+                    "2. Ensure you interact with the website's main functionality",
+                    "3. Look for forms, buttons, or API calls to capture",
+                  ],
+                }),
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        if (validation.quality === "poor") {
+          this.sessionManager.addLog(
+            argsObj.sessionId,
+            "warn",
+            `Proceeding with poor quality HAR file: ${validation.issues.join(", ")}`
+          );
+        }
+      }
+
+      // Check if we have any URLs available
+      if (!session.harData.urls || session.harData.urls.length === 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                error: "No URLs available for analysis",
+                message: "HAR file contains no analyzable requests",
+                recommendations: [
+                  "Ensure the HAR file was captured during meaningful interactions",
+                  "Try capturing network traffic while submitting forms or loading data",
+                  "Check that the website makes API calls or form submissions",
+                ],
+                debugInfo: {
+                  totalRequests: session.harData.requests.length,
+                  totalUrls: session.harData.urls.length,
+                  harValidation: session.harData.validation,
+                },
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
+
       // Log the start of initial analysis
       this.sessionManager.addLog(
         argsObj.sessionId,
@@ -869,14 +1053,30 @@ export class HarvestMCPServer {
         (req) => req.url === actionUrl
       );
       if (!targetRequest) {
-        throw new HarvestError(
-          `No request found for identified URL: ${actionUrl}`,
-          "TARGET_REQUEST_NOT_FOUND",
-          {
-            actionUrl,
-            availableUrls: session.harData.requests.map((r) => r.url),
-          }
-        );
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                error: "Target request not found",
+                message: `No request found for identified URL: ${actionUrl}`,
+                actionUrl,
+                availableUrls: session.harData.requests.map((r) => r.url),
+                recommendations: [
+                  "The HAR file may not contain the complete workflow",
+                  "Try capturing a longer interaction sequence",
+                  "Ensure all form submissions and API calls are included",
+                ],
+                debugInfo: {
+                  identifiedUrl: actionUrl,
+                  totalRequests: session.harData.requests.length,
+                  harQuality: session.harData.validation?.quality,
+                },
+              }),
+            },
+          ],
+          isError: true,
+        };
       }
 
       // Create master node in DAG
@@ -912,6 +1112,7 @@ export class HarvestMCPServer {
               actionUrl,
               message: "Initial analysis completed successfully",
               nodeCount: session.dagManager.getNodeCount(),
+              harQuality: session.harData.validation?.quality,
               nextStep:
                 "Use analysis.process_next_node to begin dependency analysis",
             }),
@@ -2112,6 +2313,81 @@ export class HarvestMCPServer {
   }
 
   /**
+   * Handle session_health_check_manual tool call
+   */
+  public async handleCheckManualSessionHealth(
+    args: unknown
+  ): Promise<CallToolResult> {
+    try {
+      const argsObj = args as { sessionId: string };
+      const healthCheck = await manualSessionManager.checkSessionHealth(
+        argsObj.sessionId
+      );
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              success: true,
+              sessionId: argsObj.sessionId,
+              health: healthCheck,
+              message: healthCheck.isHealthy
+                ? "Session is healthy"
+                : `Session has ${healthCheck.issues.length} issue(s)`,
+              recommendations: healthCheck.recommendations,
+            }),
+          },
+        ],
+      };
+    } catch (error) {
+      throw new HarvestError(
+        `Failed to check session health: ${error instanceof Error ? error.message : "Unknown error"}`,
+        "MANUAL_SESSION_HEALTH_CHECK_FAILED",
+        { originalError: error }
+      );
+    }
+  }
+
+  /**
+   * Handle session_recover_manual tool call
+   */
+  public async handleRecoverManualSession(
+    args: unknown
+  ): Promise<CallToolResult> {
+    try {
+      const argsObj = args as { sessionId: string };
+      const recoveryResult = await manualSessionManager.recoverSession(
+        argsObj.sessionId
+      );
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              success: recoveryResult.success,
+              sessionId: argsObj.sessionId,
+              recovery: recoveryResult,
+              message: recoveryResult.success
+                ? "Session recovery successful"
+                : "Session recovery failed",
+              actionsPerformed: recoveryResult.actions,
+              remainingIssues: recoveryResult.newIssues,
+            }),
+          },
+        ],
+      };
+    } catch (error) {
+      throw new HarvestError(
+        `Failed to recover session: ${error instanceof Error ? error.message : "Unknown error"}`,
+        "MANUAL_SESSION_RECOVERY_FAILED",
+        { originalError: error }
+      );
+    }
+  }
+
+  /**
    * Execute full analysis workflow for the prompt
    */
   private async executeFullAnalysisWorkflow(request: {
@@ -2434,6 +2710,698 @@ export class HarvestMCPServer {
         },
       ],
     };
+  }
+
+  /**
+   * Handle workflow_quick_capture tool call
+   */
+  public async handleQuickCaptureWorkflow(
+    args: unknown
+  ): Promise<CallToolResult> {
+    try {
+      const argsObj = args as {
+        url?: string;
+        duration: number;
+        description: string;
+      };
+
+      // Start a manual session with smart defaults
+      const sessionConfig = {
+        ...(argsObj.url && { url: argsObj.url }),
+        config: {
+          timeout: argsObj.duration,
+          browserOptions: {
+            headless: false,
+            viewport: { width: 1920, height: 1080 },
+          },
+          artifactConfig: {
+            enabled: true,
+            saveHar: true,
+            saveCookies: true,
+            saveScreenshots: true,
+            outputDir: "~/Desktop",
+          },
+        },
+      };
+
+      const sessionResult = await this.handleStartManualSession(sessionConfig);
+      const sessionContent = sessionResult.content?.[0]?.text;
+      if (typeof sessionContent !== "string") {
+        throw new Error("Invalid session result format");
+      }
+      const sessionData = JSON.parse(sessionContent);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              success: true,
+              workflow: "quick_capture",
+              sessionId: sessionData.sessionId,
+              duration: argsObj.duration,
+              description: argsObj.description,
+              message: "Quick capture session started successfully",
+              instructions: [
+                `🎯 Quick Capture Session: ${argsObj.description}`,
+                "",
+                `⏰ You have ${argsObj.duration} minutes to complete your workflow`,
+                "📋 Steps to follow:",
+                "1. Interact with the website normally",
+                "2. Complete the workflow you described",
+                "3. The session will auto-stop, or use session_stop_manual",
+                "4. Use workflow_analyze_har with the generated HAR file",
+                "",
+                "💡 Tips:",
+                "- Submit forms and click buttons to generate meaningful requests",
+                "- Wait for pages to load completely",
+                "- Look for API calls and network activity",
+              ],
+              nextSteps: [
+                "Complete your workflow in the browser",
+                `Session will auto-stop after ${argsObj.duration} minutes`,
+                "Use workflow_analyze_har to process the captured data",
+              ],
+            }),
+          },
+        ],
+      };
+    } catch (error) {
+      throw new HarvestError(
+        `Quick capture workflow failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+        "QUICK_CAPTURE_WORKFLOW_FAILED",
+        { originalError: error }
+      );
+    }
+  }
+
+  /**
+   * Handle workflow_analyze_har tool call
+   */
+  public async handleAnalyzeHarWorkflow(
+    args: unknown
+  ): Promise<CallToolResult> {
+    try {
+      const validatedArgs = this.validateAnalysisArgs(args);
+      const { sessionId, harValidation } =
+        await this.createWorkflowAnalysisSession(validatedArgs);
+
+      const harQualityCheck = this.processHarValidation(
+        harValidation,
+        sessionId,
+        validatedArgs.autoFix
+      );
+
+      if (harQualityCheck.shouldEarlyReturn && harQualityCheck.result) {
+        return harQualityCheck.result;
+      }
+
+      return await this.performWorkflowAnalysis(
+        sessionId,
+        validatedArgs,
+        harValidation,
+        harQualityCheck.analysisSteps,
+        harQualityCheck.warnings,
+        harQualityCheck.recommendations
+      );
+    } catch (error) {
+      throw new HarvestError(
+        `HAR analysis workflow failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+        "ANALYZE_HAR_WORKFLOW_FAILED",
+        { originalError: error }
+      );
+    }
+  }
+
+  /**
+   * Validate and parse arguments for analysis workflow
+   */
+  private validateAnalysisArgs(args: unknown) {
+    return args as {
+      harPath: string;
+      cookiePath?: string;
+      description: string;
+      autoFix: boolean;
+    };
+  }
+
+  /**
+   * Create workflow analysis session and return session data
+   */
+  private async createWorkflowAnalysisSession(args: {
+    harPath: string;
+    cookiePath?: string;
+    description: string;
+  }) {
+    const sessionParams = {
+      harPath: args.harPath,
+      cookiePath: args.cookiePath,
+      prompt: `Generate TypeScript code for: ${args.description}`,
+    };
+
+    const sessionResult = await this.handleSessionStart(sessionParams);
+    const sessionContent = sessionResult.content?.[0]?.text;
+    if (typeof sessionContent !== "string") {
+      throw new Error("Invalid session result format");
+    }
+
+    const sessionData = JSON.parse(sessionContent);
+    return {
+      sessionId: sessionData.sessionId,
+      harValidation: sessionData.harValidation,
+    };
+  }
+
+  /**
+   * Process HAR validation and return early guidance if needed
+   */
+  private processHarValidation(
+    harValidation: HarValidationResult | undefined,
+    sessionId: string,
+    autoFix: boolean
+  ): {
+    shouldEarlyReturn: boolean;
+    result?: CallToolResult;
+    analysisSteps: string[];
+    warnings: string[];
+    recommendations: string[];
+  } {
+    const analysisSteps: string[] = [];
+    const warnings: string[] = [];
+    const recommendations: string[] = [];
+
+    if (!harValidation) {
+      return {
+        shouldEarlyReturn: false,
+        analysisSteps,
+        warnings,
+        recommendations,
+      };
+    }
+
+    analysisSteps.push(`✅ HAR file loaded: ${harValidation.quality} quality`);
+    analysisSteps.push(
+      `📊 Found ${harValidation.stats.relevantEntries} relevant requests`
+    );
+
+    if (harValidation.quality === "empty") {
+      return {
+        shouldEarlyReturn: true,
+        result: {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                success: false,
+                workflow: "analyze_har",
+                sessionId,
+                error: "HAR file is empty or unusable",
+                issues: harValidation.issues,
+                recommendations: [
+                  "🔄 Capture a new HAR file with more interactions",
+                  "📝 Ensure you complete forms or trigger API calls",
+                  "🌐 Try interacting with dynamic website features",
+                  ...(harValidation.recommendations || []).slice(0, 3),
+                ],
+                nextSteps: [
+                  "Use workflow_quick_capture to capture better data",
+                  "Ensure meaningful interactions are recorded",
+                  "Check that network recording was enabled",
+                ],
+              }),
+            },
+          ],
+          isError: true,
+        },
+        analysisSteps,
+        warnings,
+        recommendations,
+      };
+    }
+
+    if (harValidation.quality === "poor" && autoFix) {
+      warnings.push("HAR quality is poor, but proceeding with analysis");
+      recommendations.push(
+        "Consider capturing additional interactions for better results"
+      );
+    }
+
+    return {
+      shouldEarlyReturn: false,
+      analysisSteps,
+      warnings,
+      recommendations,
+    };
+  }
+
+  /**
+   * Perform the main workflow analysis and code generation
+   */
+  private async performWorkflowAnalysis(
+    sessionId: string,
+    args: { harPath: string; description: string; autoFix: boolean },
+    harValidation: HarValidationResult | undefined,
+    analysisSteps: string[],
+    warnings: string[],
+    recommendations: string[]
+  ): Promise<CallToolResult> {
+    try {
+      // Attempt initial analysis
+      const initialResult = await this.handleRunInitialAnalysis({ sessionId });
+      const initialContent = initialResult.content?.[0]?.text;
+
+      if (initialResult.isError || !initialContent) {
+        return this.formatAnalysisErrorResponse(
+          sessionId,
+          args,
+          harValidation,
+          "Initial analysis failed",
+          recommendations
+        );
+      }
+
+      const initialData = JSON.parse(initialContent as string);
+      analysisSteps.push(`🎯 Identified target URL: ${initialData.actionUrl}`);
+
+      // Process nodes iteratively
+      const processingResult = await this.processAnalysisNodes(
+        sessionId,
+        analysisSteps
+      );
+
+      if (processingResult.isComplete) {
+        return await this.generateAndReturnCode(
+          sessionId,
+          args,
+          harValidation,
+          analysisSteps,
+          warnings
+        );
+      }
+
+      return await this.formatIncompleteAnalysisResponse(
+        sessionId,
+        args,
+        harValidation,
+        analysisSteps,
+        warnings,
+        recommendations
+      );
+    } catch (analysisError) {
+      return this.formatAnalysisStartErrorResponse(
+        sessionId,
+        harValidation,
+        analysisError
+      );
+    }
+  }
+
+  /**
+   * Process analysis nodes iteratively
+   */
+  private async processAnalysisNodes(
+    sessionId: string,
+    analysisSteps: string[]
+  ) {
+    let iterations = 0;
+    const maxIterations = 10;
+    let isComplete = false;
+
+    while (!isComplete && iterations < maxIterations) {
+      try {
+        const completeResult = await this.handleIsComplete({ sessionId });
+        const completeContent = completeResult.content?.[0]?.text;
+
+        if (typeof completeContent === "string") {
+          const completeData = JSON.parse(completeContent);
+          isComplete = completeData.isComplete;
+        }
+
+        if (!isComplete) {
+          const processResult = await this.handleProcessNextNode({ sessionId });
+          const processContent = processResult.content?.[0]?.text;
+
+          if (typeof processContent === "string") {
+            const processData = JSON.parse(processContent);
+            if (processData.status === "no_nodes_to_process") {
+              break;
+            }
+            analysisSteps.push(`🔄 Processed node ${iterations + 1}`);
+          }
+        }
+
+        iterations++;
+      } catch (_processError) {
+        analysisSteps.push(
+          `⚠️ Processing iteration ${iterations + 1} had issues`
+        );
+        break;
+      }
+    }
+
+    return { isComplete };
+  }
+
+  /**
+   * Generate code and return successful response
+   */
+  private async generateAndReturnCode(
+    sessionId: string,
+    args: { description: string },
+    harValidation: HarValidationResult | undefined,
+    analysisSteps: string[],
+    warnings: string[]
+  ): Promise<CallToolResult> {
+    try {
+      const codeResult = await this.handleGenerateWrapperScript({ sessionId });
+      const codeContent = codeResult.content?.[0]?.text;
+
+      if (typeof codeContent === "string") {
+        analysisSteps.push(
+          `✅ Generated ${codeContent.length} characters of TypeScript code`
+        );
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                success: true,
+                workflow: "analyze_har",
+                sessionId,
+                description: args.description,
+                harQuality: harValidation?.quality,
+                analysisSteps,
+                warnings,
+                generatedCodeLength: codeContent.length,
+                message: "Analysis completed successfully",
+                code: codeContent,
+              }),
+            },
+          ],
+        };
+      }
+    } catch (_codeError) {
+      analysisSteps.push("❌ Code generation failed");
+    }
+
+    // Code generation failed, return incomplete response
+    return await this.formatIncompleteAnalysisResponse(
+      sessionId,
+      args as { description: string },
+      harValidation,
+      analysisSteps,
+      warnings,
+      []
+    );
+  }
+
+  /**
+   * Format response for incomplete analysis
+   */
+  private async formatIncompleteAnalysisResponse(
+    sessionId: string,
+    args: { description: string },
+    harValidation: HarValidationResult | undefined,
+    analysisSteps: string[],
+    warnings: string[],
+    recommendations: string[]
+  ): Promise<CallToolResult> {
+    const unresolvedResult = await this.handleGetUnresolvedNodes({ sessionId });
+    const unresolvedContent = unresolvedResult.content?.[0]?.text;
+    let unresolvedInfo = "Unknown";
+
+    if (typeof unresolvedContent === "string") {
+      const unresolvedData = JSON.parse(unresolvedContent);
+      unresolvedInfo = `${unresolvedData.totalUnresolved} unresolved nodes`;
+    }
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            success: false,
+            workflow: "analyze_har",
+            sessionId,
+            description: args.description,
+            harQuality: harValidation?.quality,
+            analysisSteps,
+            warnings,
+            error: "Analysis incomplete",
+            unresolvedInfo,
+            recommendations: [
+              "🔍 Use debug tools to investigate unresolved dependencies",
+              "📝 Try capturing a more complete workflow",
+              "🎯 Focus on the specific action you want to automate",
+              ...recommendations,
+            ],
+            debugSessionId: sessionId,
+          }),
+        },
+      ],
+      isError: true,
+    };
+  }
+
+  /**
+   * Format error response for failed analysis
+   */
+  private formatAnalysisErrorResponse(
+    sessionId: string,
+    args: { harPath: string; description: string; autoFix: boolean },
+    harValidation: HarValidationResult | undefined,
+    error: string,
+    recommendations: string[]
+  ): CallToolResult {
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            success: false,
+            workflow: "analyze_har",
+            sessionId,
+            error,
+            harQuality: harValidation?.quality,
+            issues: harValidation?.issues || [],
+            autoFixAttempted: args.autoFix,
+            recommendations: [
+              "🎯 Try workflow_quick_capture to get better HAR data",
+              "📋 Ensure your workflow includes form submissions or API calls",
+              "🔍 Use debug_list_all_requests to see what was captured",
+              ...recommendations,
+            ],
+            debugInfo: {
+              sessionId,
+              harPath: args.harPath,
+              description: args.description,
+            },
+          }),
+        },
+      ],
+      isError: true,
+    };
+  }
+
+  /**
+   * Format error response for analysis start failure
+   */
+  private formatAnalysisStartErrorResponse(
+    sessionId: string,
+    harValidation: HarValidationResult | undefined,
+    analysisError: unknown
+  ): CallToolResult {
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            success: false,
+            workflow: "analyze_har",
+            sessionId,
+            error: "Analysis failed to start",
+            message:
+              analysisError instanceof Error
+                ? analysisError.message
+                : "Unknown error",
+            harQuality: harValidation?.quality,
+            recommendations: [
+              "🎯 Use workflow_quick_capture for better data collection",
+              "📋 Ensure HAR file contains meaningful interactions",
+              "🔍 Check that the workflow completes successfully",
+            ],
+          }),
+        },
+      ],
+      isError: true,
+    };
+  }
+
+  /**
+   * Handle system_memory_status tool call
+   */
+  public async handleMemoryStatus(): Promise<CallToolResult> {
+    try {
+      const memoryStats = manualSessionManager.getMemoryStats();
+      const analysisSessionsCount =
+        this.sessionManager.getStats().totalSessions;
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              success: true,
+              timestamp: new Date().toISOString(),
+              memory: {
+                current: {
+                  heapUsed: this.formatFileSize(memoryStats.current.heapUsed),
+                  heapTotal: this.formatFileSize(memoryStats.current.heapTotal),
+                  external: this.formatFileSize(memoryStats.current.external),
+                },
+                peak: {
+                  heapUsed: this.formatFileSize(memoryStats.peak.heapUsed),
+                  heapTotal: this.formatFileSize(memoryStats.peak.heapTotal),
+                },
+                average: {
+                  heapUsed: this.formatFileSize(memoryStats.average.heapUsed),
+                },
+                snapshotCount: memoryStats.snapshotCount,
+              },
+              sessions: {
+                manualSessions: memoryStats.activeSessions,
+                analysisSessions: analysisSessionsCount,
+                totalSessions:
+                  memoryStats.activeSessions + analysisSessionsCount,
+              },
+              leakDetection: memoryStats.leakDetection,
+              recommendations: this.generateMemoryRecommendations(memoryStats),
+              status: this.getMemoryStatus(memoryStats.current.heapUsed),
+            }),
+          },
+        ],
+      };
+    } catch (error) {
+      throw new HarvestError(
+        `Failed to get memory status: ${error instanceof Error ? error.message : "Unknown error"}`,
+        "MEMORY_STATUS_FAILED",
+        { originalError: error }
+      );
+    }
+  }
+
+  /**
+   * Handle system_cleanup tool call
+   */
+  public async handleSystemCleanup(args: unknown): Promise<CallToolResult> {
+    try {
+      const argsObj = args as { aggressive: boolean };
+
+      const beforeStats = manualSessionManager.getMemoryStats();
+      const beforeMemory = beforeStats.current.heapUsed;
+
+      let cleanupResult: CleanupResult;
+
+      if (argsObj.aggressive) {
+        cleanupResult = manualSessionManager.performAggressiveCleanup();
+      } else {
+        cleanupResult = manualSessionManager.performCleanup();
+      }
+
+      const afterStats = manualSessionManager.getMemoryStats();
+      const afterMemory = afterStats.current.heapUsed;
+      const totalReclaimed = beforeMemory - afterMemory;
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              success: true,
+              cleanupType: argsObj.aggressive ? "aggressive" : "standard",
+              timestamp: new Date().toISOString(),
+              results: {
+                ...cleanupResult,
+                totalMemoryReclaimed: this.formatFileSize(totalReclaimed),
+                memoryBefore: this.formatFileSize(beforeMemory),
+                memoryAfter: this.formatFileSize(afterMemory),
+              },
+              newMemoryStatus: this.getMemoryStatus(afterMemory),
+              message: argsObj.aggressive
+                ? "Aggressive cleanup completed"
+                : "Standard cleanup completed",
+            }),
+          },
+        ],
+      };
+    } catch (error) {
+      throw new HarvestError(
+        `Failed to perform system cleanup: ${error instanceof Error ? error.message : "Unknown error"}`,
+        "SYSTEM_CLEANUP_FAILED",
+        { originalError: error }
+      );
+    }
+  }
+
+  /**
+   * Generate memory usage recommendations
+   */
+  private generateMemoryRecommendations(
+    memoryStats: ReturnType<typeof manualSessionManager.getMemoryStats>
+  ): string[] {
+    const recommendations: string[] = [];
+    const currentMemoryMB = memoryStats.current.heapUsed / (1024 * 1024);
+
+    if (currentMemoryMB > 500) {
+      recommendations.push(
+        "🔴 High memory usage detected - consider using system_cleanup"
+      );
+    } else if (currentMemoryMB > 300) {
+      recommendations.push(
+        "🟡 Moderate memory usage - monitor for continued growth"
+      );
+    } else {
+      recommendations.push("🟢 Memory usage is within normal range");
+    }
+
+    if (memoryStats.activeSessions > 5) {
+      recommendations.push(
+        "📊 Many active sessions - consider closing unused sessions"
+      );
+    }
+
+    if (memoryStats.leakDetection.isLeaking) {
+      recommendations.push(
+        `⚠️ Memory leak detected: ${memoryStats.leakDetection.recommendation}`
+      );
+    }
+
+    if (memoryStats.snapshotCount > 100) {
+      recommendations.push("🗑️ Many memory snapshots - cleanup may help");
+    }
+
+    return recommendations;
+  }
+
+  /**
+   * Get memory status classification
+   */
+  private getMemoryStatus(
+    heapUsed: number
+  ): "healthy" | "moderate" | "high" | "critical" {
+    const memoryMB = heapUsed / (1024 * 1024);
+
+    if (memoryMB > 800) {
+      return "critical";
+    }
+    if (memoryMB > 500) {
+      return "high";
+    }
+    if (memoryMB > 300) {
+      return "moderate";
+    }
+    return "healthy";
   }
 
   /**

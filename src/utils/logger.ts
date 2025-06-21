@@ -6,16 +6,21 @@
 import pino from "pino";
 
 // Determine if we're running in MCP mode (stdio transport)
-// Default to MCP mode for safety - ensures logs don't interfere with JSON-RPC
+// MCP mode should only be enabled when explicitly requested or when stdout is not a TTY
+// but NOT during tests, which should use minimal logging
+const isTestMode = process.env.NODE_ENV === "test";
 const isMcpMode =
-  process.env.MCP_STDIO === "true" ||
-  process.argv.includes("--stdio") ||
-  process.env.NODE_ENV !== "development" ||
-  !process.stdout.isTTY;
+  !isTestMode &&
+  (process.env.MCP_STDIO === "true" ||
+    process.argv.includes("--stdio") ||
+    (process.env.NODE_ENV !== "development" && !process.stdout.isTTY));
 
 // Create the base logger with harvest-mcp specific configuration
 const loggerOptions: Record<string, unknown> = {
-  level: process.env.HARVEST_LOG_LEVEL || process.env.LOG_LEVEL || "info",
+  level:
+    process.env.HARVEST_LOG_LEVEL ||
+    process.env.LOG_LEVEL ||
+    (isTestMode ? "warn" : "info"),
   name: "harvest-mcp",
 };
 
@@ -41,6 +46,10 @@ if (isMcpMode) {
     },
     "MCP mode detection details"
   );
+} else if (isTestMode) {
+  // Test mode: Minimal logging to avoid cluttering test output
+  // Use stderr to avoid interfering with test framework output
+  logger = pino(loggerOptions, pino.destination(2));
 } else if (process.env.NODE_ENV === "development") {
   // Development mode: use pino-pretty for readable output
   const prettyTransport = pino.transport({

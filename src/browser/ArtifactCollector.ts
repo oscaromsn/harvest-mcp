@@ -16,7 +16,9 @@ export interface HarEntry {
   request: {
     method: string;
     url: string;
+    httpVersion: string;
     headers: Array<{ name: string; value: string }>;
+    cookies: Array<{ name: string; value: string }>;
     postData?:
       | {
           mimeType: string;
@@ -27,7 +29,9 @@ export interface HarEntry {
   response: {
     status: number;
     statusText: string;
+    httpVersion: string;
     headers: Array<{ name: string; value: string }>;
+    cookies: Array<{ name: string; value: string }>;
     content: {
       size: number;
       mimeType: string;
@@ -123,10 +127,12 @@ export class ArtifactCollector {
           request: {
             method: request.method(),
             url: request.url(),
+            httpVersion: "HTTP/1.1", // Default to HTTP/1.1 since Playwright doesn't always expose this
             headers: Object.entries(request.headers()).map(([name, value]) => ({
               name,
               value,
             })),
+            cookies: [], // TODO: Extract cookies from headers if needed
             postData: request.postData()
               ? {
                   mimeType:
@@ -140,7 +146,9 @@ export class ArtifactCollector {
           response: {
             status: 0,
             statusText: "",
+            httpVersion: "HTTP/1.1",
             headers: [],
+            cookies: [],
             content: {
               size: 0,
               mimeType: "",
@@ -174,12 +182,14 @@ export class ArtifactCollector {
           harEntry.response = {
             status: response.status(),
             statusText: response.statusText(),
+            httpVersion: "HTTP/1.1", // Default to HTTP/1.1 since Playwright doesn't always expose this
             headers: Object.entries(response.headers()).map(
               ([name, value]) => ({
                 name,
                 value,
               })
             ),
+            cookies: [], // TODO: Extract cookies from set-cookie headers if needed
             content: {
               size: Number.parseInt(
                 response.headers()["content-length"] || "0",
@@ -204,7 +214,6 @@ export class ArtifactCollector {
 
       logBrowserOperation("network_tracking_started", {
         url: page.url(),
-        title: page.title(),
       });
     } catch (error) {
       logBrowserError(error as Error, {
@@ -251,12 +260,15 @@ export class ArtifactCollector {
         outputPath,
       });
 
-      // Get page title if available
+      // Get page title if available (safely handle destroyed contexts)
       let pageTitle = "Session";
       if (this.currentPage) {
         try {
-          const title = this.currentPage.title();
-          pageTitle = typeof title === "string" ? title : await title;
+          // Check if the page context is still alive before getting title
+          if (!this.currentPage.isClosed()) {
+            const title = await this.currentPage.title();
+            pageTitle = typeof title === "string" && title ? title : "Session";
+          }
         } catch {
           pageTitle = "Session";
         }
@@ -266,7 +278,7 @@ export class ArtifactCollector {
         log: {
           version: "1.2",
           creator: {
-            name: "Harvest MCP Browser Agent",
+            name: "harvest-mcp",
             version: "1.0.0",
           },
           pages: [

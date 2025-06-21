@@ -69,12 +69,236 @@ const EXCLUDED_HEADER_KEYWORDS = [
 ];
 
 /**
- * Parse a HAR file and extract relevant request data
+ * Check if a request is an API request based on URL patterns and headers
  */
-export async function parseHARFile(harPath: string): Promise<ParsedHARData> {
+function isApiRequest(request: HarRequest, response: HarResponse): boolean {
+  return (
+    request.url.includes("/api/") ||
+    request.url.includes("/v1/") ||
+    request.url.includes("/v2/") ||
+    response?.headers?.some(
+      (h: HarHeader) =>
+        h.name?.toLowerCase() === "content-type" &&
+        h.value?.includes("application/json")
+    )
+  );
+}
+
+/**
+ * Check if a request is a modifying operation (POST, PUT, DELETE, PATCH)
+ */
+function isModifyingRequest(request: HarRequest): boolean {
+  return ["POST", "PUT", "DELETE", "PATCH"].includes(
+    request.method?.toUpperCase() || ""
+  );
+}
+
+interface HARStats {
+  totalEntries: number;
+  relevantEntries: number;
+  apiRequests: number;
+  postRequests: number;
+  responsesWithContent: number;
+}
+
+/**
+ * Assess quality based on captured statistics
+ */
+function assessQuality(
+  stats: HARStats
+): "excellent" | "good" | "poor" | "empty" {
+  if (stats.relevantEntries === 0) {
+    return "empty";
+  }
+  if (stats.apiRequests >= 3 || stats.postRequests >= 2) {
+    return "excellent";
+  }
+  if (stats.relevantEntries >= 5 || stats.apiRequests >= 1) {
+    return "good";
+  }
+  return "poor";
+}
+
+/**
+ * Add quality-specific recommendations
+ */
+function addQualityRecommendations(
+  quality: string,
+  _stats: HARStats,
+  issues: string[],
+  recommendations: string[]
+): void {
+  if (quality === "empty") {
+    issues.push(
+      "No relevant network requests found (only tracking/analytics requests)"
+    );
+    recommendations.push(
+      "Try interacting more with the website's main functionality"
+    );
+    recommendations.push(
+      "Look for forms to submit, buttons to click, or data to load"
+    );
+  } else if (quality === "poor") {
+    issues.push("Very few meaningful requests captured");
+    recommendations.push(
+      "Try to capture more interactions like form submissions or data loading"
+    );
+    recommendations.push(
+      "Ensure you complete the full workflow you want to automate"
+    );
+  }
+}
+
+/**
+ * Add specific recommendations based on request analysis
+ */
+function addSpecificRecommendations(
+  stats: HARStats,
+  quality: string,
+  recommendations: string[]
+): void {
+  if (stats.apiRequests === 0 && quality !== "empty") {
+    recommendations.push(
+      "No API requests detected - try looking for data loading or AJAX calls"
+    );
+  }
+
+  if (stats.postRequests === 0 && quality !== "empty") {
+    recommendations.push(
+      "No POST requests found - try submitting forms or creating/updating data"
+    );
+  }
+
+  if (stats.responsesWithContent === 0 && quality !== "empty") {
+    recommendations.push(
+      "No response content captured - check if responses contain meaningful data"
+    );
+  }
+}
+
+/**
+ * Validate HAR file content quality and provide actionable feedback
+ */
+export function validateHARContent(harData: Har): {
+  isValid: boolean;
+  quality: "excellent" | "good" | "poor" | "empty";
+  issues: string[];
+  recommendations: string[];
+  stats: {
+    totalEntries: number;
+    relevantEntries: number;
+    apiRequests: number;
+    postRequests: number;
+    responsesWithContent: number;
+  };
+} {
+  const issues: string[] = [];
+  const recommendations: string[] = [];
+  const entries = harData.log?.entries || [];
+
+  const stats = {
+    totalEntries: entries.length,
+    relevantEntries: 0,
+    apiRequests: 0,
+    postRequests: 0,
+    responsesWithContent: 0,
+  };
+
+  // Basic structure validation
+  if (!harData.log) {
+    issues.push("HAR file is missing 'log' property");
+    return {
+      isValid: false,
+      quality: "empty",
+      issues,
+      recommendations: [
+        "Please ensure you're exporting a valid HAR file from browser dev tools",
+      ],
+      stats,
+    };
+  }
+
+  if (entries.length === 0) {
+    issues.push("HAR file contains no network requests");
+    recommendations.push(
+      "Ensure you interact with the website to generate network traffic before exporting HAR"
+    );
+    recommendations.push(
+      "Check that network recording was enabled in browser dev tools"
+    );
+    return {
+      isValid: false,
+      quality: "empty",
+      issues,
+      recommendations,
+      stats,
+    };
+  }
+
+  // Analyze request quality
+  for (const entry of entries) {
+    const request = entry.request;
+    const response = entry.response;
+
+    if (!request?.url) {
+      continue;
+    }
+
+    // Skip excluded requests for quality analysis
+    if (shouldExcludeRequest(request.url)) {
+      continue;
+    }
+
+    stats.relevantEntries++;
+
+    // Check for API-like requests
+    if (isApiRequest(request, response)) {
+      stats.apiRequests++;
+    }
+
+    // Check for POST/PUT/DELETE requests (more likely to be meaningful)
+    if (isModifyingRequest(request)) {
+      stats.postRequests++;
+    }
+
+    // Check for responses with meaningful content
+    if (response?.content?.text && response.content.text.length > 0) {
+      stats.responsesWithContent++;
+    }
+  }
+
+  // Quality assessment
+  const quality = assessQuality(stats);
+
+  // Add quality-specific recommendations
+  addQualityRecommendations(quality, stats, issues, recommendations);
+
+  // Add specific recommendations based on findings
+  addSpecificRecommendations(stats, quality, recommendations);
+
+  return {
+    isValid: stats.relevantEntries > 0,
+    quality,
+    issues,
+    recommendations,
+    stats,
+  };
+}
+
+/**
+ * Parse a HAR file and extract relevant request data with validation
+ */
+export async function parseHARFile(harPath: string): Promise<
+  ParsedHARData & {
+    validation: ReturnType<typeof validateHARContent>;
+  }
+> {
   try {
     const harContent = await readFile(harPath, "utf-8");
     const harData = JSON.parse(harContent) as Har;
+
+    // Validate HAR content quality
+    const validation = validateHARContent(harData);
 
     if (!harData.log || !harData.log.entries) {
       throw new Error("Invalid HAR file format: missing log.entries");
@@ -97,8 +321,13 @@ export async function parseHARFile(harPath: string): Promise<ParsedHARData> {
         continue;
       }
 
-      // Parse request
+      // Parse request with timestamp from entry
       const requestModel = formatRequest(request);
+
+      // Add timestamp from entry
+      if (entry.startedDateTime) {
+        requestModel.timestamp = new Date(entry.startedDateTime);
+      }
 
       // Add response data if available
       if (response) {
@@ -122,6 +351,7 @@ export async function parseHARFile(harPath: string): Promise<ParsedHARData> {
     return {
       requests: filteredRequests,
       urls: extractURLs(urls),
+      validation,
     };
   } catch (error) {
     throw new Error(

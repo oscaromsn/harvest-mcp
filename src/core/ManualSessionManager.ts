@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ArtifactCollector } from "../browser/ArtifactCollector.js";
 import type {
   Artifact,
+  ManualBrowserAgent,
   ManualSession,
   SessionConfig,
   BrowserSessionInfo as SessionInfo,
@@ -11,11 +13,11 @@ import type {
 import { logger } from "../utils/logger.js";
 import {
   MemoryMonitor,
+  type MemorySnapshot,
   type MemoryUsage,
   memoryMonitor,
 } from "../utils/memoryMonitor.js";
 import { getSafeOutputDirectory } from "../utils/pathUtils.js";
-import { artifactCollector } from "./ArtifactCollector.js";
 import {
   type BrowserAgentConfig,
   browserAgentFactory,
@@ -38,6 +40,9 @@ export class ManualSessionManager {
     // Global cleanup handler for process termination
     process.on("SIGINT", () => this.cleanupAllSessions());
     process.on("SIGTERM", () => this.cleanupAllSessions());
+
+    // Set up periodic health monitoring and cleanup
+    setInterval(() => this.performPeriodicMaintenance(), 2 * 60 * 1000); // Every 2 minutes
   }
 
   static getInstance(): ManualSessionManager {
@@ -73,9 +78,9 @@ export class ManualSessionManager {
         sessionId
       );
 
-      // Create browser agent with manual-friendly defaults
+      // Create browser agent with manual-friendly defaults (no URL navigation yet)
       const agentConfig: BrowserAgentConfig = {
-        ...(config.url && { url: config.url }),
+        // Don't include URL here - we'll navigate after setting up network tracking
         headless: config.browserOptions?.headless ?? false, // Default to visible for manual interaction
         viewport: {
           width: config.browserOptions?.viewport?.width ?? 1280,
@@ -93,17 +98,32 @@ export class ManualSessionManager {
       // Create agent adapter for ManualSession interface compatibility
       const agent = coreAgent;
 
+      // Create artifact collector instance for this session
+      const artifactCollector = new ArtifactCollector();
+
       // Start network tracking for HAR collection if enabled
       if (config.artifactConfig?.enabled !== false) {
         logger.info(
           `[ManualSessionManager] Starting network tracking for session: ${sessionId}`
         );
-        artifactCollector.startNetworkTracking(agent.context, agent.page);
+        artifactCollector.startNetworkTracking(agent.page);
       }
 
-      // Get initial page state
-      const currentUrl = agent.page.url();
-      const pageTitle = await agent.page.title().catch(() => "Unknown");
+      // Navigate to URL after network tracking is set up (if provided)
+      let currentUrl = agent.page.url();
+      let pageTitle = "Unknown";
+
+      if (config.url) {
+        logger.info(
+          `[ManualSessionManager] Navigating to URL after setting up tracking: ${config.url}`
+        );
+        await agent.page.goto(config.url, { waitUntil: "networkidle" });
+        currentUrl = agent.page.url();
+        pageTitle = await agent.page.title().catch(() => "Unknown");
+      } else {
+        // Get current page state if no navigation needed
+        pageTitle = await agent.page.title().catch(() => "Unknown");
+      }
 
       // Create session object
       const session: ManualSession = {
@@ -113,6 +133,7 @@ export class ManualSessionManager {
         config,
         outputDir,
         artifacts: [],
+        artifactCollector, // Store collector instance with session
         metadata: {
           currentUrl,
           pageTitle,
@@ -193,6 +214,166 @@ export class ManualSessionManager {
   }
 
   /**
+   * Get final page state safely
+   */
+  private async getFinalPageState(
+    session: ManualSession,
+    sessionId: string
+  ): Promise<{
+    finalUrl: string;
+    finalPageTitle: string;
+  }> {
+    let finalUrl = "Unknown";
+    let finalPageTitle = "Unknown";
+
+    try {
+      finalUrl = session.agent.page.url();
+      finalPageTitle = await session.agent.page.title().catch(() => "Unknown");
+    } catch (error) {
+      logger.warn(
+        `[ManualSessionManager] Could not get final page state for ${sessionId}: ${error}`
+      );
+    }
+
+    return { finalUrl, finalPageTitle };
+  }
+
+  /**
+   * Handle final screenshot if requested
+   */
+  private async handleFinalScreenshot(
+    sessionId: string,
+    session: ManualSession,
+    options: { takeScreenshot?: boolean }
+  ): Promise<void> {
+    if (
+      options.takeScreenshot !== false &&
+      (options.takeScreenshot === true ||
+        session.config.artifactConfig?.saveScreenshots !== false)
+    ) {
+      try {
+        await this.takeSessionScreenshot(sessionId);
+      } catch (error) {
+        logger.warn(
+          `[ManualSessionManager] Failed to take final screenshot for ${sessionId}: ${error}`
+        );
+      }
+    }
+  }
+
+  /**
+   * Collect artifacts for live session
+   */
+  private async collectLiveSessionArtifacts(
+    session: ManualSession,
+    sessionId: string,
+    options: { artifactTypes?: ("har" | "cookies" | "screenshot")[] }
+  ): Promise<Artifact[]> {
+    let artifacts: Artifact[] = [];
+
+    if (session.config.artifactConfig?.enabled !== false) {
+      logger.info(
+        `[ManualSessionManager] Collecting artifacts for session: ${sessionId}`
+      );
+
+      try {
+        session.artifactCollector.stopNetworkTracking();
+
+        const artifactCollection =
+          await session.artifactCollector.collectAllArtifacts(
+            session.agent.page,
+            session.agent.context,
+            session.outputDir
+          );
+        artifacts = artifactCollection.artifacts;
+
+        // Filter artifacts by type if specified
+        if (options.artifactTypes && options.artifactTypes.length > 0) {
+          artifacts = artifacts.filter((artifact) =>
+            options.artifactTypes?.includes(
+              artifact.type as "har" | "cookies" | "screenshot"
+            )
+          );
+        }
+      } catch (error) {
+        logger.warn(
+          `[ManualSessionManager] Failed to collect artifacts for ${sessionId}: ${error}`
+        );
+      }
+    }
+
+    return artifacts;
+  }
+
+  /**
+   * Collect artifacts for closed session
+   */
+  private async collectClosedSessionArtifacts(
+    session: ManualSession,
+    sessionId: string
+  ): Promise<Artifact[]> {
+    let artifacts: Artifact[] = [];
+
+    if (session.config.artifactConfig?.enabled !== false) {
+      try {
+        const harEntryCount = session.artifactCollector.getHarEntryCount();
+        logger.info(
+          `[ManualSessionManager] Session ${sessionId} had ${harEntryCount} HAR entries before closure`
+        );
+        artifacts = session.artifacts || [];
+      } catch (error) {
+        logger.warn(
+          `[ManualSessionManager] Could not access session artifacts: ${error}`
+        );
+      }
+    }
+
+    return artifacts;
+  }
+
+  /**
+   * Perform session cleanup and memory monitoring
+   */
+  private async performSessionCleanup(
+    session: ManualSession,
+    sessionId: string,
+    duration: number,
+    _artifacts: Artifact[],
+    preStopSnapshot: MemorySnapshot
+  ): Promise<void> {
+    // Update session metadata
+    session.metadata.sessionDuration = duration;
+
+    // Clean up browser agent gracefully
+    await this.gracefulAgentCleanup(session.agent, sessionId);
+
+    // Clean up timers
+    this.cleanupSessionTimers(sessionId);
+
+    // Remove from active sessions
+    this.activeSessions.delete(sessionId);
+
+    // Take memory snapshot after cleanup
+    const postStopSnapshot = memoryMonitor.takeSnapshot(
+      sessionId,
+      "session_stop_complete"
+    );
+    const memoryReclaimed =
+      preStopSnapshot.usage.heapUsed - postStopSnapshot.usage.heapUsed;
+    logger.info(
+      `[ManualSessionManager] Memory after session stop: ${MemoryMonitor.formatMemorySize(postStopSnapshot.usage.heapUsed)} (reclaimed: ${MemoryMonitor.formatMemorySize(memoryReclaimed)})`
+    );
+
+    // Check for memory leaks
+    const leakDetection = memoryMonitor.detectMemoryLeaks();
+    if (leakDetection.isLeaking) {
+      logger.warn(
+        `[ManualSessionManager] Potential memory leak detected: ${leakDetection.recommendation}`
+      );
+    }
+  }
+
+  /**
    * Stop a manual browser session and collect artifacts
    */
   async stopSession(
@@ -225,81 +406,54 @@ export class ManualSessionManager {
     );
 
     try {
-      // Get final page state
-      const finalUrl = session.agent.page.url();
-      const finalPageTitle = await session.agent.page
-        .title()
-        .catch(() => "Unknown");
-
-      // Take final screenshot if requested or if screenshots are enabled
-      if (
-        options.takeScreenshot !== false &&
-        (options.takeScreenshot === true ||
-          session.config.artifactConfig?.saveScreenshots !== false)
-      ) {
-        await this.takeSessionScreenshot(sessionId);
-      }
-
-      // Collect artifacts if enabled
+      // Check if browser/page is still alive before proceeding
+      const isPageAlive = await this.checkPageHealth(session);
+      let finalUrl = "Unknown";
+      let finalPageTitle = "Unknown";
       let artifacts: Artifact[] = [];
-      if (session.config.artifactConfig?.enabled !== false) {
-        logger.info(
-          `[ManualSessionManager] Collecting artifacts for session: ${sessionId}`
+
+      if (isPageAlive) {
+        // Get final page state safely
+        const pageState = await this.getFinalPageState(session, sessionId);
+        finalUrl = pageState.finalUrl;
+        finalPageTitle = pageState.finalPageTitle;
+
+        // Take final screenshot if requested
+        await this.handleFinalScreenshot(sessionId, session, options);
+
+        // Collect artifacts for live session
+        artifacts = await this.collectLiveSessionArtifacts(
+          session,
+          sessionId,
+          options
+        );
+      } else {
+        logger.warn(
+          `[ManualSessionManager] Browser/page already closed for session ${sessionId}, skipping state collection`
         );
 
-        const artifactCollection = await artifactCollector.collectFromAgent(
-          session.agent,
-          session.outputDir,
-          `Manual Session ${sessionId}`,
-          session.config.artifactConfig || {}
+        // Collect artifacts for closed session
+        artifacts = await this.collectClosedSessionArtifacts(
+          session,
+          sessionId
         );
-        artifacts = artifactCollection.artifacts;
-
-        // Filter artifacts by type if specified
-        if (options.artifactTypes && options.artifactTypes.length > 0) {
-          artifacts = artifacts.filter((artifact) =>
-            options.artifactTypes?.includes(
-              artifact.type as "har" | "cookies" | "screenshot"
-            )
-          );
-        }
       }
 
-      // Update session metadata
-      session.metadata.sessionDuration = duration;
+      // Update session metadata with final state
       session.metadata.currentUrl = finalUrl;
       session.metadata.pageTitle = finalPageTitle;
 
       // Generate session summary
       const summary = this.generateSessionSummary(session, duration, artifacts);
 
-      // Clean up browser agent
-      await session.agent.stop();
-
-      // Clean up timers
-      this.cleanupSessionTimers(sessionId);
-
-      // Remove from active sessions
-      this.activeSessions.delete(sessionId);
-
-      // Take memory snapshot after cleanup
-      const postStopSnapshot = memoryMonitor.takeSnapshot(
+      // Perform cleanup and memory monitoring
+      await this.performSessionCleanup(
+        session,
         sessionId,
-        "session_stop_complete"
+        duration,
+        artifacts,
+        preStopSnapshot
       );
-      const memoryReclaimed =
-        preStopSnapshot.usage.heapUsed - postStopSnapshot.usage.heapUsed;
-      logger.info(
-        `[ManualSessionManager] Memory after session stop: ${MemoryMonitor.formatMemorySize(postStopSnapshot.usage.heapUsed)} (reclaimed: ${MemoryMonitor.formatMemorySize(memoryReclaimed)})`
-      );
-
-      // Check for memory leaks
-      const leakDetection = memoryMonitor.detectMemoryLeaks();
-      if (leakDetection.isLeaking) {
-        logger.warn(
-          `[ManualSessionManager] Potential memory leak detected: ${leakDetection.recommendation}`
-        );
-      }
 
       logger.info(
         `[ManualSessionManager] Session stopped successfully: ${sessionId}`
@@ -325,23 +479,15 @@ export class ManualSessionManager {
         `[ManualSessionManager] Error stopping session ${sessionId}: ${errorMessage}`
       );
 
-      // Still try to clean up
-      try {
-        await session.agent.stop();
-        this.cleanupSessionTimers(sessionId);
-        this.activeSessions.delete(sessionId);
-      } catch (cleanupError) {
-        logger.error(
-          `[ManualSessionManager] Error during cleanup: ${cleanupError}`
-        );
-      }
+      // Perform emergency cleanup
+      await this.emergencySessionCleanup(session, sessionId);
 
       throw new Error(`Failed to stop session: ${errorMessage}`);
     }
   }
 
   /**
-   * Get information about an active session
+   * Get information about an active session with health check
    */
   getSessionInfo(sessionId: string): SessionInfo | null {
     const session = this.activeSessions.get(sessionId);
@@ -361,6 +507,220 @@ export class ManualSessionManager {
       artifactConfig: session.config.artifactConfig,
       instructions: this.generateSessionInstructions(sessionId, session.config),
     };
+  }
+
+  /**
+   * Perform health check on a session
+   */
+  async checkSessionHealth(sessionId: string): Promise<{
+    isHealthy: boolean;
+    issues: string[];
+    recommendations: string[];
+    metrics: {
+      duration: number;
+      memoryUsage?: number;
+      pageResponsive: boolean;
+      browserConnected: boolean;
+    };
+  }> {
+    const session = this.activeSessions.get(sessionId);
+    if (!session) {
+      return {
+        isHealthy: false,
+        issues: ["Session not found"],
+        recommendations: [
+          "Check if session ID is correct or if session was already stopped",
+        ],
+        metrics: {
+          duration: 0,
+          pageResponsive: false,
+          browserConnected: false,
+        },
+      };
+    }
+
+    const issues: string[] = [];
+    const recommendations: string[] = [];
+    const duration = Date.now() - session.startTime;
+
+    // Check if browser/page is responsive
+    const pageResponsive = await this.checkPageHealth(session);
+    if (!pageResponsive) {
+      issues.push("Browser page is not responsive");
+      recommendations.push(
+        "Consider restarting the session if browser was closed manually"
+      );
+    }
+
+    // Check browser connection
+    let browserConnected = false;
+    try {
+      browserConnected = session.agent.browser?.isConnected() ?? false;
+    } catch (_error) {
+      issues.push("Cannot determine browser connection status");
+    }
+
+    if (!browserConnected) {
+      issues.push("Browser is disconnected");
+      recommendations.push("Browser may have crashed or been closed manually");
+    }
+
+    // Check session duration
+    const maxDuration = (session.config.timeout || 60) * 60 * 1000; // Convert to ms
+    if (session.config.timeout && duration > maxDuration) {
+      issues.push("Session has exceeded configured timeout");
+      recommendations.push("Session will be auto-cleaned up soon");
+    }
+
+    // Check memory usage if available
+    let memoryUsage: number | undefined;
+    try {
+      const memoryStats = this.getSessionMemoryUsage(sessionId);
+      if (memoryStats && memoryStats.length > 0) {
+        const lastSnapshot = memoryStats[memoryStats.length - 1];
+        if (lastSnapshot) {
+          memoryUsage = lastSnapshot.usage.heapUsed;
+        }
+
+        // Check for excessive memory usage (>500MB)
+        if (memoryUsage && memoryUsage > 500 * 1024 * 1024) {
+          issues.push("High memory usage detected");
+          recommendations.push(
+            "Consider stopping and restarting the session to free memory"
+          );
+        }
+      }
+    } catch (_error) {
+      // Memory monitoring is optional
+    }
+
+    const isHealthy = issues.length === 0;
+
+    return {
+      isHealthy,
+      issues,
+      recommendations,
+      metrics: {
+        duration,
+        ...(memoryUsage !== undefined && { memoryUsage }),
+        pageResponsive,
+        browserConnected,
+      },
+    };
+  }
+
+  /**
+   * Attempt to recover an unhealthy session
+   */
+  async recoverSession(sessionId: string): Promise<{
+    success: boolean;
+    actions: string[];
+    newIssues: string[];
+  }> {
+    const session = this.activeSessions.get(sessionId);
+    if (!session) {
+      return {
+        success: false,
+        actions: [],
+        newIssues: ["Session not found"],
+      };
+    }
+
+    const actions: string[] = [];
+    const newIssues: string[] = [];
+
+    logger.info(
+      `[ManualSessionManager] Attempting to recover session: ${sessionId}`
+    );
+
+    try {
+      // Check current health
+      const healthCheck = await this.checkSessionHealth(sessionId);
+
+      if (healthCheck.isHealthy) {
+        return {
+          success: true,
+          actions: ["Session is already healthy"],
+          newIssues: [],
+        };
+      }
+
+      // Try to refresh the page if it's unresponsive
+      if (
+        !healthCheck.metrics.pageResponsive &&
+        healthCheck.metrics.browserConnected
+      ) {
+        try {
+          await session.agent.page.reload({
+            waitUntil: "domcontentloaded",
+            timeout: 10000,
+          });
+          actions.push("Refreshed unresponsive page");
+
+          // Update metadata
+          session.metadata.currentUrl = session.agent.page.url();
+          session.metadata.pageTitle = await session.agent.page
+            .title()
+            .catch(() => "Unknown");
+        } catch (error) {
+          newIssues.push(`Failed to refresh page: ${error}`);
+        }
+      }
+
+      // Force garbage collection if memory usage is high
+      if (
+        healthCheck.metrics.memoryUsage &&
+        healthCheck.metrics.memoryUsage > 300 * 1024 * 1024
+      ) {
+        try {
+          this.performCleanup();
+          actions.push("Performed memory cleanup");
+        } catch (error) {
+          newIssues.push(`Memory cleanup failed: ${error}`);
+        }
+      }
+
+      // If browser is disconnected, we can't recover - suggest restart
+      if (!healthCheck.metrics.browserConnected) {
+        newIssues.push("Browser disconnected - session needs to be restarted");
+        return {
+          success: false,
+          actions,
+          newIssues,
+        };
+      }
+
+      // Verify recovery
+      const postRecoveryHealth = await this.checkSessionHealth(sessionId);
+      const success =
+        postRecoveryHealth.issues.length < healthCheck.issues.length;
+
+      if (!success) {
+        newIssues.push(...postRecoveryHealth.issues);
+      }
+
+      logger.info(
+        `[ManualSessionManager] Recovery attempt for ${sessionId}: ${success ? "successful" : "failed"}`
+      );
+
+      return {
+        success,
+        actions,
+        newIssues,
+      };
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      logger.error(
+        `[ManualSessionManager] Recovery failed for ${sessionId}: ${errorMessage}`
+      );
+
+      return {
+        success: false,
+        actions,
+        newIssues: [`Recovery process failed: ${errorMessage}`],
+      };
+    }
   }
 
   /**
@@ -392,10 +752,14 @@ export class ManualSessionManager {
     }
 
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const artifact = await artifactCollector.takeScreenshot(
-      session.agent.page,
+    const screenshotPath = join(
       session.outputDir,
       `manual-screenshot-${timestamp}.png`
+    );
+
+    const artifact = await session.artifactCollector.captureScreenshot(
+      session.agent.page,
+      screenshotPath
     );
 
     session.artifacts.push(artifact);
@@ -544,6 +908,97 @@ export class ManualSessionManager {
   }
 
   /**
+   * Check if a browser page is still alive and responsive
+   */
+  private async checkPageHealth(session: ManualSession): Promise<boolean> {
+    try {
+      // Quick check if the page is still accessible
+      if (!session.agent.page || session.agent.page.isClosed()) {
+        return false;
+      }
+
+      // Try a simple operation with timeout to check responsiveness
+      await session.agent.page.evaluate(
+        () =>
+          (
+            globalThis as typeof globalThis & {
+              document?: { readyState?: string };
+            }
+          ).document?.readyState || "loading",
+        { timeout: 2000 }
+      );
+      return true;
+    } catch (error) {
+      logger.debug(`[ManualSessionManager] Page health check failed: ${error}`);
+      return false;
+    }
+  }
+
+  /**
+   * Gracefully clean up browser agent with fallbacks
+   */
+  private async gracefulAgentCleanup(
+    agent: ManualBrowserAgent,
+    sessionId: string
+  ): Promise<void> {
+    const cleanupTimeout = 5000; // 5 seconds timeout for cleanup
+
+    try {
+      // Try graceful cleanup with timeout
+      await Promise.race([
+        agent.stop(),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("Cleanup timeout")), cleanupTimeout)
+        ),
+      ]);
+      logger.debug(
+        `[ManualSessionManager] Graceful cleanup completed for ${sessionId}`
+      );
+    } catch (error) {
+      logger.warn(
+        `[ManualSessionManager] Graceful cleanup failed for ${sessionId}, attempting force cleanup: ${error}`
+      );
+
+      // Fallback to force cleanup
+      try {
+        if (agent.context) {
+          await agent.context.close();
+        }
+        if (agent.browser?.isConnected()) {
+          await agent.browser.close();
+        }
+      } catch (forceError) {
+        logger.error(
+          `[ManualSessionManager] Force cleanup also failed for ${sessionId}: ${forceError}`
+        );
+      }
+    }
+  }
+
+  /**
+   * Emergency cleanup when normal stop fails
+   */
+  private async emergencySessionCleanup(
+    session: ManualSession,
+    sessionId: string
+  ): Promise<void> {
+    logger.warn(
+      `[ManualSessionManager] Performing emergency cleanup for session: ${sessionId}`
+    );
+
+    try {
+      // Force cleanup without waiting
+      await this.gracefulAgentCleanup(session.agent, sessionId);
+    } catch (error) {
+      logger.error(`[ManualSessionManager] Emergency cleanup failed: ${error}`);
+    } finally {
+      // Always clean up local state
+      this.cleanupSessionTimers(sessionId);
+      this.activeSessions.delete(sessionId);
+    }
+  }
+
+  /**
    * Force stop a session (emergency cleanup)
    */
   async forceStopSession(sessionId: string): Promise<void> {
@@ -553,15 +1008,7 @@ export class ManualSessionManager {
     }
 
     logger.warn(`[ManualSessionManager] Force stopping session: ${sessionId}`);
-
-    try {
-      await session.agent.stop();
-    } catch (error) {
-      logger.error("[ManualSessionManager] Error force stopping agent:", error);
-    }
-
-    this.cleanupSessionTimers(sessionId);
-    this.activeSessions.delete(sessionId);
+    await this.emergencySessionCleanup(session, sessionId);
   }
 
   /**
@@ -586,18 +1033,170 @@ export class ManualSessionManager {
   }
 
   /**
-   * Force garbage collection and cleanup
+   * Handle timeout check for a session
+   */
+  private async handleSessionTimeout(
+    session: ManualSession,
+    duration: number
+  ): Promise<boolean> {
+    const timeoutMs = (session.config.timeout || 0) * 60 * 1000;
+
+    if (session.config.timeout && duration > timeoutMs) {
+      logger.warn(
+        `[ManualSessionManager] Session ${session.id} exceeded timeout, cleaning up`
+      );
+      try {
+        await this.stopSession(session.id, {
+          reason: "timeout_maintenance",
+        });
+      } catch (error) {
+        logger.error(
+          `[ManualSessionManager] Failed to cleanup timed out session ${session.id}: ${error}`
+        );
+        await this.emergencySessionCleanup(session, session.id);
+      }
+      return true; // Session was handled (timeout occurred)
+    }
+    return false; // No timeout
+  }
+
+  /**
+   * Handle health check for long-running sessions
+   */
+  private async handleSessionHealthCheck(
+    session: ManualSession,
+    duration: number
+  ): Promise<void> {
+    if (duration > 10 * 60 * 1000) {
+      try {
+        const health = await this.checkSessionHealth(session.id);
+
+        if (!health.isHealthy) {
+          logger.warn(
+            `[ManualSessionManager] Unhealthy session detected: ${session.id}`
+          );
+
+          // Attempt recovery for sessions with browser issues
+          if (
+            !health.metrics.browserConnected ||
+            !health.metrics.pageResponsive
+          ) {
+            const recovery = await this.recoverSession(session.id);
+            if (!recovery.success) {
+              logger.warn(
+                `[ManualSessionManager] Session ${session.id} recovery failed, flagging for cleanup`
+              );
+            }
+          }
+        }
+      } catch (healthError) {
+        logger.error(
+          `[ManualSessionManager] Health check failed for session ${session.id}: ${healthError}`
+        );
+      }
+    }
+  }
+
+  /**
+   * Handle memory monitoring and cleanup
+   */
+  private handleMemoryMaintenance(): void {
+    const currentMemory = memoryMonitor.getCurrentMemoryUsage().heapUsed;
+    const memoryThreshold = 400 * 1024 * 1024; // 400MB
+
+    if (currentMemory > memoryThreshold) {
+      logger.info(
+        `[ManualSessionManager] High memory usage detected (${MemoryMonitor.formatMemorySize(currentMemory)}), performing cleanup`
+      );
+      this.performCleanup();
+    }
+
+    // Check for memory leaks
+    const leakDetection = memoryMonitor.detectMemoryLeaks();
+    if (leakDetection.isLeaking) {
+      logger.warn(
+        `[ManualSessionManager] Memory leak detected during maintenance: ${leakDetection.recommendation}`
+      );
+    }
+  }
+
+  /**
+   * Perform periodic maintenance: health checks, memory cleanup, timeout handling
+   */
+  private async performPeriodicMaintenance(): Promise<void> {
+    try {
+      const activeSessions = Array.from(this.activeSessions.values());
+      const now = Date.now();
+
+      logger.debug(
+        `[ManualSessionManager] Periodic maintenance: ${activeSessions.length} active sessions`
+      );
+
+      // Process each session for timeouts and health checks
+      for (const session of activeSessions) {
+        const duration = now - session.startTime;
+
+        // Check for timeouts first
+        const timeoutHandled = await this.handleSessionTimeout(
+          session,
+          duration
+        );
+        if (timeoutHandled) {
+          continue; // Session was stopped due to timeout
+        }
+
+        // Check session health for long-running sessions
+        await this.handleSessionHealthCheck(session, duration);
+      }
+
+      // Handle memory monitoring and cleanup
+      this.handleMemoryMaintenance();
+    } catch (error) {
+      logger.error(
+        `[ManualSessionManager] Periodic maintenance failed: ${error}`
+      );
+    }
+  }
+
+  /**
+   * Force garbage collection and cleanup with enhanced reporting
    */
   performCleanup(): {
     gcForced: boolean;
     memoryBefore: number;
     memoryAfter: number;
     memoryReclaimed: number;
+    activeSessions: number;
+    cleanupActions: string[];
   } {
     const memoryBefore = memoryMonitor.getCurrentMemoryUsage().heapUsed;
-    const gcForced = memoryMonitor.forceGarbageCollection();
+    const cleanupActions: string[] = [];
 
-    // Give GC time to work
+    // Force garbage collection
+    const gcForced = memoryMonitor.forceGarbageCollection();
+    if (gcForced) {
+      cleanupActions.push("Forced garbage collection");
+    }
+
+    // Clean up any stale intervals
+    let intervalsCleaned = 0;
+    for (const [key, interval] of this.cleanupIntervals) {
+      // Check if the session still exists
+      const sessionId = key.startsWith("screenshot_")
+        ? key.replace("screenshot_", "")
+        : key;
+      if (!this.activeSessions.has(sessionId)) {
+        clearInterval(interval);
+        this.cleanupIntervals.delete(key);
+        intervalsCleaned++;
+      }
+    }
+
+    if (intervalsCleaned > 0) {
+      cleanupActions.push(`Cleaned ${intervalsCleaned} stale intervals`);
+    }
+
+    // Wait for GC to complete
     setTimeout(() => {
       // Intentionally empty - just waiting for GC
     }, 100);
@@ -606,7 +1205,9 @@ export class ManualSessionManager {
     const memoryReclaimed = memoryBefore - memoryAfter;
 
     logger.info(
-      `[ManualSessionManager] Cleanup performed - GC: ${gcForced ? "forced" : "not available"}, Memory reclaimed: ${MemoryMonitor.formatMemorySize(memoryReclaimed)}`
+      `[ManualSessionManager] Cleanup performed - GC: ${gcForced ? "forced" : "not available"}, ` +
+        `Memory reclaimed: ${MemoryMonitor.formatMemorySize(memoryReclaimed)}, ` +
+        `Actions: ${cleanupActions.join(", ")}`
     );
 
     return {
@@ -614,6 +1215,63 @@ export class ManualSessionManager {
       memoryBefore,
       memoryAfter,
       memoryReclaimed,
+      activeSessions: this.activeSessions.size,
+      cleanupActions,
+    };
+  }
+
+  /**
+   * Perform aggressive cleanup - used when memory pressure is high
+   */
+  performAggressiveCleanup(): {
+    sessionsClosed: number;
+    memoryReclaimed: number;
+    errors: string[];
+  } {
+    const initialMemory = memoryMonitor.getCurrentMemoryUsage().heapUsed;
+    const errors: string[] = [];
+    let sessionsClosed = 0;
+
+    logger.warn(
+      "[ManualSessionManager] Performing aggressive cleanup due to memory pressure"
+    );
+
+    // Close sessions that have been running for more than 30 minutes
+    const now = Date.now();
+    const oldSessionThreshold = 30 * 60 * 1000; // 30 minutes
+
+    for (const [sessionId, session] of this.activeSessions) {
+      const sessionAge = now - session.startTime;
+
+      if (sessionAge > oldSessionThreshold) {
+        try {
+          this.forceStopSession(sessionId);
+          sessionsClosed++;
+          logger.info(
+            `[ManualSessionManager] Force stopped old session: ${sessionId} (age: ${Math.round(sessionAge / 60000)}m)`
+          );
+        } catch (error) {
+          errors.push(`Failed to stop session ${sessionId}: ${error}`);
+        }
+      }
+    }
+
+    // Force garbage collection multiple times
+    for (let i = 0; i < 3; i++) {
+      memoryMonitor.forceGarbageCollection();
+    }
+
+    const finalMemory = memoryMonitor.getCurrentMemoryUsage().heapUsed;
+    const memoryReclaimed = initialMemory - finalMemory;
+
+    logger.warn(
+      `[ManualSessionManager] Aggressive cleanup completed - Sessions closed: ${sessionsClosed}, Memory reclaimed: ${MemoryMonitor.formatMemorySize(memoryReclaimed)}`
+    );
+
+    return {
+      sessionsClosed,
+      memoryReclaimed,
+      errors,
     };
   }
 

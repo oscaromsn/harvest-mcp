@@ -42,3 +42,4 @@ html/**
 
 # others
 *.local.json
+repomix-output.xml

@@ -70,6 +70,9 @@ export interface ManualSession {
   config: SessionConfig;
   outputDir: string;
   artifacts: Artifact[];
+  artifactCollector: import(
+    "../browser/ArtifactCollector.js"
+  ).ArtifactCollector;
   metadata: {
     currentUrl?: string;
     pageTitle?: string;

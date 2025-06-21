@@ -84,13 +84,8 @@ export class BrowserAgentFactory {
       // Create initial page
       const page = await context.newPage();
 
-      // Navigate to initial URL if provided
-      if (config.url) {
-        logger.info(
-          `[BrowserAgentFactory] Navigating to initial URL: ${config.url}`
-        );
-        await page.goto(config.url, { waitUntil: "networkidle" });
-      }
+      // Note: Navigation is now handled by the calling code after network tracking is set up
+      // This prevents the issue where network requests complete before tracking starts
 
       // Create agent wrapper
       const agent: BrowserAgent = {

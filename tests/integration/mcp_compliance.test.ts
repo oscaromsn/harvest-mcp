@@ -18,10 +18,14 @@ describe("MCP Server Compliance", () => {
   const MCP_RESOURCE_URI_PATTERN = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//; // Basic URI scheme validation
 
   beforeAll(async () => {
+    // Set log level to info to capture startup messages in test environment
+    process.env.HARVEST_LOG_LEVEL = "info";
+
     // Start the MCP server
     const serverPath = path.join(process.cwd(), "src", "server.ts");
     serverProcess = spawn("bun", ["run", serverPath], {
       stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env, HARVEST_LOG_LEVEL: "info" },
     });
 
     // Collect server output and errors

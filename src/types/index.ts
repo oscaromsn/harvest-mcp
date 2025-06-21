@@ -266,11 +266,80 @@ export interface CompletionStatusResult {
   message: string;
 }
 
+/**
+ * Session start response with optional warnings and recommendations
+ */
+export interface SessionStartResponse {
+  sessionId: string;
+  message: string;
+  harPath: string;
+  prompt: string;
+  harValidation?: HarValidationResult | undefined;
+  warning?: string;
+  recommendations?: string[];
+}
+
+/**
+ * Standard cleanup result from ManualSessionManager
+ */
+export interface StandardCleanupResult {
+  gcForced: boolean;
+  memoryBefore: number;
+  memoryAfter: number;
+  memoryReclaimed: number;
+  activeSessions: number;
+  cleanupActions: string[];
+}
+
+/**
+ * Aggressive cleanup result from ManualSessionManager
+ */
+export interface AggressiveCleanupResult {
+  sessionsClosed: number;
+  memoryReclaimed: number;
+  errors: string[];
+}
+
+/**
+ * Union type for cleanup results
+ */
+export type CleanupResult = StandardCleanupResult | AggressiveCleanupResult;
+
+/**
+ * HAR validation result
+ */
+export interface HarValidationResult {
+  quality: "excellent" | "good" | "poor" | "empty";
+  stats: {
+    totalEntries: number;
+    relevantEntries: number;
+    apiRequests: number;
+    postRequests: number;
+    responsesWithContent: number;
+  };
+  isValid: boolean;
+  issues?: string[];
+  recommendations?: string[];
+}
+
 // ========== HAR Data Types ==========
 
 export interface ParsedHARData {
   requests: RequestModel[];
   urls: URLInfo[];
+  validation?: {
+    isValid: boolean;
+    quality: "excellent" | "good" | "poor" | "empty";
+    issues: string[];
+    recommendations: string[];
+    stats: {
+      totalEntries: number;
+      relevantEntries: number;
+      apiRequests: number;
+      postRequests: number;
+      responsesWithContent: number;
+    };
+  };
 }
 
 export interface URLInfo {

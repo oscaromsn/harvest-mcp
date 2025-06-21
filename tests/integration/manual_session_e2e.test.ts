@@ -140,7 +140,10 @@ describe("Sprint 5.4: End-to-End Manual Session Workflow", () => {
       // Step 7: Validate cookies file structure
       const cookieContent = readFileSync(cookieArtifacts[0]?.path, "utf-8");
       const cookieData = JSON.parse(cookieContent);
-      expect(Array.isArray(cookieData)).toBe(true);
+      expect(cookieData).toBeDefined();
+      expect(cookieData.collectedAt).toBeDefined();
+      expect(cookieData.totalCookies).toBeDefined();
+      expect(Array.isArray(cookieData.cookies)).toBe(true);
 
       // Step 8: Verify no active sessions remain
       const finalListResponse = await server.handleListManualSessions();

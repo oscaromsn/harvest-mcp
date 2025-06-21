@@ -43,8 +43,23 @@ export class SessionManager {
     const now = new Date();
 
     try {
-      // Parse HAR file
+      // Parse HAR file with validation
       const harData = await parseHARFile(params.harPath);
+
+      // Log HAR validation results
+      if (harData.validation) {
+        const validation = harData.validation;
+        logger.info(
+          `HAR validation for session ${sessionId}: quality=${validation.quality}, ` +
+            `relevant=${validation.stats.relevantEntries}/${validation.stats.totalEntries} requests`
+        );
+
+        if (validation.issues.length > 0) {
+          logger.warn(
+            `HAR issues for session ${sessionId}: ${validation.issues.join(", ")}`
+          );
+        }
+      }
 
       // Parse cookie file if provided
       let cookieData: CookieData | undefined;
@@ -78,12 +93,35 @@ export class SessionManager {
 
       this.sessions.set(sessionId, session);
 
-      // Log session creation
+      // Log session creation with HAR quality info
       this.addLog(
         sessionId,
         "info",
-        `Session created with prompt: "${params.prompt}"`
+        `Session created with prompt: "${params.prompt}" | HAR quality: ${harData.validation?.quality || "unknown"}`
       );
+
+      // Add HAR validation warnings to session logs if needed
+      if (harData.validation && harData.validation.quality === "poor") {
+        this.addLog(
+          sessionId,
+          "warn",
+          `HAR file has poor quality: ${harData.validation.issues.join(", ")}`
+        );
+        for (const rec of harData.validation.recommendations) {
+          this.addLog(sessionId, "info", `Recommendation: ${rec}`);
+        }
+      }
+
+      if (harData.validation && harData.validation.quality === "empty") {
+        this.addLog(
+          sessionId,
+          "error",
+          "HAR file is empty or contains no usable requests"
+        );
+        for (const rec of harData.validation.recommendations) {
+          this.addLog(sessionId, "info", `Recommendation: ${rec}`);
+        }
+      }
 
       return sessionId;
     } catch (error) {
