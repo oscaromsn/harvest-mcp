@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { AgentFactory } from "../browser/AgentFactory.js";
 import { ArtifactCollector } from "../browser/ArtifactCollector.js";
+import type { BrowserAgentConfig } from "../browser/types.js";
 import type {
   Artifact,
   ManualBrowserAgent,
@@ -18,10 +20,6 @@ import {
   memoryMonitor,
 } from "../utils/memoryMonitor.js";
 import { getSafeOutputDirectory } from "../utils/pathUtils.js";
-import {
-  type BrowserAgentConfig,
-  browserAgentFactory,
-} from "./BrowserAgentFactory.js";
 
 /**
  * Service for managing manual browser sessions with artifact collection
@@ -32,10 +30,14 @@ export class ManualSessionManager {
   private activeSessions: Map<string, ManualSession> = new Map();
   private cleanupIntervals: Map<string, NodeJS.Timeout> = new Map();
   private defaultOutputDir: string;
+  private agentFactory: AgentFactory;
 
   private constructor() {
     // Use temp directory as safer default for manual sessions
     this.defaultOutputDir = join(tmpdir(), "harvest-manual-sessions");
+
+    // Initialize agent factory
+    this.agentFactory = new AgentFactory();
 
     // Global cleanup handler for process termination
     process.on("SIGINT", () => this.cleanupAllSessions());
@@ -81,22 +83,20 @@ export class ManualSessionManager {
       // Create browser agent with manual-friendly defaults (no URL navigation yet)
       const agentConfig: BrowserAgentConfig = {
         // Don't include URL here - we'll navigate after setting up network tracking
-        headless: config.browserOptions?.headless ?? false, // Default to visible for manual interaction
-        viewport: {
-          width: config.browserOptions?.viewport?.width ?? 1280,
-          height: config.browserOptions?.viewport?.height ?? 720,
-        },
-        contextOptions: {
-          deviceScaleFactor:
-            config.browserOptions?.contextOptions?.deviceScaleFactor ?? 1,
+        browserOptions: {
+          headless: config.browserOptions?.headless ?? false, // Default to visible for manual interaction
+          viewport: {
+            width: config.browserOptions?.viewport?.width ?? 1280,
+            height: config.browserOptions?.viewport?.height ?? 720,
+          },
+          contextOptions: {
+            deviceScaleFactor:
+              config.browserOptions?.contextOptions?.deviceScaleFactor ?? 1,
+          },
         },
       };
 
-      const coreAgent =
-        await browserAgentFactory.createBrowserAgent(agentConfig);
-
-      // Create agent adapter for ManualSession interface compatibility
-      const agent = coreAgent;
+      const agent = await this.agentFactory.createAgent(agentConfig);
 
       // Create artifact collector instance for this session
       const artifactCollector = new ArtifactCollector();
@@ -904,6 +904,18 @@ export class ManualSessionManager {
     );
 
     await Promise.allSettled(cleanupPromises);
+
+    // Cleanup agent factory resources
+    try {
+      await this.agentFactory.cleanup();
+      logger.info("[ManualSessionManager] Agent factory cleaned up");
+    } catch (error) {
+      logger.error(
+        "[ManualSessionManager] Error cleaning up agent factory:",
+        error
+      );
+    }
+
     logger.info("[ManualSessionManager] All sessions cleaned up");
   }
 
