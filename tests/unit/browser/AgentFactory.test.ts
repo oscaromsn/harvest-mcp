@@ -38,6 +38,7 @@ describe("AgentFactory", () => {
         /* Mock implementation */
       },
       newPage: async () => mockPage,
+      browser: () => mockBrowser,
     } as unknown as BrowserContext;
 
     const mockBrowser = {
@@ -85,6 +86,7 @@ describe("AgentFactory", () => {
         /* Mock implementation */
       },
       newPage: async () => mockPage,
+      browser: () => mockBrowser,
     } as unknown as BrowserContext;
 
     const mockBrowser = {
@@ -139,6 +141,7 @@ describe("AgentFactory", () => {
         /* Mock implementation */
       },
       newPage: async () => mockPage,
+      browser: () => mockBrowser,
     } as unknown as BrowserContext;
 
     const mockBrowser = {
@@ -182,6 +185,7 @@ describe("AgentFactory", () => {
         /* Mock implementation */
       },
       newPage: async () => mockPage,
+      browser: () => mockBrowser,
     } as unknown as BrowserContext;
 
     const mockBrowser = {
@@ -226,6 +230,7 @@ describe("AgentFactory", () => {
         /* Mock implementation */
       },
       newPage: async () => mockPage,
+      browser: () => mockBrowser,
     } as unknown as BrowserContext;
 
     const mockBrowser = {
@@ -264,15 +269,6 @@ describe("AgentFactory", () => {
     const factory = new AgentFactory();
 
     let contextClosed = false;
-    const mockContext = {
-      pages: () => [],
-      close: async () => {
-        contextClosed = true;
-      },
-      newPage: async () => {
-        throw new Error("Failed to create page");
-      },
-    } as unknown as BrowserContext;
 
     const mockBrowser = {
       contexts: () => [],
@@ -286,6 +282,17 @@ describe("AgentFactory", () => {
       },
       version: () => "1.0.0",
     } as unknown as Browser;
+
+    const mockContext = {
+      pages: () => [],
+      close: async () => {
+        contextClosed = true;
+      },
+      newPage: async () => {
+        throw new Error("Failed to create page");
+      },
+      browser: () => mockBrowser,
+    } as unknown as BrowserContext;
 
     const config: BrowserAgentConfig = {};
 
