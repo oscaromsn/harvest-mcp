@@ -43,3 +43,6 @@ html/**
 # others
 *.local.json
 repomix-output.xml
+
+# manual session artifacts
+manual-session-artifacts/
