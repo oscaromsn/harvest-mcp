@@ -16,11 +16,33 @@ import {
   logBrowserError,
   logBrowserOperation,
 } from "../utils/logger.js";
+import { BrowserPool } from "./BrowserPool.js";
 import type { ActiveBrowser, BrowserEngine, BrowserOptions } from "./types.js";
 
 export class BrowserProvider {
   private activeBrowsers = new Map<string, ActiveBrowser>();
   private activeContexts = new Set<BrowserContext>();
+  private browserPool?: BrowserPool | undefined;
+  private usePool = false;
+
+  /**
+   * Enable browser pooling for resource efficiency
+   */
+  enablePooling(pool?: BrowserPool): void {
+    this.usePool = true;
+    this.browserPool = pool || new BrowserPool();
+  }
+
+  /**
+   * Disable browser pooling
+   */
+  disablePooling(): void {
+    this.usePool = false;
+    if (this.browserPool) {
+      this.browserPool.cleanup();
+    }
+    this.browserPool = undefined;
+  }
 
   /**
    * Get or create a browser instance based on options
@@ -103,7 +125,13 @@ export class BrowserProvider {
       logBrowserOperation("cleanup_start", {
         activeContexts: this.activeContexts.size,
         activeBrowsers: this.activeBrowsers.size,
+        usePool: this.usePool,
       });
+
+      // Clean up pool if enabled
+      if (this.usePool && this.browserPool) {
+        await this.browserPool.cleanup();
+      }
 
       // Close all active contexts
       const contextClosePromises = Array.from(this.activeContexts).map(

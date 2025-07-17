@@ -7,6 +7,7 @@
 import type { Page } from "playwright";
 import { logBrowserError, logBrowserOperation } from "../utils/logger.js";
 import { BrowserAgent } from "./BrowserAgent.js";
+import { getTestBrowserPool } from "./BrowserPool.js";
 import { BrowserProvider } from "./BrowserProvider.js";
 import type { BrowserAgentConfig, BrowserOptions } from "./types.js";
 
@@ -15,7 +16,14 @@ export class AgentFactory {
 
   constructor() {
     this.browserProvider = new BrowserProvider();
-    logBrowserOperation("agent_factory_created");
+
+    // Enable browser pooling in test environments
+    if (process.env.NODE_ENV === "test") {
+      this.browserProvider.enablePooling(getTestBrowserPool());
+      logBrowserOperation("agent_factory_created", { poolingEnabled: true });
+    } else {
+      logBrowserOperation("agent_factory_created", { poolingEnabled: false });
+    }
   }
 
   /**
