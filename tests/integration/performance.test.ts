@@ -3,9 +3,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { SessionManager } from "../../src/core/SessionManager.js";
 import type { HarvestMCPServer } from "../../src/server.js";
 import {
-  type E2ETestContext,
   cleanupE2EContext,
   createTestSession,
+  type E2ETestContext,
   runInitialAnalysis,
   setupE2EContext,
 } from "../helpers/e2e-helpers.js";

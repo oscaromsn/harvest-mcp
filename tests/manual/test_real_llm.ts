@@ -127,9 +127,8 @@ async function testRealLLMIntegration() {
           requests: [],
         },
         cookieData: {},
-        dagManager: null as unknown as import(
-          "../../src/types/index.js"
-        ).HarvestSession["dagManager"], // Mock DAG manager for testing
+        dagManager:
+          null as unknown as import("../../src/types/index.js").HarvestSession["dagManager"], // Mock DAG manager for testing
         state: {
           toBeProcessedNodes: [],
           inProcessNodeDynamicParts: [],

@@ -610,23 +610,22 @@ export class AnalysisNotCompleteError extends HarvestError {
 // ========== Browser Types Export ==========
 
 export type {
-  BrowserEngine,
-  BrowserOptions,
-  BrowserConnectorOptions,
-  BrowserAgentConfig,
+  ActiveBrowser,
   Artifact,
   ArtifactCollection,
+  BrowserAgent,
+  BrowserAgentConfig,
+  BrowserConnectorOptions,
+  BrowserEngine,
+  BrowserOptions,
+  BrowserSessionInfo,
+  FallbackConfig,
+  ManualBrowserAgent,
   ManualSession,
   SessionConfig,
-  BrowserSessionInfo,
   SessionStopResult,
-  BrowserAgent,
-  ManualBrowserAgent,
-  ActiveBrowser,
-  FallbackConfig,
 } from "../browser/types.js";
 
-// biome-ignore lint/performance/noBarrelFile: Browser types export is needed for project architecture
 export {
   DEFAULT_BROWSER_OPTIONS,
   VIEWPORT_SIZES,

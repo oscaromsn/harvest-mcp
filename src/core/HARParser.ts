@@ -459,8 +459,8 @@ export function formatResponse(harResponse: HarResponse): ResponseData {
   }
 
   // Parse response content
-  let text: string | undefined = undefined;
-  let json: unknown = undefined;
+  let text: string | undefined;
+  let json: unknown;
 
   if (harResponse.content?.text) {
     text = harResponse.content.text;

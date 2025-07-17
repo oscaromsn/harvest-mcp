@@ -456,10 +456,7 @@ function generateUrlConstruction(
     lines.push("    const params = new URLSearchParams({");
     for (const [key, value] of Object.entries(request.queryParams)) {
       // Check if this is a dynamic value that needs substitution
-      if (
-        node.inputVariables &&
-        Object.prototype.hasOwnProperty.call(node.inputVariables, value)
-      ) {
+      if (node.inputVariables && Object.hasOwn(node.inputVariables, value)) {
         lines.push(`      '${key}': ${value},`);
       } else {
         lines.push(`      '${key}': '${value}',`);
@@ -518,7 +515,7 @@ function generateRequestExecution(
   lines.push("");
   lines.push("    if (!response.ok) {");
   lines.push(
-    "      throw new Error(`Request failed: ${response.status} ${response.statusText}`);"
+    "      throw new Error('Request failed: ' + response.status + ' ' + response.statusText);"
   );
   lines.push("    }");
   lines.push("");

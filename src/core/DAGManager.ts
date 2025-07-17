@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from "uuid";
 import { createComponentLogger } from "../utils/logger.js";
 
 const logger = createComponentLogger("dag-manager");
+
 import type {
   CookieDAGNode,
   CookieNodeContent,

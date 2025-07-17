@@ -1,6 +1,5 @@
 import type { FunctionDefinition } from "openai/resources/shared";
 import { getLLMClient } from "../core/LLMClient.js";
-import { HarvestError } from "../types/index.js";
 import type {
   CookieData,
   CookieDependency,
@@ -11,6 +10,7 @@ import type {
   RequestModel,
   SimplestRequestResponse,
 } from "../types/index.js";
+import { HarvestError } from "../types/index.js";
 
 /**
  * Find dependencies for dynamic parts across cookies and requests

@@ -1,5 +1,5 @@
-import { vi } from "vitest";
 import type { MockedFunction } from "vitest";
+import { vi } from "vitest";
 import { cleanupTestBrowserPool } from "../../src/browser/BrowserPool.js";
 import { setupBrowser, teardownBrowser } from "./global-browser-setup.js";
 

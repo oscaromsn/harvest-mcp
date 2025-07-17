@@ -104,9 +104,7 @@ class TestHarvestMCPServer {
     }
   }
 
-  handleProcessNextNode(params: {
-    sessionId: string;
-  }): CallToolResult {
+  handleProcessNextNode(params: { sessionId: string }): CallToolResult {
     try {
       const session = this.sessionManager.getSession(params.sessionId);
 
@@ -169,9 +167,7 @@ class TestHarvestMCPServer {
     }
   }
 
-  handleIsComplete(params: {
-    sessionId: string;
-  }): CallToolResult {
+  handleIsComplete(params: { sessionId: string }): CallToolResult {
     try {
       const session = this.sessionManager.getSession(params.sessionId);
       const isComplete = session.dagManager.isComplete();

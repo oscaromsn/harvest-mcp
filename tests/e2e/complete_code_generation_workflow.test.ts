@@ -2,10 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionManager } from "../../src/core/SessionManager.js";
 import type { HarvestMCPServer } from "../../src/server.js";
 import {
-  type E2ETestContext,
   cleanupE2EContext,
   createManualDAGScenario,
   createTestSession,
+  type E2ETestContext,
   e2eAssertions,
   runCompleteWorkflow,
   setupE2EContext,

@@ -9,9 +9,8 @@ import {
 import { identifyDynamicParts } from "../../src/agents/DynamicPartsAgent.js";
 import { identifyInputVariables } from "../../src/agents/InputVariablesAgent.js";
 import { identifyEndUrl } from "../../src/agents/URLIdentificationAgent.js";
-// biome-ignore lint/style/noNamespaceImport: Required for vi.spyOn mocking
-import * as LLMClientModule from "../../src/core/LLMClient.js";
 import type { LLMClient } from "../../src/core/LLMClient.js";
+import * as LLMClientModule from "../../src/core/LLMClient.js";
 import { SessionManager } from "../../src/core/SessionManager.js";
 import type {
   CookieDependency,
