@@ -15,6 +15,7 @@ import { parseHARFile } from "../../src/core/HARParser.js";
 import { manualSessionManager } from "../../src/core/ManualSessionManager.js";
 import { HarvestMCPServer } from "../../src/server.js";
 import type { SessionConfig } from "../../src/types/index.js";
+import { SMALL_VIEWPORT } from "../setup/browser-defaults.js";
 
 // Helper function for parsing MCP tool responses
 function parseToolResponse(response: any): any {
@@ -58,10 +59,7 @@ describe("Sprint 5.4: End-to-End Manual Session Workflow", () => {
           },
           browserOptions: {
             headless: true, // Use headless for testing
-            viewport: {
-              width: 1280,
-              height: 720,
-            },
+            viewport: SMALL_VIEWPORT,
           },
           timeout: 2, // 2 minute timeout for testing
         },

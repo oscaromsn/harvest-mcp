@@ -1,16 +1,25 @@
 import { vi } from "vitest";
 import type { MockedFunction } from "vitest";
+import { cleanupTestBrowserPool } from "../../src/browser/BrowserPool.js";
+import { setupBrowser, teardownBrowser } from "./global-browser-setup.js";
 
 // Global test environment setup
-beforeAll(() => {
+beforeAll(async () => {
   // Set test environment variables
   process.env.NODE_ENV = "test";
   process.env.OPENAI_API_KEY = "test-api-key-for-testing";
+
+  // Setup shared browser instance for tests
+  await setupBrowser();
 });
 
-afterAll(() => {
+afterAll(async () => {
   // Clean up environment
   process.env.OPENAI_API_KEY = undefined;
+
+  // Clean up shared browser resources
+  await teardownBrowser();
+  await cleanupTestBrowserPool();
 });
 
 // Make vi available globally for test files that need it
