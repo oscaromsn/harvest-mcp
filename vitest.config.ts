@@ -40,6 +40,13 @@ export default defineWorkspace([
       mockReset: false,
       clearMocks: true,
       restoreMocks: false,
+      // Run browser tests sequentially to avoid resource contention
+      pool: "forks",
+      poolOptions: {
+        forks: {
+          singleFork: true,
+        },
+      },
     },
     resolve: {
       alias: {
@@ -63,6 +70,13 @@ export default defineWorkspace([
       mockReset: false,
       clearMocks: false,
       restoreMocks: false,
+      // Run e2e tests sequentially to avoid browser resource contention
+      pool: "forks",
+      poolOptions: {
+        forks: {
+          singleFork: true,
+        },
+      },
     },
     resolve: {
       alias: {
