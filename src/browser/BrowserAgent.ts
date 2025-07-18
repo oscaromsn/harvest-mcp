@@ -33,7 +33,7 @@ export class BrowserAgent implements IBrowserAgent {
     try {
       logBrowserOperation("agent_created", {
         url: this.getCurrentUrl(),
-        title: this.getCurrentTitle(),
+        title: this.getCurrentTitleSync(),
       });
     } catch (_error) {
       // Ignore logging errors during construction
@@ -61,7 +61,7 @@ export class BrowserAgent implements IBrowserAgent {
 
       logBrowserOperation("agent_started", {
         url: this.getCurrentUrl(),
-        title: this.getCurrentTitle(),
+        title: this.getCurrentTitleSync(),
       });
     } catch (error) {
       logBrowserError(error as Error, { operation: "agent_start" });
@@ -91,7 +91,7 @@ export class BrowserAgent implements IBrowserAgent {
       try {
         logBrowserOperation("agent_stopped", {
           finalUrl: this.getCurrentUrl(),
-          finalTitle: this.getCurrentTitle(),
+          finalTitle: this.getCurrentTitleSync(),
         });
       } catch (_error) {
         // Ignore logging errors during shutdown
@@ -130,9 +130,46 @@ export class BrowserAgent implements IBrowserAgent {
   }
 
   /**
-   * Get the current page title (synchronous version - returns current cached title)
+   * Get the current page title (async version to handle navigation properly)
    */
-  getCurrentTitle(): string {
+  async getCurrentTitle(): Promise<string> {
+    try {
+      // Check if the page is still valid before trying to get title
+      if (!this.page || !this.context) {
+        return "";
+      }
+
+      // Handle title retrieval with proper async/await and timeout
+      const title = await Promise.race([
+        this.page.title(),
+        new Promise<string>((_, reject) =>
+          setTimeout(() => reject(new Error("Title fetch timeout")), 5000)
+        ),
+      ]);
+
+      return title;
+    } catch (error) {
+      // Handle context destruction gracefully
+      if (
+        error instanceof Error &&
+        (error.message.includes("Execution context was destroyed") ||
+          error.message.includes(
+            "Target page, context or browser has been closed"
+          ) ||
+          error.message.includes("TargetClosedError") ||
+          error.message.includes("Title fetch timeout"))
+      ) {
+        return "";
+      }
+      logBrowserError(error as Error, { operation: "get_current_title" });
+      return "";
+    }
+  }
+
+  /**
+   * Get the current page title (synchronous version for backward compatibility)
+   */
+  getCurrentTitleSync(): string {
     try {
       // Check if the page is still valid before trying to get title
       if (!this.page || !this.context) {
@@ -163,7 +200,7 @@ export class BrowserAgent implements IBrowserAgent {
       ) {
         return "";
       }
-      logBrowserError(error as Error, { operation: "get_current_title" });
+      logBrowserError(error as Error, { operation: "get_current_title_sync" });
       return "";
     }
   }
@@ -195,7 +232,7 @@ export class BrowserAgent implements IBrowserAgent {
     try {
       return {
         currentUrl: this.getCurrentUrl(),
-        currentTitle: this.getCurrentTitle(),
+        currentTitle: this.getCurrentTitleSync(),
         isStarted: this.isStarted,
         isReady: this.isReady(),
         contextId: this.context ? "context-present" : "context-missing",

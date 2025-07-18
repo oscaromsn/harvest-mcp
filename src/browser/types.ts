@@ -135,7 +135,8 @@ export interface BrowserAgent {
   start(): void;
   stop(): Promise<void>;
   getCurrentUrl(): string;
-  getCurrentTitle(): string;
+  getCurrentTitle(): Promise<string>;
+  getCurrentTitleSync(): string;
   isReady(): boolean;
   isAgentStarted(): boolean;
   getSessionMetadata(): Record<string, unknown>;
