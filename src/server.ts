@@ -3349,80 +3349,262 @@ export class HarvestMCPServer {
   }
 
   /**
+   * Parse and validate arguments for complete analysis
+   */
+  private parseCompleteAnalysisArgs(args: unknown) {
+    return args as {
+      sessionId: string;
+      maxIterations: number;
+      openaiApiKey?: string;
+      googleApiKey?: string;
+      provider?: string;
+      model?: string;
+    };
+  }
+
+  /**
+   * Build API configuration from arguments
+   */
+  private buildApiConfig(
+    argsObj: ReturnType<typeof this.parseCompleteAnalysisArgs>
+  ) {
+    if (
+      !argsObj.openaiApiKey &&
+      !argsObj.googleApiKey &&
+      !argsObj.provider &&
+      !argsObj.model
+    ) {
+      return undefined;
+    }
+
+    const apiConfig: {
+      openaiApiKey?: string;
+      googleApiKey?: string;
+      provider?: string;
+      model?: string;
+    } = {};
+
+    if (argsObj.openaiApiKey) {
+      apiConfig.openaiApiKey = argsObj.openaiApiKey;
+    }
+    if (argsObj.googleApiKey) {
+      apiConfig.googleApiKey = argsObj.googleApiKey;
+    }
+    if (argsObj.provider) {
+      apiConfig.provider = argsObj.provider;
+    }
+    if (argsObj.model) {
+      apiConfig.model = argsObj.model;
+    }
+
+    return apiConfig;
+  }
+
+  /**
+   * Run initial analysis step for complete workflow
+   */
+  private async runInitialAnalysisForWorkflow(
+    argsObj: ReturnType<typeof this.parseCompleteAnalysisArgs>,
+    apiConfig: ReturnType<typeof this.buildApiConfig>,
+    steps: string[]
+  ) {
+    steps.push("📍 Step 1: Running initial analysis to identify target URL");
+    return await this.handleRunInitialAnalysisWithConfig(
+      { sessionId: argsObj.sessionId },
+      apiConfig
+    );
+  }
+
+  /**
+   * Create error result for failed analysis
+   */
+  private createErrorResult(
+    initialResult: CallToolResult,
+    sessionId: string,
+    steps: string[],
+    startTime: number
+  ): CallToolResult {
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            success: false,
+            error: "Initial analysis failed",
+            sessionId,
+            steps,
+            details: initialResult.content?.[0]?.text || "Unknown error",
+            elapsedTime: Date.now() - startTime,
+          }),
+        },
+      ],
+      isError: true,
+    };
+  }
+
+  /**
+   * Process nodes iteratively until complete or max iterations reached
+   */
+  private async processNodesIteratively(
+    argsObj: ReturnType<typeof this.parseCompleteAnalysisArgs>,
+    steps: string[],
+    warnings: string[]
+  ) {
+    steps.push("🔄 Step 2: Processing dependency nodes");
+    let iterations = 0;
+    let isComplete = false;
+
+    while (!isComplete && iterations < argsObj.maxIterations) {
+      iterations++;
+
+      // Check if analysis is complete
+      const completeResult = await this.handleIsComplete({
+        sessionId: argsObj.sessionId,
+      });
+      const completeData = JSON.parse(
+        (completeResult.content?.[0]?.text as string) || '{"isComplete": false}'
+      );
+
+      if (completeData.isComplete) {
+        isComplete = true;
+        steps.push(`✅ Analysis complete after ${iterations} iterations`);
+        break;
+      }
+
+      // Process next node
+      const processResult = await this.handleProcessNextNode({
+        sessionId: argsObj.sessionId,
+      });
+      const processData = JSON.parse(
+        (processResult.content?.[0]?.text as string) || '{"message": "unknown"}'
+      );
+
+      if (processResult.isError) {
+        warnings.push(
+          `Iteration ${iterations}: ${processData.error || "Processing failed"}`
+        );
+      } else {
+        steps.push(
+          `📦 Processed node ${iterations}: ${processData.message || "Node processed"}`
+        );
+      }
+    }
+
+    if (!isComplete) {
+      warnings.push(
+        `Analysis incomplete after ${argsObj.maxIterations} iterations`
+      );
+    }
+
+    return { isComplete, iterations };
+  }
+
+  /**
+   * Generate code if analysis is complete
+   */
+  private async generateCodeIfComplete(
+    isComplete: boolean,
+    argsObj: ReturnType<typeof this.parseCompleteAnalysisArgs>,
+    steps: string[],
+    warnings: string[]
+  ) {
+    let generatedCode = "";
+
+    if (isComplete) {
+      steps.push("📝 Step 3: Generating TypeScript wrapper code");
+      try {
+        const codeResult = await this.handleGenerateWrapperScript({
+          sessionId: argsObj.sessionId,
+        });
+        const codeData = JSON.parse(
+          (codeResult.content?.[0]?.text as string) || '{"code": ""}'
+        );
+
+        if (codeResult.isError) {
+          warnings.push("Code generation failed");
+        } else {
+          generatedCode = codeData.code || "";
+          steps.push(
+            `✅ Code generation complete - ${generatedCode.length} characters generated`
+          );
+        }
+      } catch (error) {
+        warnings.push(
+          `Code generation error: ${error instanceof Error ? error.message : "Unknown error"}`
+        );
+      }
+    }
+
+    return generatedCode;
+  }
+
+  /**
+   * Create success result for complete analysis
+   */
+  private createSuccessResult(params: {
+    sessionId: string;
+    isComplete: boolean;
+    iterations: number;
+    targetUrl: string;
+    elapsedTime: number;
+    generatedCode: string;
+    steps: string[];
+    warnings: string[];
+  }): CallToolResult {
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            success: true,
+            sessionId: params.sessionId,
+            result: {
+              isComplete: params.isComplete,
+              iterations: params.iterations,
+              targetUrl: params.targetUrl,
+              elapsedTime: params.elapsedTime,
+              codeGenerated: !!params.generatedCode,
+              codeLength: params.generatedCode.length,
+            },
+            steps: params.steps,
+            warnings: params.warnings,
+            ...(params.generatedCode && {
+              generatedCode: params.generatedCode,
+            }),
+            summary: `Analysis ${params.isComplete ? "completed" : "partially completed"} in ${params.iterations} iterations (${params.elapsedTime}ms)`,
+          }),
+        },
+      ],
+    };
+  }
+
+  /**
    * Handle workflow_complete_analysis tool call
    */
   public async handleCompleteAnalysis(args: unknown): Promise<CallToolResult> {
     try {
-      const argsObj = args as {
-        sessionId: string;
-        maxIterations: number;
-        openaiApiKey?: string;
-        googleApiKey?: string;
-        provider?: string;
-        model?: string;
-      };
-
+      const argsObj = this.parseCompleteAnalysisArgs(args);
       const startTime = Date.now();
       const steps: string[] = [];
       const warnings: string[] = [];
 
-      // Prepare API configuration if provided
-      let apiConfig:
-        | {
-            openaiApiKey?: string;
-            googleApiKey?: string;
-            provider?: string;
-            model?: string;
-          }
-        | undefined;
-
-      if (
-        argsObj.openaiApiKey ||
-        argsObj.googleApiKey ||
-        argsObj.provider ||
-        argsObj.model
-      ) {
-        apiConfig = {};
-        if (argsObj.openaiApiKey) {
-          apiConfig.openaiApiKey = argsObj.openaiApiKey;
-        }
-        if (argsObj.googleApiKey) {
-          apiConfig.googleApiKey = argsObj.googleApiKey;
-        }
-        if (argsObj.provider) {
-          apiConfig.provider = argsObj.provider;
-        }
-        if (argsObj.model) {
-          apiConfig.model = argsObj.model;
-        }
-      }
+      const apiConfig = this.buildApiConfig(argsObj);
 
       steps.push("🚀 Starting complete analysis workflow");
 
       // Step 1: Run initial analysis
-      steps.push("📍 Step 1: Running initial analysis to identify target URL");
-      const initialResult = await this.handleRunInitialAnalysisWithConfig(
-        { sessionId: argsObj.sessionId },
-        apiConfig
+      const initialResult = await this.runInitialAnalysisForWorkflow(
+        argsObj,
+        apiConfig,
+        steps
       );
-
       if (initialResult.isError) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify({
-                success: false,
-                error: "Initial analysis failed",
-                sessionId: argsObj.sessionId,
-                steps,
-                details: initialResult.content?.[0]?.text || "Unknown error",
-                elapsedTime: Date.now() - startTime,
-              }),
-            },
-          ],
-          isError: true,
-        };
+        return this.createErrorResult(
+          initialResult,
+          argsObj.sessionId,
+          steps,
+          startTime
+        );
       }
 
       const initialData = JSON.parse(
@@ -3434,108 +3616,34 @@ export class HarvestMCPServer {
       );
 
       // Step 2: Process all nodes iteratively
-      steps.push("🔄 Step 2: Processing dependency nodes");
-      let iterations = 0;
-      let isComplete = false;
-
-      while (!isComplete && iterations < argsObj.maxIterations) {
-        iterations++;
-
-        // Check if analysis is complete
-        const completeResult = await this.handleIsComplete({
-          sessionId: argsObj.sessionId,
-        });
-        const completeData = JSON.parse(
-          (completeResult.content?.[0]?.text as string) ||
-            '{"isComplete": false}'
-        );
-
-        if (completeData.isComplete) {
-          isComplete = true;
-          steps.push(`✅ Analysis complete after ${iterations} iterations`);
-          break;
-        }
-
-        // Process next node
-        const processResult = await this.handleProcessNextNode({
-          sessionId: argsObj.sessionId,
-        });
-        const processData = JSON.parse(
-          (processResult.content?.[0]?.text as string) ||
-            '{"message": "unknown"}'
-        );
-
-        if (processResult.isError) {
-          warnings.push(
-            `Iteration ${iterations}: ${processData.error || "Processing failed"}`
-          );
-          // Continue to next iteration - some nodes might fail but others might succeed
-        } else {
-          steps.push(
-            `📦 Processed node ${iterations}: ${processData.message || "Node processed"}`
-          );
-        }
-      }
-
-      if (!isComplete) {
-        warnings.push(
-          `Analysis incomplete after ${argsObj.maxIterations} iterations`
-        );
-      }
+      const processingResult = await this.processNodesIteratively(
+        argsObj,
+        steps,
+        warnings
+      );
+      const { isComplete, iterations } = processingResult;
 
       // Step 3: Generate code (if analysis is complete)
-      let generatedCode = "";
-      if (isComplete) {
-        steps.push("📝 Step 3: Generating TypeScript wrapper code");
-        try {
-          const codeResult = await this.handleGenerateWrapperScript({
-            sessionId: argsObj.sessionId,
-          });
-          const codeData = JSON.parse(
-            (codeResult.content?.[0]?.text as string) || '{"code": ""}'
-          );
-
-          if (codeResult.isError) {
-            warnings.push("Code generation failed");
-          } else {
-            generatedCode = codeData.code || "";
-            steps.push(
-              `✅ Code generation complete - ${generatedCode.length} characters generated`
-            );
-          }
-        } catch (error) {
-          warnings.push(
-            `Code generation error: ${error instanceof Error ? error.message : "Unknown error"}`
-          );
-        }
-      }
+      const generatedCode = await this.generateCodeIfComplete(
+        isComplete,
+        argsObj,
+        steps,
+        warnings
+      );
 
       const elapsedTime = Date.now() - startTime;
       steps.push(`🎯 Workflow completed in ${elapsedTime}ms`);
 
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({
-              success: true,
-              sessionId: argsObj.sessionId,
-              result: {
-                isComplete,
-                iterations,
-                targetUrl: initialData.actionUrl,
-                elapsedTime,
-                codeGenerated: !!generatedCode,
-                codeLength: generatedCode.length,
-              },
-              steps,
-              warnings,
-              ...(generatedCode && { generatedCode }),
-              summary: `Analysis ${isComplete ? "completed" : "partially completed"} in ${iterations} iterations (${elapsedTime}ms)`,
-            }),
-          },
-        ],
-      };
+      return this.createSuccessResult({
+        sessionId: argsObj.sessionId,
+        isComplete,
+        iterations,
+        targetUrl: initialData.actionUrl,
+        elapsedTime,
+        generatedCode,
+        steps,
+        warnings,
+      });
     } catch (error) {
       throw new HarvestError(
         `Complete analysis workflow failed: ${error instanceof Error ? error.message : "Unknown error"}`,
@@ -4210,6 +4318,75 @@ export class HarvestMCPServer {
   }
 
   /**
+   * Calculate score for a URL based on heuristics
+   */
+  private calculateUrlScore(urlInfo: URLInfo): number {
+    let score = 0;
+    const url = urlInfo.url.toLowerCase();
+
+    // Method preferences
+    if (urlInfo.method === "POST") {
+      score += 10;
+    }
+
+    // API endpoint preferences
+    if (url.includes("/api/")) {
+      score += 8;
+    }
+    if (url.includes("/v1/") || url.includes("/v2/")) {
+      score += 6;
+    }
+
+    // Action keyword preferences
+    const actionKeywords = [
+      "search",
+      "submit",
+      "create",
+      "update",
+      "delete",
+      "login",
+      "auth",
+    ];
+    const actionScores = [7, 7, 6, 6, 6, 5, 5];
+
+    for (let i = 0; i < actionKeywords.length; i++) {
+      const keyword = actionKeywords[i];
+      const actionScore = actionScores[i];
+      if (keyword && actionScore !== undefined && url.includes(keyword)) {
+        score += actionScore;
+      }
+    }
+
+    // JSON endpoint preference
+    if (url.includes(".json")) {
+      score += 4;
+    }
+
+    // Static resource penalties
+    const staticExtensions = [".css", ".js", ".png", ".jpg", ".ico"];
+    const staticKeywords = ["favicon", "analytics", "tracking"];
+
+    for (const ext of staticExtensions) {
+      if (url.includes(ext)) {
+        score -= 10;
+      }
+    }
+
+    for (const keyword of staticKeywords) {
+      if (url.includes(keyword)) {
+        score -= 8;
+      }
+    }
+
+    // URL length preference
+    if (url.length < 100) {
+      score += 2;
+    }
+
+    return score;
+  }
+
+  /**
    * Heuristic URL selection when LLM is not available
    */
   private selectUrlHeuristically(urls: URLInfo[]): string {
@@ -4222,81 +4399,7 @@ export class HarvestMCPServer {
 
     // Score URLs based on patterns that indicate they're likely action URLs
     const scoredUrls = urls.map((urlInfo) => {
-      let score = 0;
-      const url = urlInfo.url.toLowerCase();
-
-      // Prefer POST requests
-      if (urlInfo.method === "POST") {
-        score += 10;
-      }
-
-      // Prefer API endpoints
-      if (url.includes("/api/")) {
-        score += 8;
-      }
-      if (url.includes("/v1/") || url.includes("/v2/")) {
-        score += 6;
-      }
-
-      // Prefer action-like paths
-      if (url.includes("search")) {
-        score += 7;
-      }
-      if (url.includes("submit")) {
-        score += 7;
-      }
-      if (url.includes("create")) {
-        score += 6;
-      }
-      if (url.includes("update")) {
-        score += 6;
-      }
-      if (url.includes("delete")) {
-        score += 6;
-      }
-      if (url.includes("login")) {
-        score += 5;
-      }
-      if (url.includes("auth")) {
-        score += 5;
-      }
-
-      // Prefer JSON endpoints
-      if (url.includes(".json")) {
-        score += 4;
-      }
-
-      // Penalize static resources
-      if (url.includes(".css")) {
-        score -= 10;
-      }
-      if (url.includes(".js")) {
-        score -= 10;
-      }
-      if (url.includes(".png")) {
-        score -= 10;
-      }
-      if (url.includes(".jpg")) {
-        score -= 10;
-      }
-      if (url.includes(".ico")) {
-        score -= 10;
-      }
-      if (url.includes("favicon")) {
-        score -= 10;
-      }
-      if (url.includes("analytics")) {
-        score -= 8;
-      }
-      if (url.includes("tracking")) {
-        score -= 8;
-      }
-
-      // Prefer shorter, cleaner URLs
-      if (url.length < 100) {
-        score += 2;
-      }
-
+      const score = this.calculateUrlScore(urlInfo);
       return { url: urlInfo.url, score };
     });
 
