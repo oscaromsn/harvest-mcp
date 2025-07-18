@@ -494,13 +494,46 @@ All tests use Vitest with comprehensive mocking for LLM calls.
 
 ### Environment Variables
 
-```bash
-# Required for LLM functionality
-OPENAI_API_KEY=your-api-key-here
+HARvest MCP Server supports multiple LLM providers. Configure your preferred provider using environment variables:
 
-# Optional - Model configuration
-OPENAI_MODEL=gpt-4o  # Default model
+```bash
+# LLM Provider Selection (optional)
+# Supported values: openai, gemini
+# If not set, auto-detects based on available API keys
+LLM_PROVIDER=openai
+
+# OpenAI Configuration
+OPENAI_API_KEY=your-openai-api-key-here
+
+# Google Gemini Configuration  
+GOOGLE_API_KEY=your-google-api-key-here
+
+# Model Configuration (optional)
+# Overrides the default model for your provider
+LLM_MODEL=gpt-4o  # OpenAI: gpt-4o, gpt-4o-mini, gpt-4-turbo, gpt-4, gpt-3.5-turbo
+                  # Gemini: gemini-1.5-pro, gemini-1.5-flash, gemini-1.0-pro
 ```
+
+#### Provider Auto-Detection
+
+If `LLM_PROVIDER` is not set, the system automatically selects a provider based on available API keys:
+1. If `OPENAI_API_KEY` is present → Uses OpenAI
+2. If only `GOOGLE_API_KEY` is present → Uses Gemini
+3. If neither is present → Throws configuration error
+
+#### Supported Models
+
+**OpenAI Models:**
+- `gpt-4o` (default) - Latest GPT-4 Optimized
+- `gpt-4o-mini` - Smaller, faster variant
+- `gpt-4-turbo` - GPT-4 Turbo
+- `gpt-4` - Standard GPT-4
+- `gpt-3.5-turbo` - Fast, cost-effective
+
+**Gemini Models:**
+- `gemini-1.5-pro` (default) - Most capable
+- `gemini-1.5-flash` - Faster, lighter variant
+- `gemini-1.0-pro` - Previous generation
 
 ### Session Configuration
 
@@ -519,9 +552,10 @@ const CLEANUP_INTERVAL = 5 * 60 * 1000;  // 5 minutes
 ```
 Error: URL identification failed: API call failed
 ```
-- Check `OPENAI_API_KEY` environment variable
+- Check API key environment variables (`OPENAI_API_KEY` or `GOOGLE_API_KEY`)
+- Verify the correct provider is selected (check `LLM_PROVIDER`)
 - Verify internet connectivity
-- Check OpenAI API status
+- Check API status for your provider (OpenAI or Google)
 
 **2. HAR File Parsing Errors**
 ```

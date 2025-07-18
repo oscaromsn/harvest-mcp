@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Harvest MCP Server is a TypeScript-based Model Context Protocol server that provides AI-powered API analysis and integration code generation. It analyzes browser network traffic (HAR files) to generate executable code that reproduces entire API workflows.
 
+**Multi-Provider LLM Support**: Supports OpenAI GPT models and Google Gemini models with automatic provider detection and seamless switching.
+
 ## Development Commands
 
 ### Essential Commands
