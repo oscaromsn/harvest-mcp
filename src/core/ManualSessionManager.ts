@@ -109,6 +109,9 @@ export class ManualSessionManager {
         artifactCollector.startNetworkTracking(agent.page);
       }
 
+      // Set up navigation event monitoring
+      this.setupNavigationEventMonitoring(agent.page, sessionId);
+
       // Navigate to URL after network tracking is set up (if provided)
       let currentUrl = agent.page.url();
       let pageTitle = "Unknown";
@@ -118,11 +121,11 @@ export class ManualSessionManager {
           `[ManualSessionManager] Navigating to URL after setting up tracking: ${config.url}`
         );
         await agent.page.goto(config.url, { waitUntil: "networkidle" });
-        currentUrl = agent.page.url();
-        pageTitle = await agent.page.title().catch(() => "Unknown");
+        currentUrl = this.safeGetPageUrl(agent.page);
+        pageTitle = await this.safeGetPageTitle(agent.page);
       } else {
         // Get current page state if no navigation needed
-        pageTitle = await agent.page.title().catch(() => "Unknown");
+        pageTitle = await this.safeGetPageTitle(agent.page);
       }
 
       // Create session object
@@ -227,8 +230,8 @@ export class ManualSessionManager {
     let finalPageTitle = "Unknown";
 
     try {
-      finalUrl = session.agent.page.url();
-      finalPageTitle = await session.agent.page.title().catch(() => "Unknown");
+      finalUrl = this.safeGetPageUrl(session.agent.page);
+      finalPageTitle = await this.safeGetPageTitle(session.agent.page);
     } catch (error) {
       logger.warn(
         `[ManualSessionManager] Could not get final page state for ${sessionId}: ${error}`
@@ -658,10 +661,10 @@ export class ManualSessionManager {
           actions.push("Refreshed unresponsive page");
 
           // Update metadata
-          session.metadata.currentUrl = session.agent.page.url();
-          session.metadata.pageTitle = await session.agent.page
-            .title()
-            .catch(() => "Unknown");
+          session.metadata.currentUrl = this.safeGetPageUrl(session.agent.page);
+          session.metadata.pageTitle = await this.safeGetPageTitle(
+            session.agent.page
+          );
         } catch (error) {
           newIssues.push(`Failed to refresh page: ${error}`);
         }
@@ -926,21 +929,42 @@ export class ManualSessionManager {
     try {
       // Quick check if the page is still accessible
       if (!session.agent.page || session.agent.page.isClosed()) {
+        logger.debug(
+          "[ManualSessionManager] Page health check failed: page is closed"
+        );
         return false;
       }
 
       // Try a simple operation with timeout to check responsiveness
-      await session.agent.page.evaluate(
-        () =>
-          (
-            globalThis as typeof globalThis & {
-              document?: { readyState?: string };
-            }
-          ).document?.readyState || "loading",
-        { timeout: 2000 }
-      );
+      await Promise.race([
+        session.agent.page.evaluate(
+          () =>
+            (
+              globalThis as typeof globalThis & {
+                document?: { readyState?: string };
+              }
+            ).document?.readyState || "loading"
+        ),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("Health check timeout")), 2000)
+        ),
+      ]);
       return true;
     } catch (error) {
+      if (
+        error instanceof Error &&
+        (error.message.includes("Execution context was destroyed") ||
+          error.message.includes(
+            "Target page, context or browser has been closed"
+          ) ||
+          error.message.includes("TargetClosedError") ||
+          error.message.includes("Health check timeout"))
+      ) {
+        logger.debug(
+          `[ManualSessionManager] Page health check failed due to navigation/context change: ${error.message}`
+        );
+        return false;
+      }
       logger.debug(`[ManualSessionManager] Page health check failed: ${error}`);
       return false;
     }
@@ -1292,6 +1316,129 @@ export class ManualSessionManager {
    */
   getSessionMemoryUsage(sessionId: string) {
     return memoryMonitor.getSessionMemoryUsage(sessionId);
+  }
+
+  /**
+   * Set up navigation event monitoring for a session
+   */
+  private setupNavigationEventMonitoring(
+    page: import("playwright").Page,
+    sessionId: string
+  ): void {
+    try {
+      // Monitor page navigation events
+      page.on("load", () => {
+        logger.debug(
+          `[ManualSessionManager] Page loaded for session ${sessionId}: ${this.safeGetPageUrl(page)}`
+        );
+      });
+
+      page.on("domcontentloaded", () => {
+        logger.debug(
+          `[ManualSessionManager] DOM content loaded for session ${sessionId}: ${this.safeGetPageUrl(page)}`
+        );
+      });
+
+      page.on("framenavigated", (frame) => {
+        if (frame === page.mainFrame()) {
+          logger.debug(
+            `[ManualSessionManager] Main frame navigated for session ${sessionId}: ${this.safeGetPageUrl(page)}`
+          );
+        }
+      });
+
+      // Monitor page errors that might indicate context issues
+      page.on("pageerror", (error) => {
+        logger.debug(
+          `[ManualSessionManager] Page error for session ${sessionId}: ${error.message}`
+        );
+      });
+
+      // Monitor console errors that might indicate context destruction
+      page.on("console", (message) => {
+        if (message.type() === "error") {
+          logger.debug(
+            `[ManualSessionManager] Console error for session ${sessionId}: ${message.text()}`
+          );
+        }
+      });
+
+      logger.debug(
+        `[ManualSessionManager] Navigation event monitoring set up for session ${sessionId}`
+      );
+    } catch (error) {
+      logger.warn(
+        `[ManualSessionManager] Failed to set up navigation monitoring for session ${sessionId}: ${error}`
+      );
+    }
+  }
+
+  /**
+   * Safely get page URL with error handling for navigation-related issues
+   */
+  private safeGetPageUrl(page: import("playwright").Page): string {
+    try {
+      if (!page || page.isClosed()) {
+        return "Unknown";
+      }
+      return page.url();
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        (error.message.includes("Execution context was destroyed") ||
+          error.message.includes(
+            "Target page, context or browser has been closed"
+          ) ||
+          error.message.includes("TargetClosedError"))
+      ) {
+        logger.debug(
+          `[ManualSessionManager] Page URL access failed due to navigation: ${error.message}`
+        );
+        return "Unknown";
+      }
+      logger.warn(`[ManualSessionManager] Failed to get page URL: ${error}`);
+      return "Unknown";
+    }
+  }
+
+  /**
+   * Safely get page title with error handling for navigation-related issues
+   */
+  private async safeGetPageTitle(
+    page: import("playwright").Page
+  ): Promise<string> {
+    try {
+      if (!page || page.isClosed()) {
+        return "Unknown";
+      }
+
+      // Use race condition to handle hanging title requests
+      const title = await Promise.race([
+        page.title(),
+        new Promise<string>((_, reject) =>
+          setTimeout(() => reject(new Error("Title fetch timeout")), 5000)
+        ),
+      ]);
+
+      return title;
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        (error.message.includes("Execution context was destroyed") ||
+          error.message.includes(
+            "Target page, context or browser has been closed"
+          ) ||
+          error.message.includes("TargetClosedError") ||
+          error.message.includes("Title fetch timeout"))
+      ) {
+        logger.debug(
+          `[ManualSessionManager] Page title access failed due to navigation: ${error.message}`
+        );
+        return "Unknown";
+      }
+      logger.warn(`[ManualSessionManager] Failed to get page title: ${error}`);
+      return "Unknown";
+    }
   }
 }
 
