@@ -1,16 +1,14 @@
-import type { FunctionDefinition } from "openai/resources/shared";
 import { vi } from "vitest";
+import type {
+  FunctionDefinition,
+  Message,
+} from "../../src/core/providers/types.js";
 import type {
   DynamicPartsResponse,
   InputVariablesResponse,
   SimplestRequestResponse,
   URLIdentificationResponse,
 } from "../../src/types/index.js";
-
-// Mock OpenAI client interface for testing
-interface MockOpenAIClient {
-  apiKey: string;
-}
 
 /**
  * LLM Client mocks specifically for unit testing
@@ -48,15 +46,12 @@ export const createMockLLMClient = (
   const responses = { ...DEFAULT_MOCK_RESPONSES, ...customResponses };
 
   return {
-    // Mock the private properties that LLMClient has
-    client: { apiKey: "test-api-key" } as MockOpenAIClient,
-    model: "gpt-4o",
-
     callFunction: vi.fn(
       async (
         _prompt: string,
         _functionDef: FunctionDefinition,
-        functionName: string
+        functionName: string,
+        _messages?: Message[]
       ) => {
         // Simulate realistic API delay
         await new Promise((resolve) => setTimeout(resolve, 10));
@@ -76,13 +71,15 @@ export const createMockLLMClient = (
       }
     ),
 
-    generateResponse: vi.fn(async (prompt: string) => {
+    generateResponse: vi.fn(async (prompt: string, _messages?: Message[]) => {
       await new Promise((resolve) => setTimeout(resolve, 10));
       return `Mock LLM response for prompt: ${prompt.slice(0, 50)}...`;
     }),
 
     getModel: vi.fn(() => "gpt-4o"),
     setModel: vi.fn(),
+    getProviderName: vi.fn(async () => "openai"),
+    setProvider: vi.fn(),
   };
 };
 
@@ -91,14 +88,12 @@ export const createMockLLMClient = (
  */
 export const createFailingMockLLMClient = (errorMessage = "LLM API Error") => {
   return {
-    // Mock the private properties that LLMClient has
-    client: { apiKey: "test-api-key" } as MockOpenAIClient,
-    model: "gpt-4o",
-
     callFunction: vi.fn().mockRejectedValue(new Error(errorMessage)),
     generateResponse: vi.fn().mockRejectedValue(new Error(errorMessage)),
     getModel: vi.fn(() => "gpt-4o"),
     setModel: vi.fn(),
+    getProviderName: vi.fn(async () => "openai"),
+    setProvider: vi.fn(),
   };
 };
 
@@ -120,14 +115,18 @@ export const updateMockLLMResponse = (
     async (
       prompt: string,
       functionDef: FunctionDefinition,
-      funcName: string
+      funcName: string,
+      messages?: Message[]
     ) => {
       if (funcName === functionName) {
         return response;
       }
 
       // Fall back to original implementation for other functions
-      return currentImplementation?.(prompt, functionDef, funcName) ?? response;
+      return (
+        currentImplementation?.(prompt, functionDef, funcName, messages) ??
+        response
+      );
     }
   );
 };
