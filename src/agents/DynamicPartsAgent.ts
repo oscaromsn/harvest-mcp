@@ -1,5 +1,5 @@
-import type { FunctionDefinition } from "openai/resources/shared";
 import { getLLMClient } from "../core/LLMClient.js";
+import type { FunctionDefinition } from "../core/providers/types.js";
 import { type DynamicPartsResponse, HarvestError } from "../types/index.js";
 
 /**

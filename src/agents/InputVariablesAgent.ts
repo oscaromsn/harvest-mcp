@@ -1,5 +1,5 @@
-import type { FunctionDefinition } from "openai/resources/shared";
 import { getLLMClient } from "../core/LLMClient.js";
+import type { FunctionDefinition } from "../core/providers/types.js";
 import {
   HarvestError,
   type InputVariableItem,
@@ -84,7 +84,6 @@ export function createFunctionDefinition(): FunctionDefinition {
                   "The exact version of the variable that is present in the cURL command. This should closely match the value in the provided Input Variables.",
               },
             },
-            required: ["variable_name", "variable_value"],
           },
           description: "A list of identified variables and their values.",
         },
