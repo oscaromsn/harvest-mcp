@@ -2,11 +2,12 @@ import type { z } from "zod";
 import { HarvestError } from "../types/index.js";
 import { createComponentLogger } from "../utils/logger.js";
 import {
+  createProvider,
   type FunctionDefinition,
+  getDefaultProvider,
   type ILLMProvider,
   type Message,
   type ProviderConfig,
-  ProviderFactory,
 } from "./providers/index.js";
 
 const logger = createComponentLogger("llm-client");
@@ -37,7 +38,7 @@ export class LLMClient {
       return this.providerPromise;
     }
 
-    this.providerPromise = ProviderFactory.getDefaultProvider(
+    this.providerPromise = getDefaultProvider(
       this.model ? { model: this.model } : {}
     ).then((provider) => {
       this.provider = provider;
@@ -158,10 +159,7 @@ export class LLMClient {
       providerConfig.model = config?.model || this.model;
     }
 
-    this.provider = await ProviderFactory.createProvider(
-      providerName,
-      providerConfig
-    );
+    this.provider = await createProvider(providerName, providerConfig);
     this.providerPromise = Promise.resolve(this.provider);
     if (!this.model && this.provider) {
       this.model = this.provider.getDefaultModel();
