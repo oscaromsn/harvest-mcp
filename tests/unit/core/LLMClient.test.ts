@@ -36,9 +36,9 @@ describe("LLMClient", () => {
 
   describe("provider initialization", () => {
     it("should throw error when no API keys are configured", async () => {
-      delete process.env.OPENAI_API_KEY;
-      delete process.env.GOOGLE_API_KEY;
-      delete process.env.LLM_PROVIDER;
+      process.env.OPENAI_API_KEY = undefined;
+      process.env.GOOGLE_API_KEY = undefined;
+      process.env.LLM_PROVIDER = undefined;
 
       const client = new LLMClient();
 
@@ -49,8 +49,8 @@ describe("LLMClient", () => {
 
     it("should use OpenAI provider when OPENAI_API_KEY is set", async () => {
       process.env.OPENAI_API_KEY = "test-openai-key";
-      delete process.env.GOOGLE_API_KEY;
-      delete process.env.LLM_PROVIDER;
+      process.env.GOOGLE_API_KEY = undefined;
+      process.env.LLM_PROVIDER = undefined;
 
       const client = new LLMClient();
       const providerName = await client.getProviderName();
@@ -59,9 +59,9 @@ describe("LLMClient", () => {
     });
 
     it("should use Gemini provider when only GOOGLE_API_KEY is set", async () => {
-      delete process.env.OPENAI_API_KEY;
+      process.env.OPENAI_API_KEY = undefined;
       process.env.GOOGLE_API_KEY = "test-google-key";
-      delete process.env.LLM_PROVIDER;
+      process.env.LLM_PROVIDER = undefined;
 
       const client = new LLMClient();
       const providerName = await client.getProviderName();
