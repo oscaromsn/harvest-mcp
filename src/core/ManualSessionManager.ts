@@ -125,7 +125,7 @@ export class ManualSessionManager {
       this.setupNavigationEventMonitoring(agent.page, sessionId);
 
       // Navigate to URL after network tracking is set up (if provided)
-      let currentUrl = agent.page.url();
+      let currentUrl: string;
       let pageTitle = "Unknown";
 
       if (config.url) {
@@ -137,6 +137,7 @@ export class ManualSessionManager {
         pageTitle = await this.safeGetPageTitle(agent.page);
       } else {
         // Get current page state if no navigation needed
+        currentUrl = agent.page.url();
         pageTitle = await this.safeGetPageTitle(agent.page);
       }
 
