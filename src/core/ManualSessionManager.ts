@@ -1328,22 +1328,40 @@ export class ManualSessionManager {
     try {
       // Monitor page navigation events
       page.on("load", () => {
-        logger.debug(
-          `[ManualSessionManager] Page loaded for session ${sessionId}: ${this.safeGetPageUrl(page)}`
-        );
+        try {
+          logger.debug(
+            `[ManualSessionManager] Page loaded for session ${sessionId}: ${this.safeGetPageUrl(page)}`
+          );
+        } catch (error) {
+          logger.debug(
+            `[ManualSessionManager] Failed to log page load for session ${sessionId}: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
       });
 
       page.on("domcontentloaded", () => {
-        logger.debug(
-          `[ManualSessionManager] DOM content loaded for session ${sessionId}: ${this.safeGetPageUrl(page)}`
-        );
+        try {
+          logger.debug(
+            `[ManualSessionManager] DOM content loaded for session ${sessionId}: ${this.safeGetPageUrl(page)}`
+          );
+        } catch (error) {
+          logger.debug(
+            `[ManualSessionManager] Failed to log DOM content loaded for session ${sessionId}: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
       });
 
       page.on("framenavigated", (frame) => {
         if (frame === page.mainFrame()) {
-          logger.debug(
-            `[ManualSessionManager] Main frame navigated for session ${sessionId}: ${this.safeGetPageUrl(page)}`
-          );
+          try {
+            logger.debug(
+              `[ManualSessionManager] Main frame navigated for session ${sessionId}: ${this.safeGetPageUrl(page)}`
+            );
+          } catch (error) {
+            logger.debug(
+              `[ManualSessionManager] Failed to log navigation for session ${sessionId}: ${error instanceof Error ? error.message : String(error)}`
+            );
+          }
         }
       });
 
@@ -1361,6 +1379,20 @@ export class ManualSessionManager {
             `[ManualSessionManager] Console error for session ${sessionId}: ${message.text()}`
           );
         }
+      });
+
+      // Monitor for page context destruction events
+      page.on("close", () => {
+        logger.debug(
+          `[ManualSessionManager] Page closed for session ${sessionId}`
+        );
+      });
+
+      // Monitor for browser context destruction
+      page.context().on("close", () => {
+        logger.debug(
+          `[ManualSessionManager] Browser context closed for session ${sessionId}`
+        );
       });
 
       logger.debug(
@@ -1381,7 +1413,17 @@ export class ManualSessionManager {
       if (!page || page.isClosed()) {
         return "Unknown";
       }
-      return page.url();
+
+      // Additional check for page context validity
+      try {
+        const url = page.url();
+        return url;
+      } catch (urlError) {
+        logger.debug(
+          `[ManualSessionManager] Page URL access failed: ${urlError instanceof Error ? urlError.message : String(urlError)}`
+        );
+        return "Unknown";
+      }
     } catch (error) {
       if (
         error instanceof Error &&
@@ -1389,7 +1431,9 @@ export class ManualSessionManager {
           error.message.includes(
             "Target page, context or browser has been closed"
           ) ||
-          error.message.includes("TargetClosedError"))
+          error.message.includes("TargetClosedError") ||
+          error.message.includes("Navigation") ||
+          error.message.includes("Protocol error"))
       ) {
         logger.debug(
           `[ManualSessionManager] Page URL access failed due to navigation: ${error.message}`
@@ -1412,11 +1456,28 @@ export class ManualSessionManager {
         return "Unknown";
       }
 
+      // Check if the page context is still valid
+      try {
+        await page.evaluate(
+          () =>
+            (
+              globalThis as typeof globalThis & {
+                document?: { readyState?: string };
+              }
+            ).document?.readyState
+        );
+      } catch (contextError) {
+        logger.debug(
+          `[ManualSessionManager] Page context is not available: ${contextError instanceof Error ? contextError.message : String(contextError)}`
+        );
+        return "Unknown";
+      }
+
       // Use race condition to handle hanging title requests
       const title = await Promise.race([
         page.title(),
         new Promise<string>((_, reject) =>
-          setTimeout(() => reject(new Error("Title fetch timeout")), 5000)
+          setTimeout(() => reject(new Error("Title fetch timeout")), 3000)
         ),
       ]);
 
@@ -1429,7 +1490,9 @@ export class ManualSessionManager {
             "Target page, context or browser has been closed"
           ) ||
           error.message.includes("TargetClosedError") ||
-          error.message.includes("Title fetch timeout"))
+          error.message.includes("Title fetch timeout") ||
+          error.message.includes("Navigation") ||
+          error.message.includes("Protocol error"))
       ) {
         logger.debug(
           `[ManualSessionManager] Page title access failed due to navigation: ${error.message}`
