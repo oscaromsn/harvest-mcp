@@ -40,6 +40,7 @@
   },
   "dependencies": {
     "@dagrejs/graphlib": "^2.2.4",
+    "@google/generative-ai": "^0.24.1",
     "@modelcontextprotocol/sdk": "^1.15.1",
     "openai": "^5.10.1",
     "pino": "^9.7.0",
