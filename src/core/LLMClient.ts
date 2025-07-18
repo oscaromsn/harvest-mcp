@@ -1,140 +1,84 @@
-import OpenAI from "openai";
-import type {
-  ChatCompletionCreateParams,
-  ChatCompletionMessageParam,
-} from "openai/resources/chat/completions";
-import type { FunctionDefinition } from "openai/resources/shared";
+import type { z } from "zod";
 import { HarvestError } from "../types/index.js";
 import { createComponentLogger } from "../utils/logger.js";
+import {
+  type FunctionDefinition,
+  type ILLMProvider,
+  type Message,
+  type ProviderConfig,
+  ProviderFactory,
+} from "./providers/index.js";
 
 const logger = createComponentLogger("llm-client");
 
 /**
- * Client for OpenAI API integration with function calling support
+ * Client for LLM API integration with function calling support
+ * Supports multiple providers (OpenAI, Gemini, etc.)
  * Used for intelligent analysis of HAR data and dependency resolution
  */
 export class LLMClient {
-  private client: OpenAI;
+  private provider: ILLMProvider | null = null;
+  private providerPromise: Promise<ILLMProvider> | null = null;
   private model: string;
 
-  constructor(model = "gpt-4o") {
-    if (!process.env.OPENAI_API_KEY) {
-      throw new HarvestError(
-        "OPENAI_API_KEY environment variable is required",
-        "MISSING_API_KEY"
-      );
-    }
-
-    this.model = model;
-    this.client = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
-    });
+  constructor(model?: string) {
+    this.model = model || process.env.LLM_MODEL || "";
   }
 
   /**
-   * Call OpenAI with function calling to extract structured data
+   * Get or initialize the provider
+   */
+  private async getProvider(): Promise<ILLMProvider> {
+    if (this.provider) {
+      return this.provider;
+    }
+
+    if (this.providerPromise) {
+      return this.providerPromise;
+    }
+
+    this.providerPromise = ProviderFactory.getDefaultProvider(
+      this.model ? { model: this.model } : {}
+    ).then((provider) => {
+      this.provider = provider;
+      // Update model if not explicitly set
+      if (!this.model) {
+        this.model = provider.getDefaultModel();
+      }
+      return provider;
+    });
+
+    return this.providerPromise;
+  }
+
+  /**
+   * Call LLM with function calling to extract structured data
    */
   async callFunction<T>(
     prompt: string,
     functionDef: FunctionDefinition,
     functionName: string,
-    messages?: ChatCompletionMessageParam[]
+    messages?: Message[]
   ): Promise<T> {
-    const startTime = Date.now();
-    const maxRetries = 3;
-    let lastError: Error | null = null;
-
-    logger.info({ functionName }, "Starting function call");
-
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      try {
-        const allMessages: ChatCompletionMessageParam[] = messages || [
-          { role: "user", content: prompt },
-        ];
-
-        const params: ChatCompletionCreateParams = {
-          model: this.model,
-          messages: allMessages,
-          functions: [functionDef],
-          function_call: { name: functionName },
-          temperature: 0.1, // Low temperature for more consistent results
-        };
-
-        logger.info(
-          { attempt, maxRetries, model: this.model, functionName },
-          "Calling LLM with function"
-        );
-        const response = await this.client.chat.completions.create(params);
-
-        const duration = Date.now() - startTime;
-        logger.info({ duration, attempt }, "Function call successful");
-
-        const choice = response.choices[0];
-        if (!choice?.message?.function_call) {
-          throw new HarvestError(
-            "No function call found in LLM response",
-            "NO_FUNCTION_CALL"
-          );
-        }
-
-        const functionCall = choice.message.function_call;
-        if (functionCall.name !== functionName) {
-          throw new HarvestError(
-            `Expected function ${functionName}, got ${functionCall.name}`,
-            "WRONG_FUNCTION_CALL"
-          );
-        }
-
-        try {
-          const result = JSON.parse(functionCall.arguments || "{}") as T;
-          logger.debug({ functionName }, "Successfully parsed function result");
-          return result;
-        } catch (error) {
-          throw new HarvestError(
-            "Failed to parse function call arguments",
-            "INVALID_FUNCTION_ARGS",
-            { arguments: functionCall.arguments, error }
-          );
-        }
-      } catch (error) {
-        lastError = error instanceof Error ? error : new Error(String(error));
-
-        if (error instanceof HarvestError) {
-          logger.error(
-            { attempt, error: error.message },
-            "HarvestError on attempt"
-          );
-          throw error; // Don't retry HarvestErrors
-        }
-
-        logger.error(
-          { attempt, maxRetries, error: lastError.message },
-          "Attempt failed"
-        );
-
-        if (attempt === maxRetries) {
-          break; // Don't wait after the last attempt
-        }
-
-        // Wait before retrying (exponential backoff)
-        const waitTime = 2 ** (attempt - 1) * 1000; // 1s, 2s, 4s
-        logger.info({ waitTime, attempt }, "Waiting before retry");
-        await new Promise((resolve) => setTimeout(resolve, waitTime));
-      }
-    }
-
-    // All retries failed
-    const totalTime = Date.now() - startTime;
-    logger.error(
-      { functionName, totalTime, maxRetries },
-      "All attempts failed"
+    const provider = await this.getProvider();
+    logger.info(
+      { functionName, provider: provider.name },
+      "Starting function call"
     );
 
-    throw new HarvestError(
-      `LLM function call failed after ${maxRetries} attempts: ${lastError?.message || "Unknown error"}`,
-      "LLM_CALL_FAILED",
-      { originalError: lastError, attempts: maxRetries }
-    );
+    // Convert messages or create from prompt
+    const allMessages: Message[] = messages || [
+      { role: "user", content: prompt },
+    ];
+
+    // Create a simple Zod schema that accepts any object
+    // The actual validation happens in the agents
+    const schema = {
+      parse: (data: unknown) => data as T,
+      _def: { typeName: "ZodAny" },
+    } as unknown as z.ZodType<T>;
+
+    return provider.callFunction(allMessages, functionDef, schema);
   }
 
   /**
@@ -142,48 +86,34 @@ export class LLMClient {
    */
   async generateResponse(
     prompt: string,
-    messages?: ChatCompletionMessageParam[],
+    messages?: Message[],
     temperature = 0.7
   ): Promise<string> {
+    const provider = await this.getProvider();
     const startTime = Date.now();
-    logger.info({ model: this.model }, "Starting text generation");
+    logger.info({ provider: provider.name }, "Starting text generation");
 
-    try {
-      const allMessages: ChatCompletionMessageParam[] = messages || [
-        { role: "user", content: prompt },
-      ];
+    // Convert messages or create from prompt
+    const allMessages: Message[] = messages || [
+      { role: "user", content: prompt },
+    ];
 
-      const params: ChatCompletionCreateParams = {
-        model: this.model,
-        messages: allMessages,
-        temperature,
-      };
+    const response = await provider.generateCompletion(allMessages, {
+      temperature,
+      ...(this.model ? { model: this.model } : {}),
+    });
 
-      const response = await this.client.chat.completions.create(params);
+    const duration = Date.now() - startTime;
+    logger.info({ duration }, "Text generation completed");
 
-      const duration = Date.now() - startTime;
-      logger.info({ duration }, "Text generation completed");
-
-      const choice = response.choices[0];
-      if (!choice?.message?.content) {
-        throw new HarvestError(
-          "No content found in LLM response",
-          "NO_RESPONSE_CONTENT"
-        );
-      }
-
-      return choice.message.content;
-    } catch (error) {
-      if (error instanceof HarvestError) {
-        throw error;
-      }
-
+    if (!response.content) {
       throw new HarvestError(
-        `LLM response generation failed: ${error instanceof Error ? error.message : "Unknown error"}`,
-        "LLM_GENERATION_FAILED",
-        { originalError: error }
+        "No content found in LLM response",
+        "NO_RESPONSE_CONTENT"
       );
     }
+
+    return response.content;
   }
 
   /**
@@ -198,6 +128,44 @@ export class LLMClient {
    */
   setModel(model: string): void {
     this.model = model;
+    // Reset provider to force reinitialization with new model
+    this.provider = null;
+    this.providerPromise = null;
+  }
+
+  /**
+   * Get the current provider name
+   */
+  async getProviderName(): Promise<string> {
+    const provider = await this.getProvider();
+    return provider.name;
+  }
+
+  /**
+   * Set a specific provider
+   */
+  async setProvider(
+    providerName: string,
+    config?: Partial<{ apiKey?: string; model?: string }>
+  ): Promise<void> {
+    const providerConfig: Partial<ProviderConfig> = {};
+
+    if (config?.apiKey) {
+      providerConfig.apiKey = config.apiKey;
+    }
+
+    if (config?.model || this.model) {
+      providerConfig.model = config?.model || this.model;
+    }
+
+    this.provider = await ProviderFactory.createProvider(
+      providerName,
+      providerConfig
+    );
+    this.providerPromise = Promise.resolve(this.provider);
+    if (!this.model && this.provider) {
+      this.model = this.provider.getDefaultModel();
+    }
   }
 }
 
