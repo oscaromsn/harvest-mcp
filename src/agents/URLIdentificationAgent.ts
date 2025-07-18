@@ -1,4 +1,4 @@
-import { getLLMClient } from "../core/LLMClient.js";
+import { getLLMClient, type LLMClient } from "../core/LLMClient.js";
 import type { FunctionDefinition } from "../core/providers/types.js";
 import type {
   HarvestSession,
@@ -15,7 +15,8 @@ const logger = createComponentLogger("url-identification-agent");
  */
 export async function identifyEndUrl(
   session: HarvestSession,
-  harUrls: URLInfo[]
+  harUrls: URLInfo[],
+  llmClient?: LLMClient
 ): Promise<string> {
   if (!harUrls || harUrls.length === 0) {
     throw new HarvestError(
@@ -25,7 +26,7 @@ export async function identifyEndUrl(
   }
 
   try {
-    const llmClient = getLLMClient();
+    const client = llmClient || getLLMClient();
 
     // Pre-filter and sort URLs to increase chances of getting a good result
     const filteredUrls = filterApiUrls(harUrls);
@@ -41,7 +42,7 @@ export async function identifyEndUrl(
     const functionDef = createFunctionDefinition(session.prompt);
     const prompt = createPrompt(session.prompt, sortedUrls);
 
-    const response = await llmClient.callFunction<URLIdentificationResponse>(
+    const response = await client.callFunction<URLIdentificationResponse>(
       prompt,
       functionDef,
       "identify_end_url"
