@@ -4,7 +4,7 @@
  * Collects HAR files, cookies, and screenshots from browser sessions
  */
 
-import { mkdir, writeFile } from "node:fs/promises";
+import { access, mkdir, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { BrowserContext, Page, Request, Response } from "playwright";
 import { logBrowserError, logBrowserOperation } from "../utils/logger.js";
@@ -88,6 +88,7 @@ export class ArtifactCollector {
     string,
     { intervalId: NodeJS.Timeout; artifacts: Artifact[] }
   >();
+  private networkRequestCallback?: ((count: number) => void) | undefined;
 
   constructor() {
     logBrowserOperation("artifact_collector_created");
@@ -105,6 +106,44 @@ export class ArtifactCollector {
    */
   isTrackingNetwork(): boolean {
     return this.isNetworkTracking;
+  }
+
+  /**
+   * Set callback for network request count updates
+   */
+  setNetworkRequestCallback(callback: (count: number) => void): void {
+    this.networkRequestCallback = callback;
+  }
+
+  /**
+   * Validate that an artifact file was created and has content
+   */
+  private async validateArtifact(
+    artifact: Artifact
+  ): Promise<{ isValid: boolean; size: number; error?: string }> {
+    try {
+      await access(artifact.path);
+      const stats = await stat(artifact.path);
+
+      if (stats.size === 0) {
+        return {
+          isValid: false,
+          size: 0,
+          error: "Artifact file is empty",
+        };
+      }
+
+      return {
+        isValid: true,
+        size: stats.size,
+      };
+    } catch (error) {
+      return {
+        isValid: false,
+        size: 0,
+        error: error instanceof Error ? error.message : "File access failed",
+      };
+    }
   }
 
   /**
@@ -165,6 +204,11 @@ export class ArtifactCollector {
         // Store reference to HAR entry on request for response handler
         (request as Request & { _harEntry: HarEntry })._harEntry = harEntry;
         this.harEntries.push(harEntry);
+
+        // Notify callback of updated request count
+        if (this.networkRequestCallback) {
+          this.networkRequestCallback(this.harEntries.length);
+        }
 
         logBrowserOperation("network_request_tracked", {
           method: request.method(),
@@ -308,10 +352,20 @@ export class ArtifactCollector {
         timestamp: new Date().toISOString(),
       };
 
+      // Validate the artifact was created properly
+      const validation = await this.validateArtifact(artifact);
+      if (!validation.isValid) {
+        throw new Error(`HAR artifact validation failed: ${validation.error}`);
+      }
+
+      // Add size to artifact
+      (artifact as Artifact & { size?: number }).size = validation.size;
+
       logBrowserOperation("har_generation_complete", {
         entryCount: this.harEntries.length,
         outputPath,
-        size: JSON.stringify(harData).length,
+        size: validation.size,
+        validated: true,
       });
 
       return artifact;
@@ -366,10 +420,23 @@ export class ArtifactCollector {
         timestamp: new Date().toISOString(),
       };
 
+      // Validate the artifact was created properly
+      const validation = await this.validateArtifact(artifact);
+      if (!validation.isValid) {
+        throw new Error(
+          `Cookie artifact validation failed: ${validation.error}`
+        );
+      }
+
+      // Add size to artifact
+      (artifact as Artifact & { size?: number }).size = validation.size;
+
       logBrowserOperation("cookie_extraction_complete", {
         cookieCount: cookies.length,
         outputPath,
         domains: cookieData.domains.length,
+        size: validation.size,
+        validated: true,
       });
 
       return artifact;
@@ -408,9 +475,22 @@ export class ArtifactCollector {
         timestamp: new Date().toISOString(),
       };
 
+      // Validate the artifact was created properly
+      const validation = await this.validateArtifact(artifact);
+      if (!validation.isValid) {
+        throw new Error(
+          `Screenshot artifact validation failed: ${validation.error}`
+        );
+      }
+
+      // Add size to artifact
+      (artifact as Artifact & { size?: number }).size = validation.size;
+
       logBrowserOperation("screenshot_capture_complete", {
         url: page.url(),
         outputPath,
+        size: validation.size,
+        validated: true,
       });
 
       return artifact;
