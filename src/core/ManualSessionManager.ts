@@ -165,8 +165,42 @@ export class ManualSessionManager {
       ) {
         const screenshotInterval = setInterval(async () => {
           try {
+            // Check if session and browser are still alive before screenshot
+            const session = this.activeSessions.get(sessionId);
+            if (!session) {
+              logger.debug(
+                `[ManualSessionManager] Session ${sessionId} no longer exists, clearing screenshot interval`
+              );
+              this.clearScreenshotInterval(sessionId);
+              return;
+            }
+
+            const isHealthy = await this.checkPageHealth(session);
+            if (!isHealthy) {
+              logger.debug(
+                `[ManualSessionManager] Browser not healthy for session ${sessionId}, skipping screenshot`
+              );
+              return;
+            }
+
             await this.takeSessionScreenshot(sessionId);
           } catch (error) {
+            // Check if this is a browser closure error
+            if (
+              error instanceof Error &&
+              (error.message.includes(
+                "Target page, context or browser has been closed"
+              ) ||
+                error.message.includes("Execution context was destroyed") ||
+                error.message.includes("TargetClosedError"))
+            ) {
+              logger.info(
+                `[ManualSessionManager] Browser closed for session ${sessionId}, stopping auto-screenshots`
+              );
+              this.clearScreenshotInterval(sessionId);
+              return;
+            }
+
             logger.error(
               `[ManualSessionManager] Auto-screenshot failed for session ${sessionId}:`,
               error
@@ -255,12 +289,33 @@ export class ManualSessionManager {
         session.config.artifactConfig?.saveScreenshots !== false)
     ) {
       try {
+        // Clear screenshot interval before taking final screenshot to prevent conflicts
+        this.clearScreenshotInterval(sessionId);
+
         await this.takeSessionScreenshot(sessionId);
       } catch (error) {
-        logger.warn(
-          `[ManualSessionManager] Failed to take final screenshot for ${sessionId}: ${error}`
-        );
+        if (
+          error instanceof Error &&
+          (error.message.includes(
+            "Target page, context or browser has been closed"
+          ) ||
+            error.message.includes("Execution context was destroyed") ||
+            error.message.includes("TargetClosedError") ||
+            error.message.includes("Page is closed") ||
+            error.message.includes("Browser is disconnected"))
+        ) {
+          logger.info(
+            `[ManualSessionManager] Cannot take final screenshot for ${sessionId}: browser already closed`
+          );
+        } else {
+          logger.warn(
+            `[ManualSessionManager] Failed to take final screenshot for ${sessionId}: ${error}`
+          );
+        }
       }
+    } else {
+      // Still clear the interval even if not taking final screenshot
+      this.clearScreenshotInterval(sessionId);
     }
   }
 
@@ -746,12 +801,37 @@ export class ManualSessionManager {
   }
 
   /**
+   * Clear screenshot interval for a session
+   */
+  private clearScreenshotInterval(sessionId: string): void {
+    const screenshotIntervalId = this.cleanupIntervals.get(
+      `screenshot_${sessionId}`
+    );
+    if (screenshotIntervalId) {
+      clearInterval(screenshotIntervalId);
+      this.cleanupIntervals.delete(`screenshot_${sessionId}`);
+      logger.debug(
+        `[ManualSessionManager] Cleared screenshot interval for session ${sessionId}`
+      );
+    }
+  }
+
+  /**
    * Take a screenshot for an active session
    */
   private async takeSessionScreenshot(sessionId: string): Promise<void> {
     const session = this.activeSessions.get(sessionId);
     if (!session) {
       throw new Error(`Session not found: ${sessionId}`);
+    }
+
+    // Additional checks before attempting screenshot
+    if (!session.agent.page || session.agent.page.isClosed()) {
+      throw new Error(`Page is closed for session ${sessionId}`);
+    }
+
+    if (!session.agent.browser?.isConnected()) {
+      throw new Error(`Browser is disconnected for session ${sessionId}`);
     }
 
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -876,16 +956,13 @@ export class ManualSessionManager {
     if (timeoutId) {
       clearTimeout(timeoutId);
       this.cleanupIntervals.delete(sessionId);
+      logger.debug(
+        `[ManualSessionManager] Cleared timeout timer for session ${sessionId}`
+      );
     }
 
-    // Clean up screenshot interval
-    const screenshotIntervalId = this.cleanupIntervals.get(
-      `screenshot_${sessionId}`
-    );
-    if (screenshotIntervalId) {
-      clearInterval(screenshotIntervalId);
-      this.cleanupIntervals.delete(`screenshot_${sessionId}`);
-    }
+    // Clean up screenshot interval (use the dedicated method)
+    this.clearScreenshotInterval(sessionId);
   }
 
   /**
@@ -935,6 +1012,22 @@ export class ManualSessionManager {
         return false;
       }
 
+      // Check browser connection
+      if (!session.agent.browser?.isConnected()) {
+        logger.debug(
+          "[ManualSessionManager] Page health check failed: browser disconnected"
+        );
+        return false;
+      }
+
+      // Check context validity
+      if (!session.agent.context) {
+        logger.debug(
+          "[ManualSessionManager] Page health check failed: context missing"
+        );
+        return false;
+      }
+
       // Try a simple operation with timeout to check responsiveness
       await Promise.race([
         session.agent.page.evaluate(
@@ -945,8 +1038,9 @@ export class ManualSessionManager {
               }
             ).document?.readyState || "loading"
         ),
-        new Promise((_, reject) =>
-          setTimeout(() => reject(new Error("Health check timeout")), 2000)
+        new Promise(
+          (_, reject) =>
+            setTimeout(() => reject(new Error("Health check timeout")), 1500) // Reduced timeout
         ),
       ]);
       return true;
@@ -958,7 +1052,9 @@ export class ManualSessionManager {
             "Target page, context or browser has been closed"
           ) ||
           error.message.includes("TargetClosedError") ||
-          error.message.includes("Health check timeout"))
+          error.message.includes("Health check timeout") ||
+          error.message.includes("Protocol error") ||
+          error.message.includes("Navigation"))
       ) {
         logger.debug(
           `[ManualSessionManager] Page health check failed due to navigation/context change: ${error.message}`
@@ -1023,6 +1119,9 @@ export class ManualSessionManager {
     );
 
     try {
+      // Clear screenshot intervals immediately to prevent further calls
+      this.clearScreenshotInterval(sessionId);
+
       // Force cleanup without waiting
       await this.gracefulAgentCleanup(session.agent, sessionId);
     } catch (error) {
