@@ -11,7 +11,6 @@
     "typecheck": "tsc --noEmit --strict --exactOptionalPropertyTypes --pretty",
     "typecheck:strict": "tsc --noEmit --strict --exactOptionalPropertyTypes --pretty",
     "check": "biome check --write",
-    "check:fix": "biome check --write",
     "format": "biome format --write",
     "lint": "biome lint --write",
     "validate:quick": "bun run typecheck && bun run check && bun test",
