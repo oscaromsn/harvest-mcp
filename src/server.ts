@@ -12,7 +12,10 @@ import { identifyDynamicParts } from "./agents/DynamicPartsAgent.js";
 import { identifyInputVariables } from "./agents/InputVariablesAgent.js";
 import { identifyEndUrl } from "./agents/URLIdentificationAgent.js";
 import { generateWrapperScript } from "./core/CodeGenerator.js";
+import { parseHARFile } from "./core/HARParser.js";
+import { createLLMClientWithConfig } from "./core/LLMClient.js";
 import { manualSessionManager } from "./core/ManualSessionManager.js";
+import { validateConfiguration } from "./core/providers/ProviderFactory.js";
 import { SessionManager } from "./core/SessionManager.js";
 import {
   type BrowserSessionInfo,
@@ -27,6 +30,7 @@ import {
   SessionIdSchema,
   type SessionStartResponse,
   SessionStartSchema,
+  type URLInfo,
 } from "./types/index.js";
 import { serverLogger } from "./utils/logger.js";
 
@@ -43,6 +47,9 @@ export class HarvestMCPServer {
 
   constructor() {
     this.sessionManager = new SessionManager();
+
+    // Validate LLM configuration at startup
+    this.validateEnvironmentOnStartup();
 
     this.server = new McpServer(
       {
@@ -74,14 +81,68 @@ export class HarvestMCPServer {
   }
 
   /**
+   * Validate environment configuration at startup and log warnings
+   */
+  private validateEnvironmentOnStartup(): void {
+    const config = validateConfiguration();
+
+    if (config.isConfigured) {
+      serverLogger.info(
+        {
+          configuredProviders: config.configuredProviders,
+          warnings: config.warnings,
+        },
+        "LLM provider configuration validated"
+      );
+
+      // Log any warnings about configuration
+      for (const warning of config.warnings) {
+        serverLogger.warn(warning);
+      }
+    } else {
+      serverLogger.warn(
+        {
+          availableProviders: config.availableProviders,
+          configuredProviders: config.configuredProviders,
+        },
+        "LLM provider not configured - AI-powered analysis features will be unavailable"
+      );
+
+      // Log setup instructions
+      config.recommendations.forEach((rec, index) => {
+        serverLogger.info(`Setup step ${index + 1}: ${rec}`);
+      });
+    }
+  }
+
+  /**
    * Set up MCP tools
    */
   private setupTools(): void {
     // Session Management Tools
     this.server.tool(
       "session_start",
-      "Initialize a new Harvest analysis session with HAR file and prompt",
-      SessionStartSchema.shape,
+      "Initialize a new Harvest analysis session with HAR file and prompt. Creates a session that can be used for step-by-step API analysis and code generation.",
+      {
+        harPath: z
+          .string()
+          .min(1)
+          .describe(
+            "Absolute path to the HAR file to analyze. HAR files contain recorded HTTP requests and responses from browser network traffic."
+          ),
+        cookiePath: z
+          .string()
+          .optional()
+          .describe(
+            "Optional path to cookie file in Netscape format. Used for authentication state in generated code."
+          ),
+        prompt: z
+          .string()
+          .min(1)
+          .describe(
+            "Description of what the analysis should accomplish. This guides the AI analysis and code generation process. Example: 'Generate code to search for legal precedents'"
+          ),
+      },
       async (params): Promise<CallToolResult> => {
         return await this.handleSessionStart(params);
       }
@@ -98,8 +159,15 @@ export class HarvestMCPServer {
 
     this.server.tool(
       "session_delete",
-      "Delete an analysis session and free its resources",
-      SessionIdSchema.shape,
+      "Delete an analysis session and free its resources. Use this to clean up completed or unwanted sessions.",
+      {
+        sessionId: z
+          .string()
+          .uuid()
+          .describe(
+            "UUID of the session to delete. Use session_list to see available sessions."
+          ),
+      },
       async (params): Promise<CallToolResult> => {
         return await this.handleSessionDelete(params);
       }
@@ -108,17 +176,49 @@ export class HarvestMCPServer {
     // Analysis Tools
     this.server.tool(
       "analysis_run_initial_analysis",
-      "Identify the target action URL and create the master node in the dependency graph",
-      SessionIdSchema.shape,
+      "Identify the target action URL and create the master node in the dependency graph. Supports API key parameters for client-side LLM configuration.",
+      {
+        sessionId: SessionIdSchema.shape.sessionId,
+        // Client-side API key support
+        openaiApiKey: z
+          .string()
+          .optional()
+          .describe(
+            "OpenAI API key for client-side LLM configuration (overrides environment variable)"
+          ),
+        googleApiKey: z
+          .string()
+          .optional()
+          .describe(
+            "Google API key for client-side LLM configuration (overrides environment variable)"
+          ),
+        provider: z
+          .string()
+          .optional()
+          .describe(
+            "LLM provider to use: 'openai' or 'gemini' (overrides environment variable)"
+          ),
+        model: z
+          .string()
+          .optional()
+          .describe("LLM model to use (overrides environment variable)"),
+      },
       async (params): Promise<CallToolResult> => {
-        return await this.handleRunInitialAnalysis(params);
+        return await this.handleRunInitialAnalysisWithApiKeys(params);
       }
     );
 
     this.server.tool(
       "analysis_process_next_node",
-      "Process the next unresolved node in the dependency graph using dynamic parts and dependency analysis",
-      SessionIdSchema.shape,
+      "Process the next unresolved node in the dependency graph using dynamic parts and dependency analysis. This iteratively resolves dependencies and builds the complete API workflow.",
+      {
+        sessionId: z
+          .string()
+          .uuid()
+          .describe(
+            "UUID of the session containing nodes to process. The session must have been initialized with analysis_run_initial_analysis."
+          ),
+      },
       async (params): Promise<CallToolResult> => {
         return await this.handleProcessNextNode(params);
       }
@@ -126,8 +226,15 @@ export class HarvestMCPServer {
 
     this.server.tool(
       "analysis_is_complete",
-      "Check if the analysis workflow is complete by verifying all nodes are resolved",
-      SessionIdSchema.shape,
+      "Check if the analysis workflow is complete by verifying all nodes are resolved. Returns true when ready for code generation.",
+      {
+        sessionId: z
+          .string()
+          .uuid()
+          .describe(
+            "UUID of the session to check completion status. Use this to determine if analysis_process_next_node needs to be called again."
+          ),
+      },
       async (params): Promise<CallToolResult> => {
         return await this.handleIsComplete(params);
       }
@@ -136,8 +243,15 @@ export class HarvestMCPServer {
     // Debug Tools
     this.server.tool(
       "debug_get_unresolved_nodes",
-      "Get a list of all nodes in the dependency graph that still have unresolved dynamic parts",
-      SessionIdSchema.shape,
+      "Get a list of all nodes in the dependency graph that still have unresolved dynamic parts. Useful for debugging analysis issues.",
+      {
+        sessionId: z
+          .string()
+          .uuid()
+          .describe(
+            "UUID of the session to inspect. Shows which nodes still need processing and why analysis isn't complete."
+          ),
+      },
       async (params): Promise<CallToolResult> => {
         return await this.handleGetUnresolvedNodes(params);
       }
@@ -145,8 +259,19 @@ export class HarvestMCPServer {
 
     this.server.tool(
       "debug_get_node_details",
-      "Get detailed information about a specific node in the dependency graph",
-      SessionIdSchema.extend({ nodeId: z.string().uuid() }).shape,
+      "Get detailed information about a specific node in the dependency graph. Shows request details, dependencies, and processing status.",
+      {
+        sessionId: z
+          .string()
+          .uuid()
+          .describe("UUID of the session containing the node to inspect."),
+        nodeId: z
+          .string()
+          .uuid()
+          .describe(
+            "UUID of the specific node to examine. Use debug_get_unresolved_nodes to find node IDs."
+          ),
+      },
       async (params): Promise<CallToolResult> => {
         return await this.handleGetNodeDetails(params);
       }
@@ -154,8 +279,15 @@ export class HarvestMCPServer {
 
     this.server.tool(
       "debug_list_all_requests",
-      "Get the filtered list of all requests from the HAR file available for analysis",
-      SessionIdSchema.shape,
+      "Get the filtered list of all requests from the HAR file available for analysis. Shows URLs, methods, and basic metadata.",
+      {
+        sessionId: z
+          .string()
+          .uuid()
+          .describe(
+            "UUID of the session to inspect. Lists all HTTP requests found in the HAR file that are available for analysis."
+          ),
+      },
       async (params): Promise<CallToolResult> => {
         return await this.handleListAllRequests(params);
       }
@@ -163,12 +295,28 @@ export class HarvestMCPServer {
 
     this.server.tool(
       "debug_force_dependency",
-      "Manually create a dependency link between two nodes in the DAG to override automatic analysis",
-      SessionIdSchema.extend({
-        consumerNodeId: z.string().uuid(),
-        providerNodeId: z.string().uuid(),
-        providedPart: z.string(),
-      }).shape,
+      "Manually create a dependency link between two nodes in the DAG to override automatic analysis. Use when automatic dependency detection fails.",
+      {
+        sessionId: z
+          .string()
+          .uuid()
+          .describe("UUID of the session containing the nodes to link."),
+        consumerNodeId: z
+          .string()
+          .uuid()
+          .describe("UUID of the node that depends on the provider's data."),
+        providerNodeId: z
+          .string()
+          .uuid()
+          .describe(
+            "UUID of the node that provides data (must be executed first)."
+          ),
+        providedPart: z
+          .string()
+          .describe(
+            "Name of the dynamic part that the provider node resolves for the consumer."
+          ),
+      },
       async (params): Promise<CallToolResult> => {
         return await this.handleForceDependency(params);
       }
@@ -177,8 +325,15 @@ export class HarvestMCPServer {
     // Code Generation Tools
     this.server.tool(
       "codegen_generate_wrapper_script",
-      "Generate a complete TypeScript wrapper script from the completed dependency analysis",
-      SessionIdSchema.shape,
+      "Generate a complete TypeScript wrapper script from the completed dependency analysis. Only works when analysis is complete (all nodes resolved).",
+      {
+        sessionId: z
+          .string()
+          .uuid()
+          .describe(
+            "UUID of the session with completed analysis. Use analysis_is_complete to verify the session is ready for code generation."
+          ),
+      },
       async (params): Promise<CallToolResult> => {
         return await this.handleGenerateWrapperScript(params);
       }
@@ -196,8 +351,27 @@ export class HarvestMCPServer {
 
     this.server.tool(
       "session_stop_manual",
-      "Stop a manual browser session and collect all artifacts (HAR files, cookies, screenshots)",
-      ManualSessionStopSchema.shape,
+      "Stop a manual browser session and collect all artifacts (HAR files, cookies, screenshots). Generates files ready for analysis.",
+      {
+        sessionId: z
+          .string()
+          .uuid()
+          .describe(
+            "UUID of the manual session to stop. Use session_list_manual to see active sessions."
+          ),
+        takeScreenshot: z
+          .boolean()
+          .default(true)
+          .describe(
+            "Whether to take a final screenshot before stopping the session."
+          ),
+        reason: z
+          .string()
+          .optional()
+          .describe(
+            "Optional reason for stopping the session (for logging purposes)."
+          ),
+      },
       async (params): Promise<CallToolResult> => {
         return await this.handleStopManualSession(params);
       }
@@ -214,9 +388,14 @@ export class HarvestMCPServer {
 
     this.server.tool(
       "session_health_check_manual",
-      "Check the health status of a manual browser session",
+      "Check the health status of a manual browser session. Detects if the browser is still responsive.",
       {
-        sessionId: z.string().uuid("Session ID must be a valid UUID"),
+        sessionId: z
+          .string()
+          .uuid("Session ID must be a valid UUID")
+          .describe(
+            "UUID of the manual session to check. Reports browser connectivity and responsiveness."
+          ),
       },
       async (params): Promise<CallToolResult> => {
         return await this.handleCheckManualSessionHealth(params);
@@ -225,9 +404,14 @@ export class HarvestMCPServer {
 
     this.server.tool(
       "session_recover_manual",
-      "Attempt to recover an unhealthy manual browser session",
+      "Attempt to recover an unhealthy manual browser session. Tries to restore browser functionality.",
       {
-        sessionId: z.string().uuid("Session ID must be a valid UUID"),
+        sessionId: z
+          .string()
+          .uuid("Session ID must be a valid UUID")
+          .describe(
+            "UUID of the manual session to recover. Use after session_health_check_manual reports an unhealthy session."
+          ),
       },
       async (params): Promise<CallToolResult> => {
         return await this.handleRecoverManualSession(params);
@@ -235,6 +419,53 @@ export class HarvestMCPServer {
     );
 
     // Simplified workflow tools
+    this.server.tool(
+      "workflow_complete_analysis",
+      "Complete end-to-end analysis workflow: automatically runs initial analysis, processes all nodes, and generates code",
+      {
+        sessionId: z
+          .string()
+          .uuid()
+          .describe(
+            "UUID of the session to analyze. Must be a session created with session_start that hasn't been analyzed yet."
+          ),
+        maxIterations: z
+          .number()
+          .int()
+          .min(1)
+          .max(50)
+          .default(20)
+          .describe(
+            "Maximum number of analysis iterations to prevent infinite loops."
+          ),
+        openaiApiKey: z
+          .string()
+          .optional()
+          .describe(
+            "OpenAI API key for client-side LLM configuration (overrides environment variable)"
+          ),
+        googleApiKey: z
+          .string()
+          .optional()
+          .describe(
+            "Google API key for client-side LLM configuration (overrides environment variable)"
+          ),
+        provider: z
+          .string()
+          .optional()
+          .describe(
+            "LLM provider to use: 'openai' or 'gemini' (overrides environment variable)"
+          ),
+        model: z
+          .string()
+          .optional()
+          .describe("LLM model to use (overrides environment variable)"),
+      },
+      async (params): Promise<CallToolResult> => {
+        return await this.handleCompleteAnalysis(params);
+      }
+    );
+
     this.server.tool(
       "workflow_quick_capture",
       "Simplified workflow: Start manual session, capture interactions, and prepare for analysis",
@@ -258,7 +489,7 @@ export class HarvestMCPServer {
 
     this.server.tool(
       "workflow_analyze_har",
-      "Simplified workflow: Analyze HAR file with automatic fallbacks and clear feedback",
+      "Simplified workflow: Analyze HAR file with automatic fallbacks and clear feedback. Supports API key parameters for client-side LLM configuration.",
       {
         harPath: z.string().min(1).describe("Path to the HAR file"),
         cookiePath: z
@@ -273,6 +504,29 @@ export class HarvestMCPServer {
           .boolean()
           .default(true)
           .describe("Automatically attempt to fix common issues"),
+        // Client-side API key support
+        openaiApiKey: z
+          .string()
+          .optional()
+          .describe(
+            "OpenAI API key for client-side LLM configuration (overrides environment variable)"
+          ),
+        googleApiKey: z
+          .string()
+          .optional()
+          .describe(
+            "Google API key for client-side LLM configuration (overrides environment variable)"
+          ),
+        provider: z
+          .string()
+          .optional()
+          .describe(
+            "LLM provider to use: 'openai' or 'gemini' (overrides environment variable)"
+          ),
+        model: z
+          .string()
+          .optional()
+          .describe("LLM model to use (overrides environment variable)"),
       },
       async (params): Promise<CallToolResult> => {
         return await this.handleAnalyzeHarWorkflow(params);
@@ -280,6 +534,22 @@ export class HarvestMCPServer {
     );
 
     // System monitoring tools
+    this.server.tool(
+      "session_status",
+      "Get detailed status of a specific session including progress, completion, and next recommended actions",
+      {
+        sessionId: z
+          .string()
+          .uuid()
+          .describe(
+            "UUID of the session to check. Provides comprehensive status information and next steps."
+          ),
+      },
+      async (params): Promise<CallToolResult> => {
+        return await this.handleSessionStatus(params);
+      }
+    );
+
     this.server.tool(
       "system_memory_status",
       "Get current memory usage and session statistics",
@@ -290,14 +560,56 @@ export class HarvestMCPServer {
     );
 
     this.server.tool(
+      "har_validate",
+      "Validate a HAR file before analysis to check quality and identify potential issues",
+      {
+        harPath: z
+          .string()
+          .min(1)
+          .describe(
+            "Absolute path to the HAR file to validate. Checks file format, request quality, and analysis readiness."
+          ),
+        detailed: z
+          .boolean()
+          .default(false)
+          .describe(
+            "Whether to provide detailed analysis including request breakdown and suggestions."
+          ),
+      },
+      async (params): Promise<CallToolResult> => {
+        return await this.handleHarValidation(params);
+      }
+    );
+
+    this.server.tool(
+      "system_config_validate",
+      "Validate LLM provider configuration and provide setup guidance for troubleshooting",
+      {
+        testApiKey: z
+          .string()
+          .optional()
+          .describe(
+            "Test API key for validation without setting environment variables"
+          ),
+        testProvider: z
+          .string()
+          .optional()
+          .describe("Test provider ('openai' or 'gemini') for validation"),
+      },
+      async (params): Promise<CallToolResult> => {
+        return await this.handleConfigValidation(params);
+      }
+    );
+
+    this.server.tool(
       "system_cleanup",
-      "Perform system cleanup to free memory and resources",
+      "Perform system cleanup to free memory and resources. Helps with memory management and performance.",
       {
         aggressive: z
           .boolean()
           .default(false)
           .describe(
-            "Perform aggressive cleanup (may close long-running sessions)"
+            "Perform aggressive cleanup (may close long-running sessions). Aggressive cleanup removes more data but may impact performance."
           ),
       },
       async (params): Promise<CallToolResult> => {
@@ -821,6 +1133,56 @@ export class HarvestMCPServer {
   }
 
   /**
+   * Handle analysis_run_initial_analysis with API key support
+   */
+  public async handleRunInitialAnalysisWithApiKeys(
+    args: unknown
+  ): Promise<CallToolResult> {
+    const parsedArgs = args as {
+      sessionId: string;
+      openaiApiKey?: string;
+      googleApiKey?: string;
+      provider?: string;
+      model?: string;
+    };
+
+    let apiConfig:
+      | {
+          openaiApiKey?: string;
+          googleApiKey?: string;
+          provider?: string;
+          model?: string;
+        }
+      | undefined;
+
+    if (
+      parsedArgs.openaiApiKey ||
+      parsedArgs.googleApiKey ||
+      parsedArgs.provider ||
+      parsedArgs.model
+    ) {
+      apiConfig = {};
+      if (parsedArgs.openaiApiKey) {
+        apiConfig.openaiApiKey = parsedArgs.openaiApiKey;
+      }
+      if (parsedArgs.googleApiKey) {
+        apiConfig.googleApiKey = parsedArgs.googleApiKey;
+      }
+      if (parsedArgs.provider) {
+        apiConfig.provider = parsedArgs.provider;
+      }
+      if (parsedArgs.model) {
+        apiConfig.model = parsedArgs.model;
+      }
+    }
+
+    return await this.handleRunInitialAnalysisWithConfig(
+      { sessionId: parsedArgs.sessionId },
+      apiConfig
+    );
+  }
+
+  /**
    * Handle analysis.process_next_node tool
    */
   public async handleProcessNextNode(args: unknown): Promise<CallToolResult> {
@@ -1045,8 +1407,26 @@ export class HarvestMCPServer {
         "Starting initial analysis - identifying action URL"
       );
 
-      // Use URLIdentificationAgent to identify the target URL
-      const actionUrl = await identifyEndUrl(session, session.harData.urls);
+      // Use URLIdentificationAgent to identify the target URL with fallback
+      let actionUrl: string;
+      try {
+        actionUrl = await identifyEndUrl(session, session.harData.urls);
+      } catch (error) {
+        // If LLM-based identification fails, use heuristic fallback
+        if (
+          error instanceof HarvestError &&
+          error.code === "NO_PROVIDER_CONFIGURED"
+        ) {
+          this.sessionManager.addLog(
+            argsObj.sessionId,
+            "warn",
+            "LLM provider not configured, using heuristic URL selection"
+          );
+          actionUrl = this.selectUrlHeuristically(session.harData.urls);
+        } else {
+          throw error;
+        }
+      }
 
       // Find the corresponding request in HAR data
       const targetRequest = session.harData.requests.find(
@@ -1115,6 +1495,179 @@ export class HarvestMCPServer {
               harQuality: session.harData.validation?.quality,
               nextStep:
                 "Use analysis.process_next_node to begin dependency analysis",
+            }),
+          },
+        ],
+      };
+    } catch (error) {
+      if (error instanceof HarvestError) {
+        throw error;
+      }
+
+      throw new HarvestError(
+        `Initial analysis failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+        "INITIAL_ANALYSIS_FAILED",
+        { originalError: error }
+      );
+    }
+  }
+
+  /**
+   * Handle initial analysis with API key configuration support
+   */
+  public async handleRunInitialAnalysisWithConfig(
+    args: { sessionId: string },
+    apiConfig?: {
+      openaiApiKey?: string;
+      googleApiKey?: string;
+      provider?: string;
+      model?: string;
+    }
+  ): Promise<CallToolResult> {
+    try {
+      const session = this.sessionManager.getSession(args.sessionId);
+
+      // Check HAR data quality before proceeding
+      if (session.harData.validation) {
+        const validation = session.harData.validation;
+
+        if (validation.quality === "empty") {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error: "Cannot analyze empty HAR file",
+                  message: "No meaningful network requests found in HAR file",
+                  issues: validation.issues,
+                  recommendations: validation.recommendations,
+                  stats: validation.stats,
+                  nextSteps: [
+                    "1. Capture a new HAR file with meaningful interactions",
+                    "2. Ensure you interact with the website's main functionality",
+                    "3. Look for forms, buttons, or API calls to capture",
+                  ],
+                }),
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        if (validation.quality === "poor") {
+          this.sessionManager.addLog(
+            args.sessionId,
+            "warn",
+            `Proceeding with poor quality HAR file: ${validation.issues.join(", ")}`
+          );
+        }
+      }
+
+      // Check if we have any URLs available
+      if (!session.harData.urls || session.harData.urls.length === 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                error: "Cannot analyze - no URLs found",
+                message: "No URLs available for analysis",
+                nextSteps: [
+                  "1. Capture a new HAR file with website interactions",
+                  "2. Ensure network requests are recorded during capture",
+                  "3. Use session_start with a valid HAR file",
+                ],
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      // Create LLM client with API key configuration if provided
+      const llmClient = apiConfig
+        ? createLLMClientWithConfig(apiConfig)
+        : undefined;
+
+      // Identify end URL with optional LLM client and fallback handling
+      let actionUrl: string;
+      try {
+        actionUrl = await identifyEndUrl(
+          session,
+          session.harData.urls,
+          llmClient
+        );
+      } catch (error) {
+        // If LLM-based identification fails, use heuristic fallback
+        if (
+          error instanceof HarvestError &&
+          error.code === "NO_PROVIDER_CONFIGURED"
+        ) {
+          this.sessionManager.addLog(
+            args.sessionId,
+            "warn",
+            "LLM provider not configured, using heuristic URL selection"
+          );
+          actionUrl = this.selectUrlHeuristically(session.harData.urls);
+        } else {
+          throw error;
+        }
+      }
+
+      // Find the corresponding request in HAR data
+      const targetRequest = session.harData.requests.find(
+        (req) => req.url === actionUrl
+      );
+
+      if (!targetRequest) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                error: "Target request not found",
+                message: `URL ${actionUrl} not found in HAR data`,
+                nextSteps: [
+                  "1. Check HAR file contains the expected requests",
+                  "2. Verify the URL identification is working correctly",
+                  "3. Try with a different HAR file",
+                ],
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      // Create DAG node for the target request
+      const nodeId = session.dagManager.addNode("master_curl", {
+        key: targetRequest,
+      });
+
+      // Set as master node
+      session.state.masterNodeId = nodeId;
+
+      this.sessionManager.addLog(
+        args.sessionId,
+        "info",
+        `Initial analysis complete. Master node created: ${nodeId}`
+      );
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              status: "success",
+              message: "Initial analysis completed successfully",
+              actionUrl,
+              masterNodeId: nodeId,
+              targetRequest: {
+                url: targetRequest.url,
+                method: targetRequest.method,
+                headers: targetRequest.headers,
+                body: targetRequest.body,
+              },
             }),
           },
         ],
@@ -2796,6 +3349,203 @@ export class HarvestMCPServer {
   }
 
   /**
+   * Handle workflow_complete_analysis tool call
+   */
+  public async handleCompleteAnalysis(args: unknown): Promise<CallToolResult> {
+    try {
+      const argsObj = args as {
+        sessionId: string;
+        maxIterations: number;
+        openaiApiKey?: string;
+        googleApiKey?: string;
+        provider?: string;
+        model?: string;
+      };
+
+      const startTime = Date.now();
+      const steps: string[] = [];
+      const warnings: string[] = [];
+
+      // Prepare API configuration if provided
+      let apiConfig:
+        | {
+            openaiApiKey?: string;
+            googleApiKey?: string;
+            provider?: string;
+            model?: string;
+          }
+        | undefined;
+
+      if (
+        argsObj.openaiApiKey ||
+        argsObj.googleApiKey ||
+        argsObj.provider ||
+        argsObj.model
+      ) {
+        apiConfig = {};
+        if (argsObj.openaiApiKey) {
+          apiConfig.openaiApiKey = argsObj.openaiApiKey;
+        }
+        if (argsObj.googleApiKey) {
+          apiConfig.googleApiKey = argsObj.googleApiKey;
+        }
+        if (argsObj.provider) {
+          apiConfig.provider = argsObj.provider;
+        }
+        if (argsObj.model) {
+          apiConfig.model = argsObj.model;
+        }
+      }
+
+      steps.push("🚀 Starting complete analysis workflow");
+
+      // Step 1: Run initial analysis
+      steps.push("📍 Step 1: Running initial analysis to identify target URL");
+      const initialResult = await this.handleRunInitialAnalysisWithConfig(
+        { sessionId: argsObj.sessionId },
+        apiConfig
+      );
+
+      if (initialResult.isError) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                success: false,
+                error: "Initial analysis failed",
+                sessionId: argsObj.sessionId,
+                steps,
+                details: initialResult.content?.[0]?.text || "Unknown error",
+                elapsedTime: Date.now() - startTime,
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      const initialData = JSON.parse(
+        (initialResult.content?.[0]?.text as string) ||
+          '{"actionUrl": "unknown"}'
+      );
+      steps.push(
+        `✅ Initial analysis complete - Target URL: ${initialData.actionUrl}`
+      );
+
+      // Step 2: Process all nodes iteratively
+      steps.push("🔄 Step 2: Processing dependency nodes");
+      let iterations = 0;
+      let isComplete = false;
+
+      while (!isComplete && iterations < argsObj.maxIterations) {
+        iterations++;
+
+        // Check if analysis is complete
+        const completeResult = await this.handleIsComplete({
+          sessionId: argsObj.sessionId,
+        });
+        const completeData = JSON.parse(
+          (completeResult.content?.[0]?.text as string) ||
+            '{"isComplete": false}'
+        );
+
+        if (completeData.isComplete) {
+          isComplete = true;
+          steps.push(`✅ Analysis complete after ${iterations} iterations`);
+          break;
+        }
+
+        // Process next node
+        const processResult = await this.handleProcessNextNode({
+          sessionId: argsObj.sessionId,
+        });
+        const processData = JSON.parse(
+          (processResult.content?.[0]?.text as string) ||
+            '{"message": "unknown"}'
+        );
+
+        if (processResult.isError) {
+          warnings.push(
+            `Iteration ${iterations}: ${processData.error || "Processing failed"}`
+          );
+          // Continue to next iteration - some nodes might fail but others might succeed
+        } else {
+          steps.push(
+            `📦 Processed node ${iterations}: ${processData.message || "Node processed"}`
+          );
+        }
+      }
+
+      if (!isComplete) {
+        warnings.push(
+          `Analysis incomplete after ${argsObj.maxIterations} iterations`
+        );
+      }
+
+      // Step 3: Generate code (if analysis is complete)
+      let generatedCode = "";
+      if (isComplete) {
+        steps.push("📝 Step 3: Generating TypeScript wrapper code");
+        try {
+          const codeResult = await this.handleGenerateWrapperScript({
+            sessionId: argsObj.sessionId,
+          });
+          const codeData = JSON.parse(
+            (codeResult.content?.[0]?.text as string) || '{"code": ""}'
+          );
+
+          if (codeResult.isError) {
+            warnings.push("Code generation failed");
+          } else {
+            generatedCode = codeData.code || "";
+            steps.push(
+              `✅ Code generation complete - ${generatedCode.length} characters generated`
+            );
+          }
+        } catch (error) {
+          warnings.push(
+            `Code generation error: ${error instanceof Error ? error.message : "Unknown error"}`
+          );
+        }
+      }
+
+      const elapsedTime = Date.now() - startTime;
+      steps.push(`🎯 Workflow completed in ${elapsedTime}ms`);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              success: true,
+              sessionId: argsObj.sessionId,
+              result: {
+                isComplete,
+                iterations,
+                targetUrl: initialData.actionUrl,
+                elapsedTime,
+                codeGenerated: !!generatedCode,
+                codeLength: generatedCode.length,
+              },
+              steps,
+              warnings,
+              ...(generatedCode && { generatedCode }),
+              summary: `Analysis ${isComplete ? "completed" : "partially completed"} in ${iterations} iterations (${elapsedTime}ms)`,
+            }),
+          },
+        ],
+      };
+    } catch (error) {
+      throw new HarvestError(
+        `Complete analysis workflow failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+        "COMPLETE_ANALYSIS_FAILED",
+        { originalError: error }
+      );
+    }
+  }
+
+  /**
    * Handle workflow_analyze_har tool call
    */
   public async handleAnalyzeHarWorkflow(
@@ -2842,6 +3592,10 @@ export class HarvestMCPServer {
       cookiePath?: string;
       description: string;
       autoFix: boolean;
+      openaiApiKey?: string;
+      googleApiKey?: string;
+      provider?: string;
+      model?: string;
     };
   }
 
@@ -2959,15 +3713,56 @@ export class HarvestMCPServer {
    */
   private async performWorkflowAnalysis(
     sessionId: string,
-    args: { harPath: string; description: string; autoFix: boolean },
+    args: {
+      harPath: string;
+      description: string;
+      autoFix: boolean;
+      openaiApiKey?: string;
+      googleApiKey?: string;
+      provider?: string;
+      model?: string;
+    },
     harValidation: HarValidationResult | undefined,
     analysisSteps: string[],
     warnings: string[],
     recommendations: string[]
   ): Promise<CallToolResult> {
     try {
-      // Attempt initial analysis
-      const initialResult = await this.handleRunInitialAnalysis({ sessionId });
+      // Attempt initial analysis with API key parameters
+      let apiConfig:
+        | {
+            openaiApiKey?: string;
+            googleApiKey?: string;
+            provider?: string;
+            model?: string;
+          }
+        | undefined;
+
+      if (
+        args.openaiApiKey ||
+        args.googleApiKey ||
+        args.provider ||
+        args.model
+      ) {
+        apiConfig = {};
+        if (args.openaiApiKey) {
+          apiConfig.openaiApiKey = args.openaiApiKey;
+        }
+        if (args.googleApiKey) {
+          apiConfig.googleApiKey = args.googleApiKey;
+        }
+        if (args.provider) {
+          apiConfig.provider = args.provider;
+        }
+        if (args.model) {
+          apiConfig.model = args.model;
+        }
+      }
+
+      const initialResult = await this.handleRunInitialAnalysisWithConfig(
+        { sessionId },
+        apiConfig
+      );
       const initialContent = initialResult.content?.[0]?.text;
 
       if (initialResult.isError || !initialContent) {
@@ -2976,7 +3771,8 @@ export class HarvestMCPServer {
           args,
           harValidation,
           "Initial analysis failed",
-          recommendations
+          recommendations,
+          "This usually indicates an LLM provider configuration issue. Try using API key parameters or run system_config_validate for setup guidance."
         );
       }
 
@@ -3172,7 +3968,8 @@ export class HarvestMCPServer {
     args: { harPath: string; description: string; autoFix: boolean },
     harValidation: HarValidationResult | undefined,
     error: string,
-    recommendations: string[]
+    recommendations: string[],
+    context?: string
   ): CallToolResult {
     return {
       content: [
@@ -3183,6 +3980,7 @@ export class HarvestMCPServer {
             workflow: "analyze_har",
             sessionId,
             error,
+            ...(context && { context }),
             harQuality: harValidation?.quality,
             issues: harValidation?.issues || [],
             autoFixAttempted: args.autoFix,
@@ -3190,6 +3988,7 @@ export class HarvestMCPServer {
               "🎯 Try workflow_quick_capture to get better HAR data",
               "📋 Ensure your workflow includes form submissions or API calls",
               "🔍 Use debug_list_all_requests to see what was captured",
+              "🔧 Run system_config_validate to check LLM provider setup",
               ...recommendations,
             ],
             debugInfo: {
@@ -3286,6 +4085,501 @@ export class HarvestMCPServer {
       throw new HarvestError(
         `Failed to get memory status: ${error instanceof Error ? error.message : "Unknown error"}`,
         "MEMORY_STATUS_FAILED",
+        { originalError: error }
+      );
+    }
+  }
+
+  /**
+   * Handle session_status tool call
+   */
+  public async handleSessionStatus(args: unknown): Promise<CallToolResult> {
+    try {
+      const argsObj = args as { sessionId: string };
+      const session = this.sessionManager.getSession(argsObj.sessionId);
+
+      // Calculate progress metrics
+      const totalNodes = session.dagManager.getNodeCount();
+      const unresolvedNodes = session.dagManager.getUnresolvedNodes().length;
+      const resolvedNodes = totalNodes - unresolvedNodes;
+      const progressPercent =
+        totalNodes > 0 ? Math.round((resolvedNodes / totalNodes) * 100) : 0;
+
+      // Determine next actions
+      const nextActions: string[] = [];
+      const warnings: string[] = [];
+
+      if (!session.state.masterNodeId) {
+        nextActions.push(
+          "Run analysis_run_initial_analysis to identify the target URL"
+        );
+      } else if (unresolvedNodes > 0) {
+        nextActions.push(
+          "Run analysis_process_next_node to continue resolving dependencies"
+        );
+        nextActions.push(`${unresolvedNodes} nodes remaining to process`);
+      } else if (session.state.isComplete) {
+        nextActions.push(
+          "Analysis complete - run codegen_generate_wrapper_script to generate code"
+        );
+      } else {
+        nextActions.push(
+          "Run analysis_is_complete to check if analysis is finished"
+        );
+      }
+
+      // Check for potential issues
+      if (
+        session.harData.validation &&
+        session.harData.validation.quality === "poor"
+      ) {
+        warnings.push(
+          "HAR file quality is poor - consider capturing a new one"
+        );
+      }
+
+      if (totalNodes === 0) {
+        warnings.push(
+          "No nodes in dependency graph - may need to run initial analysis"
+        );
+      }
+
+      const lastActivity = new Date(session.lastActivity);
+      const minutesInactive = Math.floor(
+        (Date.now() - lastActivity.getTime()) / (1000 * 60)
+      );
+
+      if (minutesInactive > 30) {
+        warnings.push(
+          `Session inactive for ${minutesInactive} minutes - may be stale`
+        );
+      }
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              success: true,
+              sessionId: argsObj.sessionId,
+              status: {
+                isComplete: session.state.isComplete,
+                hasActionUrl: !!session.state.actionUrl,
+                hasMasterNode: !!session.state.masterNodeId,
+                progressPercent,
+                phase: session.state.masterNodeId
+                  ? session.state.isComplete
+                    ? "complete"
+                    : "processing"
+                  : "initialization",
+              },
+              progress: {
+                totalNodes,
+                resolvedNodes,
+                unresolvedNodes,
+                currentlyProcessing: session.state.inProcessNodeId,
+                toBeProcessed: session.state.toBeProcessedNodes.length,
+              },
+              sessionInfo: {
+                prompt: session.prompt,
+                createdAt: session.createdAt,
+                lastActivity: session.lastActivity,
+                minutesInactive,
+                actionUrl: session.state.actionUrl,
+              },
+              harInfo: {
+                totalRequests: session.harData.requests.length,
+                totalUrls: session.harData.urls.length,
+                quality: session.harData.validation?.quality || "unknown",
+                hasCookies: !!session.cookieData,
+              },
+              nextActions,
+              warnings,
+              logs: session.state.logs.slice(-5), // Last 5 log entries
+            }),
+          },
+        ],
+      };
+    } catch (error) {
+      throw new HarvestError(
+        `Failed to get session status: ${error instanceof Error ? error.message : "Unknown error"}`,
+        "SESSION_STATUS_FAILED",
+        { originalError: error }
+      );
+    }
+  }
+
+  /**
+   * Heuristic URL selection when LLM is not available
+   */
+  private selectUrlHeuristically(urls: URLInfo[]): string {
+    if (urls.length === 0) {
+      throw new HarvestError(
+        "No URLs available for heuristic selection",
+        "NO_URLS_AVAILABLE"
+      );
+    }
+
+    // Score URLs based on patterns that indicate they're likely action URLs
+    const scoredUrls = urls.map((urlInfo) => {
+      let score = 0;
+      const url = urlInfo.url.toLowerCase();
+
+      // Prefer POST requests
+      if (urlInfo.method === "POST") {
+        score += 10;
+      }
+
+      // Prefer API endpoints
+      if (url.includes("/api/")) {
+        score += 8;
+      }
+      if (url.includes("/v1/") || url.includes("/v2/")) {
+        score += 6;
+      }
+
+      // Prefer action-like paths
+      if (url.includes("search")) {
+        score += 7;
+      }
+      if (url.includes("submit")) {
+        score += 7;
+      }
+      if (url.includes("create")) {
+        score += 6;
+      }
+      if (url.includes("update")) {
+        score += 6;
+      }
+      if (url.includes("delete")) {
+        score += 6;
+      }
+      if (url.includes("login")) {
+        score += 5;
+      }
+      if (url.includes("auth")) {
+        score += 5;
+      }
+
+      // Prefer JSON endpoints
+      if (url.includes(".json")) {
+        score += 4;
+      }
+
+      // Penalize static resources
+      if (url.includes(".css")) {
+        score -= 10;
+      }
+      if (url.includes(".js")) {
+        score -= 10;
+      }
+      if (url.includes(".png")) {
+        score -= 10;
+      }
+      if (url.includes(".jpg")) {
+        score -= 10;
+      }
+      if (url.includes(".ico")) {
+        score -= 10;
+      }
+      if (url.includes("favicon")) {
+        score -= 10;
+      }
+      if (url.includes("analytics")) {
+        score -= 8;
+      }
+      if (url.includes("tracking")) {
+        score -= 8;
+      }
+
+      // Prefer shorter, cleaner URLs
+      if (url.length < 100) {
+        score += 2;
+      }
+
+      return { url: urlInfo.url, score };
+    });
+
+    // Sort by score and return the highest scoring URL
+    scoredUrls.sort((a, b) => b.score - a.score);
+
+    const selectedUrl = scoredUrls[0]?.url;
+    if (!selectedUrl) {
+      throw new HarvestError(
+        "Could not select a URL heuristically",
+        "HEURISTIC_SELECTION_FAILED"
+      );
+    }
+
+    return selectedUrl;
+  }
+
+  /**
+   * Handle har_validate tool call
+   */
+  public async handleHarValidation(args: unknown): Promise<CallToolResult> {
+    try {
+      const argsObj = args as { harPath: string; detailed: boolean };
+
+      // Parse HAR file to get validation results
+      const harData = await parseHARFile(argsObj.harPath);
+
+      // Calculate quality metrics
+      const totalRequests = harData.requests.length;
+      const totalUrls = harData.urls.length;
+      const meaningfulRequests = harData.requests.filter(
+        (req) =>
+          req.method !== "OPTIONS" &&
+          !req.url.includes("favicon") &&
+          !req.url.includes("analytics") &&
+          !req.url.includes("tracking")
+      ).length;
+
+      const score = meaningfulRequests / Math.max(totalRequests, 1);
+
+      // Determine validation result
+      const validation = harData.validation || {
+        quality: meaningfulRequests > 0 ? "good" : "empty",
+        issues: [],
+        recommendations: [],
+        stats: {
+          totalRequests,
+          meaningfulRequests,
+          score: Math.round(score * 100),
+        },
+      };
+
+      // Generate suggestions
+      const suggestions: string[] = [];
+      const issues: string[] = [];
+
+      if (validation.quality === "empty") {
+        issues.push("No meaningful requests found in HAR file");
+        suggestions.push(
+          "Capture a new HAR file while actively using the website"
+        );
+        suggestions.push(
+          "Ensure you submit forms, click buttons, or trigger API calls"
+        );
+      } else if (validation.quality === "poor") {
+        issues.push("Very few meaningful requests captured");
+        suggestions.push("Try capturing more extensive interactions");
+        suggestions.push(
+          "Look for API calls, form submissions, or AJAX requests"
+        );
+      }
+
+      if (totalRequests > 1000) {
+        issues.push("HAR file is very large - may impact analysis performance");
+        suggestions.push(
+          "Consider filtering the HAR file to specific time periods"
+        );
+      }
+
+      if (totalUrls === 0) {
+        issues.push("No URLs found for analysis");
+        suggestions.push("Check if HAR file contains actual network requests");
+      }
+
+      // Build detailed analysis if requested
+      let detailedAnalysis = {};
+      if (argsObj.detailed) {
+        const requestsByMethod = harData.requests.reduce(
+          (acc, req) => {
+            acc[req.method] = (acc[req.method] || 0) + 1;
+            return acc;
+          },
+          {} as Record<string, number>
+        );
+
+        const domainBreakdown = harData.requests.reduce(
+          (acc, req) => {
+            const domain = new URL(req.url).hostname;
+            acc[domain] = (acc[domain] || 0) + 1;
+            return acc;
+          },
+          {} as Record<string, number>
+        );
+
+        detailedAnalysis = {
+          requestsByMethod,
+          domainBreakdown,
+          sampleUrls: harData.urls.slice(0, 10).map((u) => u.url),
+          fileSize: JSON.stringify(harData).length,
+          timespan:
+            harData.requests.length > 0
+              ? {
+                  start: harData.requests[0]?.timestamp || new Date(),
+                  end:
+                    harData.requests[harData.requests.length - 1]?.timestamp ||
+                    new Date(),
+                }
+              : null,
+        };
+      }
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              success: true,
+              harPath: argsObj.harPath,
+              validation: {
+                quality: validation.quality,
+                score: Math.round(score * 100),
+                isReady: validation.quality !== "empty",
+                issues,
+                suggestions,
+              },
+              metrics: {
+                totalRequests,
+                meaningfulRequests,
+                totalUrls,
+                requestScore: Math.round(score * 100),
+              },
+              ...(argsObj.detailed && { detailed: detailedAnalysis }),
+              recommendations: [
+                validation.quality === "good"
+                  ? "✅ HAR file looks good for analysis"
+                  : "⚠️ HAR file may need improvements",
+                ...suggestions,
+              ],
+            }),
+          },
+        ],
+      };
+    } catch (error) {
+      throw new HarvestError(
+        `HAR validation failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+        "HAR_VALIDATION_FAILED",
+        { originalError: error }
+      );
+    }
+  }
+
+  /**
+   * Handle system_config_validate tool call
+   */
+  public async handleConfigValidation(args: unknown): Promise<CallToolResult> {
+    try {
+      const argsObj = args as { testApiKey?: string; testProvider?: string };
+
+      // Get configuration status
+      const config = validateConfiguration();
+
+      // Test API key if provided
+      let testResults:
+        | {
+            testPassed: boolean;
+            testError?: string;
+            testProvider?: string;
+          }
+        | undefined;
+
+      if (argsObj.testApiKey && argsObj.testProvider) {
+        try {
+          const testClient = createLLMClientWithConfig({
+            provider: argsObj.testProvider,
+            ...(argsObj.testProvider === "openai" && {
+              openaiApiKey: argsObj.testApiKey,
+            }),
+            ...(argsObj.testProvider === "gemini" && {
+              googleApiKey: argsObj.testApiKey,
+            }),
+          });
+
+          // Test with a simple function call
+          await testClient.callFunction(
+            "Test configuration",
+            {
+              name: "test_config",
+              description: "Test function for configuration validation",
+              parameters: {
+                type: "object",
+                properties: {
+                  status: {
+                    type: "string",
+                    description: "Configuration test status",
+                  },
+                },
+                required: ["status"],
+              },
+            },
+            "test_config"
+          );
+
+          testResults = {
+            testPassed: true,
+            testProvider: argsObj.testProvider,
+          };
+        } catch (error) {
+          testResults = {
+            testPassed: false,
+            testError: error instanceof Error ? error.message : "Unknown error",
+            testProvider: argsObj.testProvider,
+          };
+        }
+      }
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              success: true,
+              timestamp: new Date().toISOString(),
+              configuration: {
+                isConfigured: config.isConfigured,
+                availableProviders: config.availableProviders,
+                configuredProviders: config.configuredProviders,
+                environmentVariables: {
+                  LLM_PROVIDER: !!process.env.LLM_PROVIDER,
+                  OPENAI_API_KEY: !!process.env.OPENAI_API_KEY,
+                  GOOGLE_API_KEY: !!process.env.GOOGLE_API_KEY,
+                  LLM_MODEL: !!process.env.LLM_MODEL,
+                },
+                recommendations: config.recommendations,
+                warnings: config.warnings,
+                ...(testResults && { testResults }),
+              },
+              setupInstructions: {
+                forMcpClient: [
+                  "Add environment variables to your MCP client configuration:",
+                  "{",
+                  '  "mcpServers": {',
+                  '    "harvest-mcp": {',
+                  '      "command": "bun",',
+                  '      "args": ["run", "src/server.ts"],',
+                  '      "env": {',
+                  '        "OPENAI_API_KEY": "your-openai-key",',
+                  '        "GOOGLE_API_KEY": "your-google-key",',
+                  '        "LLM_PROVIDER": "openai"',
+                  "      }",
+                  "    }",
+                  "  }",
+                  "}",
+                ],
+                forEnvironment: [
+                  "Set environment variables in your shell:",
+                  "export OPENAI_API_KEY=your-openai-key",
+                  "export GOOGLE_API_KEY=your-google-key",
+                  "export LLM_PROVIDER=openai",
+                ],
+                forToolParameters: [
+                  "Pass API keys directly to tools:",
+                  "workflow_analyze_har(..., openaiApiKey: 'your-key')",
+                  "analysis_run_initial_analysis(..., provider: 'openai')",
+                ],
+              },
+            }),
+          },
+        ],
+      };
+    } catch (error) {
+      throw new HarvestError(
+        `Configuration validation failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+        "CONFIG_VALIDATION_FAILED",
         { originalError: error }
       );
     }
