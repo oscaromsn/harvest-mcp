@@ -38,9 +38,22 @@ export class LLMClient {
       return this.providerPromise;
     }
 
-    this.providerPromise = getDefaultProvider(
-      this.model ? { model: this.model } : {}
-    ).then((provider) => {
+    // Try to get CLI config from global variable if available
+    let cliConfig: Record<string, unknown> = {};
+    try {
+      // Check if global CLI config is available (will be undefined during testing)
+      const globalThis_ = globalThis as typeof globalThis & {
+        __harvestCLIConfig?: Record<string, unknown>;
+      };
+      cliConfig = globalThis_.__harvestCLIConfig || {};
+    } catch {
+      // Ignore errors during testing or standalone usage
+    }
+
+    this.providerPromise = getDefaultProvider({
+      ...(this.model ? { model: this.model } : {}),
+      cliConfig,
+    }).then((provider) => {
       this.provider = provider;
       // Update model if not explicitly set
       if (!this.model) {
@@ -246,7 +259,21 @@ class LLMClientWithConfig extends LLMClient {
       configToPass.provider = this.providerConfig.provider;
     }
 
-    this.providerPromise = getDefaultProvider(configToPass).then((provider) => {
+    // Try to get CLI config from global variable if available
+    let cliConfig: Record<string, unknown> = {};
+    try {
+      const globalThis_ = globalThis as typeof globalThis & {
+        __harvestCLIConfig?: Record<string, unknown>;
+      };
+      cliConfig = globalThis_.__harvestCLIConfig || {};
+    } catch {
+      // Ignore errors during testing or standalone usage
+    }
+
+    this.providerPromise = getDefaultProvider({
+      ...configToPass,
+      cliConfig,
+    }).then((provider) => {
       this.provider = provider;
       // Update model if not explicitly set
       if (!this.model) {

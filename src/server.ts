@@ -35,6 +35,116 @@ import {
 import { serverLogger } from "./utils/logger.js";
 
 /**
+ * Command-line arguments interface
+ */
+interface CLIArgs {
+  provider?: string;
+  apiKey?: string;
+  openaiApiKey?: string;
+  googleApiKey?: string;
+  model?: string;
+  help?: boolean;
+}
+
+/**
+ * Parse command-line arguments
+ */
+function parseArgs(args: string[]): CLIArgs {
+  const result: CLIArgs = {};
+
+  for (const arg of args) {
+    parseArgument(arg, result);
+  }
+
+  return result;
+}
+
+/**
+ * Parse a single command-line argument
+ */
+function parseArgument(arg: string, result: CLIArgs): void {
+  if (arg === "--help" || arg === "-h") {
+    result.help = true;
+    return;
+  }
+
+  const argPairs = [
+    { prefix: "--provider=", key: "provider" as const },
+    { prefix: "--api-key=", key: "apiKey" as const },
+    { prefix: "--openai-api-key=", key: "openaiApiKey" as const },
+    { prefix: "--google-api-key=", key: "googleApiKey" as const },
+    { prefix: "--model=", key: "model" as const },
+  ];
+
+  for (const { prefix, key } of argPairs) {
+    if (arg.startsWith(prefix)) {
+      const value = arg.split("=")[1];
+      if (value) {
+        result[key] = value;
+      }
+      return;
+    }
+  }
+}
+
+/**
+ * Show help information
+ */
+function showHelp(): void {
+  console.log(`
+Harvest MCP Server - API Analysis and Integration Code Generation
+
+Usage:
+  bun run src/server.ts [options]
+
+Options:
+  --provider=<name>           LLM provider (openai, gemini/google)
+  --api-key=<key>            API key (auto-detects provider)
+  --openai-api-key=<key>     OpenAI API key
+  --google-api-key=<key>     Google API key  
+  --model=<name>             Model name (gpt-4o, gemini-2.0-flash, etc.)
+  --help, -h                 Show this help
+
+Examples:
+  bun run src/server.ts --provider=openai --api-key=sk-...
+  bun run src/server.ts --google-api-key=AIza... --model=gemini-2.0-flash
+
+MCP Client Configuration:
+  {
+    "mcpServers": {
+      "harvest-mcp": {
+        "command": "bun",
+        "args": [
+          "run", "/path/to/src/server.ts",
+          "--provider=google",
+          "--api-key=AIzaSy..."
+        ]
+      }
+    }
+  }
+`);
+}
+
+/**
+ * Global CLI configuration
+ */
+let globalCLIConfig: CLIArgs = {};
+
+/**
+ * Set global CLI configuration
+ */
+export function setGlobalCLIConfig(config: CLIArgs): void {
+  globalCLIConfig = config;
+}
+
+/**
+ * Get global CLI configuration
+ */
+export function getGlobalCLIConfig(): CLIArgs {
+  return globalCLIConfig;
+}
+
+/**
  * Harvest MCP Server
  *
  * A Model Context Protocol server that provides granular access to Harvest's
@@ -44,11 +154,21 @@ import { serverLogger } from "./utils/logger.js";
 export class HarvestMCPServer {
   public server: McpServer;
   public sessionManager: SessionManager;
+  private cliConfig: CLIArgs;
 
-  constructor() {
+  constructor(cliConfig: CLIArgs = {}) {
+    this.cliConfig = cliConfig;
     this.sessionManager = new SessionManager();
 
-    // Validate LLM configuration at startup
+    // Set global CLI config for access by other modules
+    setGlobalCLIConfig(cliConfig);
+
+    // Also set on globalThis for LLMClient access
+    (
+      globalThis as typeof globalThis & { __harvestCLIConfig?: CLIArgs }
+    ).__harvestCLIConfig = cliConfig;
+
+    // Validate LLM configuration at startup (now includes CLI args)
     this.validateEnvironmentOnStartup();
 
     this.server = new McpServer(
@@ -84,15 +204,16 @@ export class HarvestMCPServer {
    * Validate environment configuration at startup and log warnings
    */
   private validateEnvironmentOnStartup(): void {
-    const config = validateConfiguration();
+    const config = validateConfiguration(this.cliConfig);
 
     if (config.isConfigured) {
       serverLogger.info(
         {
           configuredProviders: config.configuredProviders,
+          configurationSource: config.configurationSource,
           warnings: config.warnings,
         },
-        "LLM provider configuration validated"
+        `LLM provider configuration validated (source: ${config.configurationSource})`
       );
 
       // Log any warnings about configuration
@@ -4568,8 +4689,8 @@ export class HarvestMCPServer {
     try {
       const argsObj = args as { testApiKey?: string; testProvider?: string };
 
-      // Get configuration status
-      const config = validateConfiguration();
+      // Get configuration status including CLI config
+      const config = validateConfiguration(this.cliConfig);
 
       // Test API key if provided
       let testResults:
@@ -4634,8 +4755,18 @@ export class HarvestMCPServer {
               timestamp: new Date().toISOString(),
               configuration: {
                 isConfigured: config.isConfigured,
+                configurationSource: config.configurationSource,
                 availableProviders: config.availableProviders,
                 configuredProviders: config.configuredProviders,
+                cliArguments: {
+                  provider: this.cliConfig.provider,
+                  hasApiKey: !!(
+                    this.cliConfig.apiKey ||
+                    this.cliConfig.openaiApiKey ||
+                    this.cliConfig.googleApiKey
+                  ),
+                  model: this.cliConfig.model,
+                },
                 environmentVariables: {
                   LLM_PROVIDER: !!process.env.LLM_PROVIDER,
                   OPENAI_API_KEY: !!process.env.OPENAI_API_KEY,
@@ -4647,8 +4778,27 @@ export class HarvestMCPServer {
                 ...(testResults && { testResults }),
               },
               setupInstructions: {
-                forMcpClient: [
-                  "Add environment variables to your MCP client configuration:",
+                preferredMethod: [
+                  "RECOMMENDED: Use CLI arguments in MCP client configuration:",
+                  "{",
+                  '  "mcpServers": {',
+                  '    "harvest-mcp": {',
+                  '      "command": "bun",',
+                  '      "args": [',
+                  '        "run", "src/server.ts",',
+                  '        "--provider=openai",',
+                  '        "--api-key=sk-your-openai-key"',
+                  "      ]",
+                  "    }",
+                  "  }",
+                  "}",
+                  "",
+                  "Or for Google Gemini:",
+                  '        "--provider=google",',
+                  '        "--api-key=AIza-your-google-key"',
+                ],
+                alternativeMethod: [
+                  "Alternative: Use environment variables:",
                   "{",
                   '  "mcpServers": {',
                   '    "harvest-mcp": {',
@@ -4827,8 +4977,49 @@ export class HarvestMCPServer {
   }
 }
 
+// Parse command-line arguments and start the server
+const cliArgs = parseArgs(process.argv.slice(2));
+
+// Show help if requested
+if (cliArgs.help) {
+  showHelp();
+  process.exit(0);
+}
+
+// Validate and normalize CLI arguments
+if (cliArgs.provider) {
+  // Allow "google" as alias for "gemini"
+  if (cliArgs.provider === "google") {
+    cliArgs.provider = "gemini";
+  }
+
+  if (!["openai", "gemini"].includes(cliArgs.provider)) {
+    console.error(
+      `Error: Invalid provider "${cliArgs.provider}". Supported: openai, gemini (or google)`
+    );
+    process.exit(1);
+  }
+}
+
+// Log startup configuration
+if (Object.keys(cliArgs).length > 0) {
+  const configSummary = {
+    provider: cliArgs.provider,
+    hasApiKey: !!(
+      cliArgs.apiKey ||
+      cliArgs.openaiApiKey ||
+      cliArgs.googleApiKey
+    ),
+    model: cliArgs.model,
+  };
+  serverLogger.info(
+    { config: configSummary },
+    "Starting with CLI configuration"
+  );
+}
+
 // Start the server
-const server = new HarvestMCPServer();
+const server = new HarvestMCPServer(cliArgs);
 server.start().catch((error) => {
   serverLogger.error({ error }, "Failed to start server");
   process.exit(1);

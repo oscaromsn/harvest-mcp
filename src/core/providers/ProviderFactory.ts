@@ -119,24 +119,53 @@ export async function createProvider(
 }
 
 /**
- * Get the default provider based on environment configuration
- * Now supports API keys passed as parameters for client-side configuration
+ * Get the default provider based on configuration
+ * Priority: CLI args > tool parameters > environment variables
  */
 export async function getDefaultProvider(
   config?: Partial<ProviderConfig> & {
     openaiApiKey?: string;
     googleApiKey?: string;
     provider?: string;
+    cliConfig?: {
+      provider?: string;
+      apiKey?: string;
+      openaiApiKey?: string;
+      googleApiKey?: string;
+      model?: string;
+    };
   }
 ): Promise<ILLMProvider> {
-  // Check for provider passed as parameter first
+  // Priority 1: CLI configuration
+  const cliConfig = config?.cliConfig;
+  if (cliConfig?.provider) {
+    logger.info(
+      { provider: cliConfig.provider },
+      "Using provider from CLI arguments"
+    );
+    const apiKey =
+      cliConfig.apiKey || cliConfig.openaiApiKey || cliConfig.googleApiKey;
+    const cliProviderConfig: Partial<ProviderConfig> = {
+      ...config,
+      model: cliConfig.model || config?.model,
+    };
+    if (apiKey) {
+      cliProviderConfig.apiKey = apiKey;
+    }
+    return createProvider(cliConfig.provider, cliProviderConfig);
+  }
+
+  // Priority 2: Tool call parameters
   const paramProvider = config?.provider;
   if (paramProvider) {
-    logger.info({ provider: paramProvider }, "Using provider from parameter");
+    logger.info(
+      { provider: paramProvider },
+      "Using provider from tool parameter"
+    );
     return createProvider(paramProvider, config);
   }
 
-  // Check LLM_PROVIDER environment variable
+  // Priority 3: Environment variables
   const envProvider = process.env.LLM_PROVIDER;
   if (envProvider) {
     logger.info(
@@ -146,9 +175,39 @@ export async function getDefaultProvider(
     return createProvider(envProvider, config);
   }
 
-  // Check for API keys in parameters first, then environment
-  const openaiKey = config?.openaiApiKey || process.env.OPENAI_API_KEY;
-  const googleKey = config?.googleApiKey || process.env.GOOGLE_API_KEY;
+  // Check for API keys: CLI > tool params > environment
+  let openaiKey = process.env.OPENAI_API_KEY;
+  let googleKey = process.env.GOOGLE_API_KEY;
+
+  // Override with tool parameters
+  if (config?.openaiApiKey) {
+    openaiKey = config.openaiApiKey;
+  }
+  if (config?.googleApiKey) {
+    googleKey = config.googleApiKey;
+  }
+
+  // Override with CLI arguments (highest priority)
+  if (cliConfig?.apiKey || cliConfig?.openaiApiKey || cliConfig?.googleApiKey) {
+    if (cliConfig.openaiApiKey) {
+      openaiKey = cliConfig.openaiApiKey;
+    }
+    if (cliConfig.googleApiKey) {
+      googleKey = cliConfig.googleApiKey;
+    }
+    // Auto-detect provider for generic --api-key
+    if (
+      cliConfig.apiKey &&
+      !cliConfig.openaiApiKey &&
+      !cliConfig.googleApiKey
+    ) {
+      if (cliConfig.apiKey.startsWith("sk-")) {
+        openaiKey = cliConfig.apiKey;
+      } else if (cliConfig.apiKey.startsWith("AIza")) {
+        googleKey = cliConfig.apiKey;
+      }
+    }
+  }
 
   if (openaiKey) {
     logger.info("Using OpenAI provider (API key available)");
@@ -235,18 +294,38 @@ export function registerProvider(entry: ProviderRegistryEntry): void {
 
 /**
  * Validate configuration status and provide setup guidance
- * This function checks environment variables and provides detailed configuration status
+ * Checks CLI arguments, environment variables, and provides detailed configuration status
  */
-export function validateConfiguration(): {
+export function validateConfiguration(cliConfig?: {
+  provider?: string;
+  apiKey?: string;
+  openaiApiKey?: string;
+  googleApiKey?: string;
+  model?: string;
+}): {
   isConfigured: boolean;
   availableProviders: string[];
   configuredProviders: string[];
   recommendations: string[];
   warnings: string[];
+  configurationSource: string;
 } {
   const envProvider = process.env.LLM_PROVIDER;
-  const hasOpenAI = !!process.env.OPENAI_API_KEY;
-  const hasGemini = !!process.env.GOOGLE_API_KEY;
+  let hasOpenAI = !!process.env.OPENAI_API_KEY;
+  let hasGemini = !!process.env.GOOGLE_API_KEY;
+  let configurationSource = "environment";
+
+  // Check CLI configuration (highest priority)
+  if (cliConfig) {
+    if (cliConfig.openaiApiKey || cliConfig.apiKey?.startsWith("sk-")) {
+      hasOpenAI = true;
+      configurationSource = "cli";
+    }
+    if (cliConfig.googleApiKey || cliConfig.apiKey?.startsWith("AIza")) {
+      hasGemini = true;
+      configurationSource = "cli";
+    }
+  }
 
   const availableProviders = getAvailableProviders();
   const configuredProviders: string[] = [];
@@ -288,17 +367,18 @@ export function validateConfiguration(): {
       "No LLM provider is configured. To enable AI-powered analysis features:"
     );
     recommendations.push(
-      "1. Set OPENAI_API_KEY environment variable (get key from https://platform.openai.com/account/api-keys)"
+      "1. PREFERRED: Add CLI arguments to MCP client configuration:"
+    );
+    recommendations.push("   --provider=openai --api-key=sk-your-openai-key");
+    recommendations.push("   --provider=google --api-key=AIza-your-google-key");
+    recommendations.push("2. Alternative: Set environment variables:");
+    recommendations.push(
+      "   OPENAI_API_KEY (get from https://platform.openai.com/account/api-keys)"
     );
     recommendations.push(
-      "2. Or set GOOGLE_API_KEY environment variable (get key from https://makersuite.google.com/app/apikey)"
+      "   GOOGLE_API_KEY (get from https://makersuite.google.com/app/apikey)"
     );
-    recommendations.push(
-      "3. Optionally set LLM_PROVIDER to 'openai' or 'gemini' to explicitly choose provider"
-    );
-    recommendations.push(
-      "4. For MCP clients, add environment variables to your client configuration"
-    );
+    recommendations.push("3. Get API keys from OpenAI or Google AI Studio");
   }
 
   return {
@@ -307,5 +387,6 @@ export function validateConfiguration(): {
     configuredProviders,
     recommendations,
     warnings,
+    configurationSource,
   };
 }
