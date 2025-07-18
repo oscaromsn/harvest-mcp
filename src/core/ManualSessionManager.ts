@@ -106,6 +106,18 @@ export class ManualSessionManager {
         logger.info(
           `[ManualSessionManager] Starting network tracking for session: ${sessionId}`
         );
+
+        // Set up callback to update session metadata with network request count
+        artifactCollector.setNetworkRequestCallback((count: number) => {
+          const session = this.activeSessions.get(sessionId);
+          if (session) {
+            session.metadata.networkRequestCount = count;
+            logger.debug(
+              `[ManualSessionManager] Updated network request count for session ${sessionId}: ${count}`
+            );
+          }
+        });
+
         artifactCollector.startNetworkTracking(agent.page);
       }
 
@@ -320,7 +332,7 @@ export class ManualSessionManager {
   }
 
   /**
-   * Collect artifacts for live session
+   * Collect artifacts for live session with retry logic
    */
   private async collectLiveSessionArtifacts(
     session: ManualSession,
@@ -331,32 +343,60 @@ export class ManualSessionManager {
 
     if (session.config.artifactConfig?.enabled !== false) {
       logger.info(
-        `[ManualSessionManager] Collecting artifacts for session: ${sessionId}`
+        `[ManualSessionManager] Collecting artifacts for session: ${sessionId} (network requests: ${session.metadata.networkRequestCount || 0})`
       );
 
-      try {
-        session.artifactCollector.stopNetworkTracking();
+      const maxRetries = 2;
+      let attempt = 0;
 
-        const artifactCollection =
-          await session.artifactCollector.collectAllArtifacts(
-            session.agent.page,
-            session.agent.context,
-            session.outputDir
-          );
-        artifacts = artifactCollection.artifacts;
+      while (attempt <= maxRetries) {
+        try {
+          // Stop network tracking before collection
+          if (session.artifactCollector.isTrackingNetwork()) {
+            session.artifactCollector.stopNetworkTracking();
+            logger.debug(
+              "[ManualSessionManager] Stopped network tracking for artifact collection"
+            );
+          }
 
-        // Filter artifacts by type if specified
-        if (options.artifactTypes && options.artifactTypes.length > 0) {
-          artifacts = artifacts.filter((artifact) =>
-            options.artifactTypes?.includes(
-              artifact.type as "har" | "cookies" | "screenshot"
-            )
+          const artifactCollection =
+            await session.artifactCollector.collectAllArtifacts(
+              session.agent.page,
+              session.agent.context,
+              session.outputDir
+            );
+          artifacts = artifactCollection.artifacts;
+
+          // Filter artifacts by type if specified
+          if (options.artifactTypes && options.artifactTypes.length > 0) {
+            artifacts = artifacts.filter((artifact) =>
+              options.artifactTypes?.includes(
+                artifact.type as "har" | "cookies" | "screenshot"
+              )
+            );
+          }
+
+          logger.info(
+            `[ManualSessionManager] Successfully collected ${artifacts.length} artifacts for session: ${sessionId}`
           );
+          break; // Success, exit retry loop
+        } catch (error) {
+          attempt++;
+          const errorMessage =
+            error instanceof Error ? error.message : String(error);
+
+          if (attempt > maxRetries) {
+            logger.error(
+              `[ManualSessionManager] Failed to collect artifacts for ${sessionId} after ${maxRetries + 1} attempts: ${errorMessage}`
+            );
+          } else {
+            logger.warn(
+              `[ManualSessionManager] Artifact collection attempt ${attempt} failed for ${sessionId}: ${errorMessage}. Retrying...`
+            );
+            // Wait a bit before retrying
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+          }
         }
-      } catch (error) {
-        logger.warn(
-          `[ManualSessionManager] Failed to collect artifacts for ${sessionId}: ${error}`
-        );
       }
     }
 
@@ -370,15 +410,38 @@ export class ManualSessionManager {
     session: ManualSession,
     sessionId: string
   ): Promise<Artifact[]> {
-    let artifacts: Artifact[] = [];
+    const artifacts: Artifact[] = [];
 
     if (session.config.artifactConfig?.enabled !== false) {
       try {
         const harEntryCount = session.artifactCollector.getHarEntryCount();
         logger.info(
-          `[ManualSessionManager] Session ${sessionId} had ${harEntryCount} HAR entries before closure`
+          `[ManualSessionManager] Session ${sessionId} had ${harEntryCount} HAR entries before closure, attempting to generate artifacts from captured data`
         );
-        artifacts = session.artifacts || [];
+
+        // Try to generate HAR file from captured entries even if browser is closed
+        if (harEntryCount > 0) {
+          try {
+            const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+            const harPath = join(session.outputDir, `network-${timestamp}.har`);
+            const harArtifact =
+              await session.artifactCollector.generateHarFile(harPath);
+            artifacts.push(harArtifact);
+
+            logger.info(
+              `[ManualSessionManager] Successfully generated HAR file for closed session ${sessionId} with ${harEntryCount} entries`
+            );
+          } catch (harError) {
+            logger.warn(
+              `[ManualSessionManager] Failed to generate HAR file for closed session ${sessionId}: ${harError}`
+            );
+          }
+        }
+
+        // Include any artifacts that were already collected during the session
+        if (session.artifacts && session.artifacts.length > 0) {
+          artifacts.push(...session.artifacts);
+        }
       } catch (error) {
         logger.warn(
           `[ManualSessionManager] Could not access session artifacts: ${error}`
@@ -579,6 +642,8 @@ export class ManualSessionManager {
       memoryUsage?: number;
       pageResponsive: boolean;
       browserConnected: boolean;
+      networkRequestCount: number;
+      networkTrackingActive: boolean;
     };
   }> {
     const session = this.activeSessions.get(sessionId);
@@ -593,6 +658,8 @@ export class ManualSessionManager {
           duration: 0,
           pageResponsive: false,
           browserConnected: false,
+          networkRequestCount: 0,
+          networkTrackingActive: false,
         },
       };
     }
@@ -630,6 +697,28 @@ export class ManualSessionManager {
       recommendations.push("Session will be auto-cleaned up soon");
     }
 
+    // Check network tracking status
+    const networkTrackingActive =
+      session.artifactCollector?.isTrackingNetwork() || false;
+    const networkRequestCount = session.metadata.networkRequestCount || 0;
+
+    if (
+      !networkTrackingActive &&
+      session.config.artifactConfig?.enabled !== false
+    ) {
+      issues.push("Network tracking is not active despite being enabled");
+      recommendations.push(
+        "Network requests may not be captured for HAR generation"
+      );
+    }
+
+    if (networkRequestCount === 0 && duration > 30000) {
+      // Session running for more than 30 seconds
+      recommendations.push(
+        "No network requests captured yet - ensure you're interacting with the page"
+      );
+    }
+
     // Check memory usage if available
     let memoryUsage: number | undefined;
     try {
@@ -663,6 +752,9 @@ export class ManualSessionManager {
         ...(memoryUsage !== undefined && { memoryUsage }),
         pageResponsive,
         browserConnected,
+        networkRequestCount: session.metadata.networkRequestCount || 0,
+        networkTrackingActive:
+          session.artifactCollector?.isTrackingNetwork() || false,
       },
     };
   }
