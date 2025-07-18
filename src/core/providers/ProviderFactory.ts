@@ -64,9 +64,9 @@ export async function createProvider(
         provider: providerName,
         requiredEnvVar: entry.requiredEnvVar,
         setupInstructions: {
-          quickFix: [
-            "Pass API key directly to tool:",
-            `• ..., ${providerName === "openai" ? "openaiApiKey" : "googleApiKey"}: 'your-key'`,
+          cliArguments: [
+            "Pass API key via CLI arguments:",
+            `• --provider=${providerName} --api-key=your-key`,
           ],
           environmentVariable: [
             "Set environment variable:",
@@ -83,8 +83,8 @@ export async function createProvider(
         },
         nextActions: [
           `1. Get ${providerName.toUpperCase()} API key from the URL above`,
-          `2. Set ${entry.requiredEnvVar} environment variable`,
-          "3. Or pass API key as tool parameter",
+          `2. Configure via CLI arguments: --provider=${providerName} --api-key=your-key`,
+          `3. Or set ${entry.requiredEnvVar} environment variable`,
           "4. Run system_config_validate to verify setup",
         ],
       }
@@ -224,10 +224,10 @@ export async function getDefaultProvider(
     "NO_PROVIDER_CONFIGURED",
     {
       setupInstructions: {
-        quickFix: [
-          "Pass API keys directly to tools:",
-          "• workflow_analyze_har(..., openaiApiKey: 'your-key')",
-          "• analysis_run_initial_analysis(..., provider: 'openai')",
+        cliArguments: [
+          "Pass API keys via CLI arguments:",
+          "• --provider=openai --api-key=your-openai-key",
+          "• --provider=google --api-key=your-google-key",
         ],
         environmentVariables: [
           "Set environment variables:",
@@ -247,7 +247,7 @@ export async function getDefaultProvider(
       nextActions: [
         "1. Run system_config_validate tool to diagnose configuration issues",
         "2. Get API key from OpenAI or Google AI Studio",
-        "3. Configure using one of the methods above",
+        "3. Configure using CLI arguments or environment variables",
         "4. Test with workflow_analyze_har tool",
       ],
     }
