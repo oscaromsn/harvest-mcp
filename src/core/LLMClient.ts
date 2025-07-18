@@ -18,9 +18,9 @@ const logger = createComponentLogger("llm-client");
  * Used for intelligent analysis of HAR data and dependency resolution
  */
 export class LLMClient {
-  private provider: ILLMProvider | null = null;
-  private providerPromise: Promise<ILLMProvider> | null = null;
-  private model: string;
+  protected provider: ILLMProvider | null = null;
+  protected providerPromise: Promise<ILLMProvider> | null = null;
+  protected model: string;
 
   constructor(model?: string) {
     this.model = model || process.env.LLM_MODEL || "";
@@ -29,7 +29,7 @@ export class LLMClient {
   /**
    * Get or initialize the provider
    */
-  private async getProvider(): Promise<ILLMProvider> {
+  protected async getProvider(): Promise<ILLMProvider> {
     if (this.provider) {
       return this.provider;
     }
@@ -181,6 +181,82 @@ export function getLLMClient(): LLMClient {
 
 export function setLLMClient(client: LLMClient): void {
   instance = client;
+}
+
+/**
+ * Create an LLMClient with provider configuration for tools that accept API keys
+ */
+export function createLLMClientWithConfig(config: {
+  model?: string;
+  openaiApiKey?: string;
+  googleApiKey?: string;
+  provider?: string;
+}): LLMClient {
+  return new LLMClientWithConfig(config);
+}
+
+/**
+ * LLMClient that accepts provider configuration via constructor
+ */
+class LLMClientWithConfig extends LLMClient {
+  private providerConfig: {
+    model?: string;
+    openaiApiKey?: string;
+    googleApiKey?: string;
+    provider?: string;
+  };
+
+  constructor(config: {
+    model?: string;
+    openaiApiKey?: string;
+    googleApiKey?: string;
+    provider?: string;
+  }) {
+    super(config.model);
+    this.providerConfig = config;
+  }
+
+  /**
+   * Get or initialize the provider with custom configuration
+   */
+  protected override async getProvider(): Promise<ILLMProvider> {
+    if (this.provider) {
+      return this.provider;
+    }
+
+    if (this.providerPromise) {
+      return this.providerPromise;
+    }
+
+    const configToPass: {
+      model: string;
+      openaiApiKey?: string;
+      googleApiKey?: string;
+      provider?: string;
+    } = {
+      model: this.model,
+    };
+    if (this.providerConfig.openaiApiKey !== undefined) {
+      configToPass.openaiApiKey = this.providerConfig.openaiApiKey;
+    }
+    if (this.providerConfig.googleApiKey !== undefined) {
+      configToPass.googleApiKey = this.providerConfig.googleApiKey;
+    }
+    if (this.providerConfig.provider !== undefined) {
+      configToPass.provider = this.providerConfig.provider;
+    }
+
+    this.providerPromise = getDefaultProvider(configToPass).then((provider) => {
+      this.provider = provider;
+      // Update model if not explicitly set
+      if (!this.model) {
+        this.model = provider.getDefaultModel();
+      }
+      return provider;
+    });
+
+    return this.providerPromise;
+  }
 }
 
 export function resetLLMClient(): void {
