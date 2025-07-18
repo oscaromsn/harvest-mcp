@@ -58,8 +58,36 @@ export async function createProvider(
 
   if (!apiKey) {
     throw new HarvestError(
-      `${entry.requiredEnvVar} environment variable is required for ${providerName} provider`,
-      "MISSING_API_KEY"
+      `${entry.requiredEnvVar} is required for ${providerName} provider`,
+      "MISSING_API_KEY",
+      {
+        provider: providerName,
+        requiredEnvVar: entry.requiredEnvVar,
+        setupInstructions: {
+          quickFix: [
+            "Pass API key directly to tool:",
+            `• ..., ${providerName === "openai" ? "openaiApiKey" : "googleApiKey"}: 'your-key'`,
+          ],
+          environmentVariable: [
+            "Set environment variable:",
+            `• export ${entry.requiredEnvVar}=your-${providerName}-key`,
+          ],
+          getApiKey: [
+            "Get API key from:",
+            `• ${
+              providerName === "openai"
+                ? "https://platform.openai.com/account/api-keys"
+                : "https://makersuite.google.com/app/apikey"
+            }`,
+          ],
+        },
+        nextActions: [
+          `1. Get ${providerName.toUpperCase()} API key from the URL above`,
+          `2. Set ${entry.requiredEnvVar} environment variable`,
+          "3. Or pass API key as tool parameter",
+          "4. Run system_config_validate to verify setup",
+        ],
+      }
     );
   }
 
@@ -92,11 +120,23 @@ export async function createProvider(
 
 /**
  * Get the default provider based on environment configuration
+ * Now supports API keys passed as parameters for client-side configuration
  */
 export async function getDefaultProvider(
-  config?: Partial<ProviderConfig>
+  config?: Partial<ProviderConfig> & {
+    openaiApiKey?: string;
+    googleApiKey?: string;
+    provider?: string;
+  }
 ): Promise<ILLMProvider> {
-  // Check LLM_PROVIDER environment variable first
+  // Check for provider passed as parameter first
+  const paramProvider = config?.provider;
+  if (paramProvider) {
+    logger.info({ provider: paramProvider }, "Using provider from parameter");
+    return createProvider(paramProvider, config);
+  }
+
+  // Check LLM_PROVIDER environment variable
   const envProvider = process.env.LLM_PROVIDER;
   if (envProvider) {
     logger.info(
@@ -106,20 +146,52 @@ export async function getDefaultProvider(
     return createProvider(envProvider, config);
   }
 
-  // Fall back to checking which API keys are available
-  if (process.env.OPENAI_API_KEY) {
-    logger.info("Using OpenAI provider (OPENAI_API_KEY found)");
-    return createProvider("openai", config);
+  // Check for API keys in parameters first, then environment
+  const openaiKey = config?.openaiApiKey || process.env.OPENAI_API_KEY;
+  const googleKey = config?.googleApiKey || process.env.GOOGLE_API_KEY;
+
+  if (openaiKey) {
+    logger.info("Using OpenAI provider (API key available)");
+    return createProvider("openai", { ...config, apiKey: openaiKey });
   }
 
-  if (process.env.GOOGLE_API_KEY) {
-    logger.info("Using Gemini provider (GOOGLE_API_KEY found)");
-    return createProvider("gemini", config);
+  if (googleKey) {
+    logger.info("Using Gemini provider (API key available)");
+    return createProvider("gemini", { ...config, apiKey: googleKey });
   }
 
   throw new HarvestError(
-    "No LLM provider configured. Set LLM_PROVIDER env var or provide OPENAI_API_KEY or GOOGLE_API_KEY",
-    "NO_PROVIDER_CONFIGURED"
+    "No LLM provider configured. AI-powered analysis features require API key configuration.",
+    "NO_PROVIDER_CONFIGURED",
+    {
+      setupInstructions: {
+        quickFix: [
+          "Pass API keys directly to tools:",
+          "• workflow_analyze_har(..., openaiApiKey: 'your-key')",
+          "• analysis_run_initial_analysis(..., provider: 'openai')",
+        ],
+        environmentVariables: [
+          "Set environment variables:",
+          "• export OPENAI_API_KEY=your-openai-key",
+          "• export GOOGLE_API_KEY=your-google-key",
+          "• export LLM_PROVIDER=openai",
+        ],
+        mcpClientConfig: [
+          "Add to MCP client configuration:",
+          '{\n  "mcpServers": {\n    "harvest-mcp": {\n      "env": {\n        "OPENAI_API_KEY": "your-key"\n      }\n    }\n  }\n}',
+        ],
+      },
+      apiKeyUrls: {
+        openai: "https://platform.openai.com/account/api-keys",
+        google: "https://makersuite.google.com/app/apikey",
+      },
+      nextActions: [
+        "1. Run system_config_validate tool to diagnose configuration issues",
+        "2. Get API key from OpenAI or Google AI Studio",
+        "3. Configure using one of the methods above",
+        "4. Test with workflow_analyze_har tool",
+      ],
+    }
   );
 }
 
@@ -159,4 +231,81 @@ export function registerProvider(entry: ProviderRegistryEntry): void {
 
   PROVIDER_REGISTRY[entry.name.toLowerCase()] = entry;
   logger.info({ provider: entry.name }, "Provider registered");
+}
+
+/**
+ * Validate configuration status and provide setup guidance
+ * This function checks environment variables and provides detailed configuration status
+ */
+export function validateConfiguration(): {
+  isConfigured: boolean;
+  availableProviders: string[];
+  configuredProviders: string[];
+  recommendations: string[];
+  warnings: string[];
+} {
+  const envProvider = process.env.LLM_PROVIDER;
+  const hasOpenAI = !!process.env.OPENAI_API_KEY;
+  const hasGemini = !!process.env.GOOGLE_API_KEY;
+
+  const availableProviders = getAvailableProviders();
+  const configuredProviders: string[] = [];
+  const recommendations: string[] = [];
+  const warnings: string[] = [];
+
+  // Check which providers are configured
+  if (hasOpenAI) {
+    configuredProviders.push("openai");
+  }
+  if (hasGemini) {
+    configuredProviders.push("gemini");
+  }
+
+  // Check if any provider is configured
+  const isConfigured = configuredProviders.length > 0;
+
+  // Generate recommendations
+  if (isConfigured) {
+    // Check if explicit provider is set but unavailable
+    if (
+      envProvider &&
+      !configuredProviders.includes(envProvider.toLowerCase())
+    ) {
+      warnings.push(
+        `LLM_PROVIDER is set to '${envProvider}' but ${getProviderInfo(envProvider)?.requiredEnvVar} is not configured`
+      );
+    }
+
+    // Provide info about configured providers
+    if (configuredProviders.length > 1) {
+      recommendations.push(
+        `Multiple providers configured: ${configuredProviders.join(", ")}. ` +
+          "Set LLM_PROVIDER to explicitly choose one."
+      );
+    }
+  } else {
+    recommendations.push(
+      "No LLM provider is configured. To enable AI-powered analysis features:"
+    );
+    recommendations.push(
+      "1. Set OPENAI_API_KEY environment variable (get key from https://platform.openai.com/account/api-keys)"
+    );
+    recommendations.push(
+      "2. Or set GOOGLE_API_KEY environment variable (get key from https://makersuite.google.com/app/apikey)"
+    );
+    recommendations.push(
+      "3. Optionally set LLM_PROVIDER to 'openai' or 'gemini' to explicitly choose provider"
+    );
+    recommendations.push(
+      "4. For MCP clients, add environment variables to your client configuration"
+    );
+  }
+
+  return {
+    isConfigured,
+    availableProviders,
+    configuredProviders,
+    recommendations,
+    warnings,
+  };
 }
