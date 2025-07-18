@@ -13,7 +13,7 @@ import { identifyInputVariables } from "./agents/InputVariablesAgent.js";
 import { identifyEndUrl } from "./agents/URLIdentificationAgent.js";
 import { generateWrapperScript } from "./core/CodeGenerator.js";
 import { parseHARFile } from "./core/HARParser.js";
-import { createLLMClientWithConfig } from "./core/LLMClient.js";
+import { getLLMClient } from "./core/LLMClient.js";
 import { manualSessionManager } from "./core/ManualSessionManager.js";
 import { validateConfiguration } from "./core/providers/ProviderFactory.js";
 import { SessionManager } from "./core/SessionManager.js";
@@ -297,35 +297,12 @@ export class HarvestMCPServer {
     // Analysis Tools
     this.server.tool(
       "analysis_run_initial_analysis",
-      "Identify the target action URL and create the master node in the dependency graph. Supports API key parameters for client-side LLM configuration.",
+      "Identify the target action URL and create the master node in the dependency graph. Configure API keys using CLI arguments: --provider and --api-key.",
       {
         sessionId: SessionIdSchema.shape.sessionId,
-        // Client-side API key support
-        openaiApiKey: z
-          .string()
-          .optional()
-          .describe(
-            "OpenAI API key for client-side LLM configuration (overrides environment variable)"
-          ),
-        googleApiKey: z
-          .string()
-          .optional()
-          .describe(
-            "Google API key for client-side LLM configuration (overrides environment variable)"
-          ),
-        provider: z
-          .string()
-          .optional()
-          .describe(
-            "LLM provider to use: 'openai' or 'gemini' (overrides environment variable)"
-          ),
-        model: z
-          .string()
-          .optional()
-          .describe("LLM model to use (overrides environment variable)"),
       },
       async (params): Promise<CallToolResult> => {
-        return await this.handleRunInitialAnalysisWithApiKeys(params);
+        return await this.handleRunInitialAnalysisWithConfig(params);
       }
     );
 
@@ -542,7 +519,7 @@ export class HarvestMCPServer {
     // Simplified workflow tools
     this.server.tool(
       "workflow_complete_analysis",
-      "Complete end-to-end analysis workflow: automatically runs initial analysis, processes all nodes, and generates code",
+      "Complete end-to-end analysis workflow: automatically runs initial analysis, processes all nodes, and generates code. Configure API keys using CLI arguments: --provider and --api-key.",
       {
         sessionId: z
           .string()
@@ -559,28 +536,6 @@ export class HarvestMCPServer {
           .describe(
             "Maximum number of analysis iterations to prevent infinite loops."
           ),
-        openaiApiKey: z
-          .string()
-          .optional()
-          .describe(
-            "OpenAI API key for client-side LLM configuration (overrides environment variable)"
-          ),
-        googleApiKey: z
-          .string()
-          .optional()
-          .describe(
-            "Google API key for client-side LLM configuration (overrides environment variable)"
-          ),
-        provider: z
-          .string()
-          .optional()
-          .describe(
-            "LLM provider to use: 'openai' or 'gemini' (overrides environment variable)"
-          ),
-        model: z
-          .string()
-          .optional()
-          .describe("LLM model to use (overrides environment variable)"),
       },
       async (params): Promise<CallToolResult> => {
         return await this.handleCompleteAnalysis(params);
@@ -610,7 +565,7 @@ export class HarvestMCPServer {
 
     this.server.tool(
       "workflow_analyze_har",
-      "Simplified workflow: Analyze HAR file with automatic fallbacks and clear feedback. Supports API key parameters for client-side LLM configuration.",
+      "Simplified workflow: Analyze HAR file with automatic fallbacks and clear feedback. Configure API keys using CLI arguments: --provider and --api-key.",
       {
         harPath: z.string().min(1).describe("Path to the HAR file"),
         cookiePath: z
@@ -625,29 +580,6 @@ export class HarvestMCPServer {
           .boolean()
           .default(true)
           .describe("Automatically attempt to fix common issues"),
-        // Client-side API key support
-        openaiApiKey: z
-          .string()
-          .optional()
-          .describe(
-            "OpenAI API key for client-side LLM configuration (overrides environment variable)"
-          ),
-        googleApiKey: z
-          .string()
-          .optional()
-          .describe(
-            "Google API key for client-side LLM configuration (overrides environment variable)"
-          ),
-        provider: z
-          .string()
-          .optional()
-          .describe(
-            "LLM provider to use: 'openai' or 'gemini' (overrides environment variable)"
-          ),
-        model: z
-          .string()
-          .optional()
-          .describe("LLM model to use (overrides environment variable)"),
       },
       async (params): Promise<CallToolResult> => {
         return await this.handleAnalyzeHarWorkflow(params);
@@ -1256,52 +1188,6 @@ export class HarvestMCPServer {
   /**
    * Handle analysis_run_initial_analysis with API key support
    */
-  public async handleRunInitialAnalysisWithApiKeys(
-    args: unknown
-  ): Promise<CallToolResult> {
-    const parsedArgs = args as {
-      sessionId: string;
-      openaiApiKey?: string;
-      googleApiKey?: string;
-      provider?: string;
-      model?: string;
-    };
-
-    let apiConfig:
-      | {
-          openaiApiKey?: string;
-          googleApiKey?: string;
-          provider?: string;
-          model?: string;
-        }
-      | undefined;
-
-    if (
-      parsedArgs.openaiApiKey ||
-      parsedArgs.googleApiKey ||
-      parsedArgs.provider ||
-      parsedArgs.model
-    ) {
-      apiConfig = {};
-      if (parsedArgs.openaiApiKey) {
-        apiConfig.openaiApiKey = parsedArgs.openaiApiKey;
-      }
-      if (parsedArgs.googleApiKey) {
-        apiConfig.googleApiKey = parsedArgs.googleApiKey;
-      }
-      if (parsedArgs.provider) {
-        apiConfig.provider = parsedArgs.provider;
-      }
-      if (parsedArgs.model) {
-        apiConfig.model = parsedArgs.model;
-      }
-    }
-
-    return await this.handleRunInitialAnalysisWithConfig(
-      { sessionId: parsedArgs.sessionId },
-      apiConfig
-    );
-  }
 
   /**
    * Handle analysis.process_next_node tool
@@ -1634,17 +1520,11 @@ export class HarvestMCPServer {
   }
 
   /**
-   * Handle initial analysis with API key configuration support
+   * Handle initial analysis with CLI configuration
    */
-  public async handleRunInitialAnalysisWithConfig(
-    args: { sessionId: string },
-    apiConfig?: {
-      openaiApiKey?: string;
-      googleApiKey?: string;
-      provider?: string;
-      model?: string;
-    }
-  ): Promise<CallToolResult> {
+  public async handleRunInitialAnalysisWithConfig(args: {
+    sessionId: string;
+  }): Promise<CallToolResult> {
     try {
       const session = this.sessionManager.getSession(args.sessionId);
 
@@ -1705,19 +1585,10 @@ export class HarvestMCPServer {
         };
       }
 
-      // Create LLM client with API key configuration if provided
-      const llmClient = apiConfig
-        ? createLLMClientWithConfig(apiConfig)
-        : undefined;
-
-      // Identify end URL with optional LLM client and fallback handling
+      // Identify end URL using CLI-configured LLM client
       let actionUrl: string;
       try {
-        actionUrl = await identifyEndUrl(
-          session,
-          session.harData.urls,
-          llmClient
-        );
+        actionUrl = await identifyEndUrl(session, session.harData.urls);
       } catch (error) {
         // If LLM-based identification fails, use heuristic fallback
         if (
@@ -3476,49 +3347,7 @@ export class HarvestMCPServer {
     return args as {
       sessionId: string;
       maxIterations: number;
-      openaiApiKey?: string;
-      googleApiKey?: string;
-      provider?: string;
-      model?: string;
     };
-  }
-
-  /**
-   * Build API configuration from arguments
-   */
-  private buildApiConfig(
-    argsObj: ReturnType<typeof this.parseCompleteAnalysisArgs>
-  ) {
-    if (
-      !argsObj.openaiApiKey &&
-      !argsObj.googleApiKey &&
-      !argsObj.provider &&
-      !argsObj.model
-    ) {
-      return undefined;
-    }
-
-    const apiConfig: {
-      openaiApiKey?: string;
-      googleApiKey?: string;
-      provider?: string;
-      model?: string;
-    } = {};
-
-    if (argsObj.openaiApiKey) {
-      apiConfig.openaiApiKey = argsObj.openaiApiKey;
-    }
-    if (argsObj.googleApiKey) {
-      apiConfig.googleApiKey = argsObj.googleApiKey;
-    }
-    if (argsObj.provider) {
-      apiConfig.provider = argsObj.provider;
-    }
-    if (argsObj.model) {
-      apiConfig.model = argsObj.model;
-    }
-
-    return apiConfig;
   }
 
   /**
@@ -3526,14 +3355,12 @@ export class HarvestMCPServer {
    */
   private async runInitialAnalysisForWorkflow(
     argsObj: ReturnType<typeof this.parseCompleteAnalysisArgs>,
-    apiConfig: ReturnType<typeof this.buildApiConfig>,
     steps: string[]
   ) {
     steps.push("📍 Step 1: Running initial analysis to identify target URL");
-    return await this.handleRunInitialAnalysisWithConfig(
-      { sessionId: argsObj.sessionId },
-      apiConfig
-    );
+    return await this.handleRunInitialAnalysisWithConfig({
+      sessionId: argsObj.sessionId,
+    });
   }
 
   /**
@@ -3709,14 +3536,11 @@ export class HarvestMCPServer {
       const steps: string[] = [];
       const warnings: string[] = [];
 
-      const apiConfig = this.buildApiConfig(argsObj);
-
       steps.push("🚀 Starting complete analysis workflow");
 
       // Step 1: Run initial analysis
       const initialResult = await this.runInitialAnalysisForWorkflow(
         argsObj,
-        apiConfig,
         steps
       );
       if (initialResult.isError) {
@@ -3821,10 +3645,6 @@ export class HarvestMCPServer {
       cookiePath?: string;
       description: string;
       autoFix: boolean;
-      openaiApiKey?: string;
-      googleApiKey?: string;
-      provider?: string;
-      model?: string;
     };
   }
 
@@ -3946,10 +3766,6 @@ export class HarvestMCPServer {
       harPath: string;
       description: string;
       autoFix: boolean;
-      openaiApiKey?: string;
-      googleApiKey?: string;
-      provider?: string;
-      model?: string;
     },
     harValidation: HarValidationResult | undefined,
     analysisSteps: string[],
@@ -3957,41 +3773,10 @@ export class HarvestMCPServer {
     recommendations: string[]
   ): Promise<CallToolResult> {
     try {
-      // Attempt initial analysis with API key parameters
-      let apiConfig:
-        | {
-            openaiApiKey?: string;
-            googleApiKey?: string;
-            provider?: string;
-            model?: string;
-          }
-        | undefined;
-
-      if (
-        args.openaiApiKey ||
-        args.googleApiKey ||
-        args.provider ||
-        args.model
-      ) {
-        apiConfig = {};
-        if (args.openaiApiKey) {
-          apiConfig.openaiApiKey = args.openaiApiKey;
-        }
-        if (args.googleApiKey) {
-          apiConfig.googleApiKey = args.googleApiKey;
-        }
-        if (args.provider) {
-          apiConfig.provider = args.provider;
-        }
-        if (args.model) {
-          apiConfig.model = args.model;
-        }
-      }
-
-      const initialResult = await this.handleRunInitialAnalysisWithConfig(
-        { sessionId },
-        apiConfig
-      );
+      // Attempt initial analysis with CLI configuration
+      const initialResult = await this.handleRunInitialAnalysisWithConfig({
+        sessionId,
+      });
       const initialContent = initialResult.content?.[0]?.text;
 
       if (initialResult.isError || !initialContent) {
@@ -4703,15 +4488,8 @@ export class HarvestMCPServer {
 
       if (argsObj.testApiKey && argsObj.testProvider) {
         try {
-          const testClient = createLLMClientWithConfig({
-            provider: argsObj.testProvider,
-            ...(argsObj.testProvider === "openai" && {
-              openaiApiKey: argsObj.testApiKey,
-            }),
-            ...(argsObj.testProvider === "gemini" && {
-              googleApiKey: argsObj.testApiKey,
-            }),
-          });
+          // Use the default LLM client with CLI configuration
+          const testClient = getLLMClient();
 
           // Test with a simple function call
           await testClient.callFunction(
@@ -4819,10 +4597,10 @@ export class HarvestMCPServer {
                   "export GOOGLE_API_KEY=your-google-key",
                   "export LLM_PROVIDER=openai",
                 ],
-                forToolParameters: [
-                  "Pass API keys directly to tools:",
-                  "workflow_analyze_har(..., openaiApiKey: 'your-key')",
-                  "analysis_run_initial_analysis(..., provider: 'openai')",
+                cliArguments: [
+                  "Pass API keys via CLI arguments:",
+                  "--provider=openai --api-key=your-openai-key",
+                  "--provider=google --api-key=your-google-key",
                 ],
               },
             }),
