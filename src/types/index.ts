@@ -625,8 +625,3 @@ export type {
   SessionConfig,
   SessionStopResult,
 } from "../browser/types.js";
-
-export {
-  DEFAULT_BROWSER_OPTIONS,
-  VIEWPORT_SIZES,
-} from "../browser/types.js";
