@@ -1,6 +1,7 @@
 import type { MockedFunction } from "vitest";
 import { vi } from "vitest";
 import { cleanupTestBrowserPool } from "../../src/browser/BrowserPool.js";
+import { resetLLMClient } from "../../src/core/LLMClient.js";
 import { setupBrowser, teardownBrowser } from "./global-browser-setup.js";
 
 // Global test environment setup
@@ -20,6 +21,11 @@ afterAll(async () => {
   // Clean up shared browser resources
   await teardownBrowser();
   await cleanupTestBrowserPool();
+});
+
+// Reset LLM client after each test to ensure test isolation
+afterEach(() => {
+  resetLLMClient();
 });
 
 // Make vi available globally for test files that need it
