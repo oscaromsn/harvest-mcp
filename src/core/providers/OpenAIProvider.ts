@@ -241,9 +241,12 @@ export class OpenAIProvider implements ILLMProvider {
   private convertMessages(messages: Message[]): ChatCompletionMessageParam[] {
     return messages.map((msg) => {
       if (msg.role === "function") {
+        if (!msg.name) {
+          throw new Error("Function message must have a name");
+        }
         return {
           role: "function" as const,
-          name: msg.name!,
+          name: msg.name,
           content: msg.content || "",
         };
       }

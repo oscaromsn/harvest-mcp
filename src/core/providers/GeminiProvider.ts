@@ -18,6 +18,63 @@ import type {
 const logger = createComponentLogger("gemini-provider");
 
 /**
+ * Gemini API type definitions
+ */
+interface GeminiGenerationConfig {
+  temperature?: number;
+  maxOutputTokens?: number;
+  topP?: number;
+}
+
+interface GeminiProperty {
+  type: string;
+  description?: string;
+  enum?: string[];
+  items?: GeminiProperty;
+  properties?: Record<string, GeminiProperty>;
+}
+
+interface GeminiParameters {
+  type: "OBJECT";
+  properties: Record<string, GeminiProperty>;
+  required: string[];
+}
+
+interface GeminiFunctionDeclaration {
+  name: string;
+  description: string;
+  parameters?: GeminiParameters;
+}
+
+interface GeminiApiResult {
+  response: {
+    text(): string;
+    functionCalls():
+      | Array<{
+          name: string;
+          args: Record<string, unknown>;
+        }>
+      | undefined;
+    candidates?: Array<{
+      content: {
+        parts: Array<{
+          text?: string;
+          functionCall?: {
+            name: string;
+            args: Record<string, unknown>;
+          };
+        }>;
+      };
+    }>;
+    usageMetadata?: {
+      promptTokenCount: number;
+      candidatesTokenCount: number;
+      totalTokenCount: number;
+    };
+  };
+}
+
+/**
  * Google Gemini provider implementation
  */
 export class GeminiProvider implements ILLMProvider {
@@ -78,7 +135,7 @@ export class GeminiProvider implements ILLMProvider {
           : this.model;
 
       // Configure generation settings
-      const generationConfig: any = {
+      const generationConfig: GeminiGenerationConfig = {
         temperature: options?.temperature ?? 0.7,
         ...(options?.maxTokens !== undefined && {
           maxOutputTokens: options.maxTokens,
@@ -97,7 +154,8 @@ export class GeminiProvider implements ILLMProvider {
           model: modelName,
           tools: [
             {
-              functionDeclarations: functions,
+              // biome-ignore lint/suspicious/noExplicitAny: Gemini API requires any type
+              functionDeclarations: functions as unknown as any,
             },
           ],
         });
@@ -117,7 +175,7 @@ export class GeminiProvider implements ILLMProvider {
         const duration = Date.now() - startTime;
         logger.info({ duration }, "Completion successful");
 
-        return this.parseGeminiResponse(result);
+        return this.parseGeminiResponse(result as unknown as GeminiApiResult);
       }
       // Regular text generation without functions
       const chat = model.startChat({
@@ -276,10 +334,12 @@ export class GeminiProvider implements ILLMProvider {
     });
   }
 
-  private convertToGeminiFunctionDeclaration(func: FunctionDefinition): any {
-    const declaration: any = {
+  private convertToGeminiFunctionDeclaration(
+    func: FunctionDefinition
+  ): GeminiFunctionDeclaration {
+    const declaration: GeminiFunctionDeclaration = {
       name: func.name,
-      description: func.description,
+      description: func.description || "",
     };
 
     if (func.parameters) {
@@ -300,8 +360,8 @@ export class GeminiProvider implements ILLMProvider {
     return declaration;
   }
 
-  private convertParameterToGemini(param: FunctionParameter): any {
-    const geminiParam: any = {
+  private convertParameterToGemini(param: FunctionParameter): GeminiProperty {
+    const geminiParam: GeminiProperty = {
       type: this.mapTypeToGemini(param.type),
     };
 
@@ -345,28 +405,30 @@ export class GeminiProvider implements ILLMProvider {
     }
   }
 
-  private parseGeminiResponse(result: any): CompletionResponse {
+  private parseGeminiResponse(result: GeminiApiResult): CompletionResponse {
     const response = result.response;
 
     // Check for function calls
     const functionCalls = response.functionCalls();
     if (functionCalls && functionCalls.length > 0) {
       const functionCall = functionCalls[0];
-      return {
-        content: null,
-        functionCall: {
-          name: functionCall.name,
-          arguments: JSON.stringify(functionCall.args),
-        },
-        usage: response.usageMetadata
-          ? {
-              promptTokens: response.usageMetadata.promptTokenCount || 0,
-              completionTokens:
-                response.usageMetadata.candidatesTokenCount || 0,
-              totalTokens: response.usageMetadata.totalTokenCount || 0,
-            }
-          : undefined,
-      };
+      if (functionCall) {
+        return {
+          content: null,
+          functionCall: {
+            name: functionCall.name,
+            arguments: JSON.stringify(functionCall.args),
+          },
+          usage: response.usageMetadata
+            ? {
+                promptTokens: response.usageMetadata.promptTokenCount || 0,
+                completionTokens:
+                  response.usageMetadata.candidatesTokenCount || 0,
+                totalTokens: response.usageMetadata.totalTokenCount || 0,
+              }
+            : undefined,
+        };
+      }
     }
 
     // Regular text response
