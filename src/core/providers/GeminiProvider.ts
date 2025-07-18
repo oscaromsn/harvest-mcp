@@ -146,8 +146,8 @@ export class GeminiProvider implements ILLMProvider {
       // Handle function calling
       if (options?.functions && options.functions.length > 0) {
         // Create function declarations for Gemini
-        const functions = options.functions.map(
-          this.convertToGeminiFunctionDeclaration
+        const functions = options.functions.map((func) =>
+          this.convertToGeminiFunctionDeclaration(func)
         );
 
         const modelWithFunctions = this.client.getGenerativeModel({
