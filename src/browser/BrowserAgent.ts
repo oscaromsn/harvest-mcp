@@ -17,6 +17,10 @@ export class BrowserAgent implements IBrowserAgent {
   public readonly context: BrowserContext;
   public readonly browser: Browser;
   private isStarted = false;
+  private contextDestroyedCount = 0;
+  private lastContextError: Date | null = null;
+  private readonly maxContextErrors = 3;
+  private readonly contextErrorWindow = 5000; // 5 seconds
 
   constructor(page: Page, context: BrowserContext) {
     this.page = page;
@@ -33,7 +37,7 @@ export class BrowserAgent implements IBrowserAgent {
     try {
       logBrowserOperation("agent_created", {
         url: this.getCurrentUrl(),
-        title: this.getCurrentTitleSync(),
+        title: "", // Skip title during construction to avoid context issues
       });
     } catch (_error) {
       // Ignore logging errors during construction
@@ -61,7 +65,7 @@ export class BrowserAgent implements IBrowserAgent {
 
       logBrowserOperation("agent_started", {
         url: this.getCurrentUrl(),
-        title: this.getCurrentTitleSync(),
+        title: "", // Skip title during start to avoid context issues
       });
     } catch (error) {
       logBrowserError(error as Error, { operation: "agent_start" });
@@ -91,7 +95,7 @@ export class BrowserAgent implements IBrowserAgent {
       try {
         logBrowserOperation("agent_stopped", {
           finalUrl: this.getCurrentUrl(),
-          finalTitle: this.getCurrentTitleSync(),
+          finalTitle: "", // Skip title during stop to avoid context issues
         });
       } catch (_error) {
         // Ignore logging errors during shutdown
@@ -103,14 +107,59 @@ export class BrowserAgent implements IBrowserAgent {
   }
 
   /**
+   * Check if we're in a circuit breaker state due to repeated context errors
+   */
+  private isCircuitBreakerOpen(): boolean {
+    if (this.contextDestroyedCount >= this.maxContextErrors) {
+      const now = new Date();
+      if (
+        this.lastContextError &&
+        now.getTime() - this.lastContextError.getTime() <
+          this.contextErrorWindow
+      ) {
+        return true;
+      }
+      // Reset circuit breaker after window expires
+      this.contextDestroyedCount = 0;
+      this.lastContextError = null;
+    }
+    return false;
+  }
+
+  /**
+   * Record a context destruction error for circuit breaker
+   */
+  private recordContextError(): void {
+    this.contextDestroyedCount++;
+    this.lastContextError = new Date();
+
+    if (this.contextDestroyedCount >= this.maxContextErrors) {
+      browserLogger.warn(
+        `Circuit breaker opened: too many context destruction errors (${this.contextDestroyedCount})`
+      );
+    }
+  }
+
+  /**
    * Get the current page URL
    */
   getCurrentUrl(): string {
     try {
-      // Check if the page is still valid before trying to get URL
-      if (!this.page || !this.context) {
+      // Circuit breaker check
+      if (this.isCircuitBreakerOpen()) {
         return "";
       }
+
+      // Check if the page is still valid before trying to get URL
+      if (!this.page || !this.context || this.page.isClosed()) {
+        return "";
+      }
+
+      // Additional browser connection check
+      if (!this.browser?.isConnected()) {
+        return "";
+      }
+
       return this.page.url();
     } catch (error) {
       // Handle context destruction gracefully
@@ -120,8 +169,11 @@ export class BrowserAgent implements IBrowserAgent {
           error.message.includes(
             "Target page, context or browser has been closed"
           ) ||
-          error.message.includes("TargetClosedError"))
+          error.message.includes("TargetClosedError") ||
+          error.message.includes("Protocol error") ||
+          error.message.includes("Navigation"))
       ) {
+        this.recordContextError();
         return "";
       }
       logBrowserError(error as Error, { operation: "get_current_url" });
@@ -134,16 +186,43 @@ export class BrowserAgent implements IBrowserAgent {
    */
   async getCurrentTitle(): Promise<string> {
     try {
+      // Circuit breaker check
+      if (this.isCircuitBreakerOpen()) {
+        return "";
+      }
+
       // Check if the page is still valid before trying to get title
-      if (!this.page || !this.context) {
+      if (!this.page || !this.context || this.page.isClosed()) {
+        return "";
+      }
+
+      // Additional browser connection check
+      if (!this.browser?.isConnected()) {
+        return "";
+      }
+
+      // Quick context validation check first
+      try {
+        await this.page.evaluate(
+          () =>
+            (
+              globalThis as typeof globalThis & {
+                document?: { readyState?: string };
+              }
+            ).document?.readyState || "loading"
+        );
+      } catch (_contextError) {
+        // Context is already destroyed, no point in continuing
+        this.recordContextError();
         return "";
       }
 
       // Handle title retrieval with proper async/await and timeout
       const title = await Promise.race([
         this.page.title(),
-        new Promise<string>((_, reject) =>
-          setTimeout(() => reject(new Error("Title fetch timeout")), 5000)
+        new Promise<string>(
+          (_, reject) =>
+            setTimeout(() => reject(new Error("Title fetch timeout")), 3000) // Reduced timeout
         ),
       ]);
 
@@ -157,8 +236,11 @@ export class BrowserAgent implements IBrowserAgent {
             "Target page, context or browser has been closed"
           ) ||
           error.message.includes("TargetClosedError") ||
-          error.message.includes("Title fetch timeout"))
+          error.message.includes("Title fetch timeout") ||
+          error.message.includes("Protocol error") ||
+          error.message.includes("Navigation"))
       ) {
+        this.recordContextError();
         return "";
       }
       logBrowserError(error as Error, { operation: "get_current_title" });
@@ -168,11 +250,22 @@ export class BrowserAgent implements IBrowserAgent {
 
   /**
    * Get the current page title (synchronous version for backward compatibility)
+   * Note: This method should be avoided in favor of async getCurrentTitle()
    */
   getCurrentTitleSync(): string {
     try {
+      // Circuit breaker check
+      if (this.isCircuitBreakerOpen()) {
+        return "";
+      }
+
       // Check if the page is still valid before trying to get title
-      if (!this.page || !this.context) {
+      if (!this.page || !this.context || this.page.isClosed()) {
+        return "";
+      }
+
+      // Additional browser connection check
+      if (!this.browser?.isConnected()) {
         return "";
       }
 
@@ -182,8 +275,12 @@ export class BrowserAgent implements IBrowserAgent {
       const title = this.page.title();
 
       // If it's a promise (real Playwright), we can't wait for it synchronously
-      // so we return empty string. In practice, this should be made async.
+      // so we return empty string. This method is deprecated in favor of async version.
       if (title instanceof Promise) {
+        // Log a warning that this method should be replaced with async version
+        browserLogger.warn(
+          "getCurrentTitleSync called with Promise-based title - use getCurrentTitle() instead"
+        );
         return "";
       }
 
@@ -196,8 +293,11 @@ export class BrowserAgent implements IBrowserAgent {
           error.message.includes(
             "Target page, context or browser has been closed"
           ) ||
-          error.message.includes("TargetClosedError"))
+          error.message.includes("TargetClosedError") ||
+          error.message.includes("Protocol error") ||
+          error.message.includes("Navigation"))
       ) {
+        this.recordContextError();
         return "";
       }
       logBrowserError(error as Error, { operation: "get_current_title_sync" });
@@ -210,8 +310,13 @@ export class BrowserAgent implements IBrowserAgent {
    */
   isReady(): boolean {
     try {
-      // Check if page and context are still valid
-      return this.page !== null && this.context !== null;
+      // Check if page and context are still valid and not closed
+      return (
+        this.page !== null &&
+        this.context !== null &&
+        !this.page.isClosed() &&
+        this.browser?.isConnected() === true
+      );
     } catch (error) {
       logBrowserError(error as Error, { operation: "is_ready_check" });
       return false;
@@ -232,7 +337,7 @@ export class BrowserAgent implements IBrowserAgent {
     try {
       return {
         currentUrl: this.getCurrentUrl(),
-        currentTitle: this.getCurrentTitleSync(),
+        currentTitle: "", // Skip title to avoid context issues
         isStarted: this.isStarted,
         isReady: this.isReady(),
         contextId: this.context ? "context-present" : "context-missing",
