@@ -10,7 +10,7 @@ import { identifyDynamicParts } from "../../src/agents/DynamicPartsAgent.js";
 import { identifyInputVariables } from "../../src/agents/InputVariablesAgent.js";
 import { identifyEndUrl } from "../../src/agents/URLIdentificationAgent.js";
 import type { LLMClient } from "../../src/core/LLMClient.js";
-import { getLLMClient } from "../../src/core/LLMClient.js";
+import { resetLLMClient, setLLMClient } from "../../src/core/LLMClient.js";
 import { SessionManager } from "../../src/core/SessionManager.js";
 import type {
   DynamicPartsResponse,
@@ -30,24 +30,23 @@ describe("Sprint 3: LLM Integration & Core Analysis Logic", () => {
     generateResponse: ReturnType<typeof vi.fn>;
     getModel: ReturnType<typeof vi.fn>;
     setModel: ReturnType<typeof vi.fn>;
+    getProviderName: ReturnType<typeof vi.fn>;
+    setProvider: ReturnType<typeof vi.fn>;
   };
 
   beforeEach(async () => {
-    // Set API key for LLM client
-    process.env.OPENAI_API_KEY = "test-api-key";
-
     // Create mock LLM client
     mockLLMClient = {
       callFunction: vi.fn(),
       generateResponse: vi.fn(),
       getModel: vi.fn(() => "gpt-4o"),
       setModel: vi.fn(),
+      getProviderName: vi.fn().mockResolvedValue("mock-provider"),
+      setProvider: vi.fn(),
     };
 
-    // Mock the LLM client getter - using type assertion for test compatibility
-    vi.spyOn({ getLLMClient }, "getLLMClient").mockReturnValue(
-      mockLLMClient as unknown as LLMClient
-    );
+    // Set the mock client using the proper setter
+    setLLMClient(mockLLMClient as unknown as LLMClient);
 
     sessionManager = new SessionManager();
 
@@ -74,6 +73,7 @@ describe("Sprint 3: LLM Integration & Core Analysis Logic", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    resetLLMClient(); // Reset the LLM client singleton
     if (sessionManager && sessionId) {
       sessionManager.deleteSession(sessionId);
     }
