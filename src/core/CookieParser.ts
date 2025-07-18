@@ -1,12 +1,15 @@
 import { readFile } from "node:fs/promises";
 import type { CookieData } from "../types/index.js";
+import { expandTilde } from "../utils/pathUtils.js";
 
 /**
  * Parse a cookie file and return cookie data
  */
 export async function parseCookieFile(cookiePath: string): Promise<CookieData> {
   try {
-    const cookieContent = await readFile(cookiePath, "utf-8");
+    // Expand tilde paths to absolute paths
+    const expandedPath = expandTilde(cookiePath);
+    const cookieContent = await readFile(expandedPath, "utf-8");
     const cookies = JSON.parse(cookieContent);
 
     const cookieData: CookieData = {};

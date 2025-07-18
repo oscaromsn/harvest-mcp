@@ -14,6 +14,7 @@ import type {
   ResponseData,
   URLInfo,
 } from "../types/index.js";
+import { expandTilde } from "../utils/pathUtils.js";
 
 // Keywords to exclude from requests (analytics, tracking, etc.)
 const EXCLUDED_KEYWORDS = [
@@ -294,7 +295,9 @@ export async function parseHARFile(harPath: string): Promise<
   }
 > {
   try {
-    const harContent = await readFile(harPath, "utf-8");
+    // Expand tilde paths to absolute paths
+    const expandedPath = expandTilde(harPath);
+    const harContent = await readFile(expandedPath, "utf-8");
     const harData = JSON.parse(harContent) as Har;
 
     // Validate HAR content quality
