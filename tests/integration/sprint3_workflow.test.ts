@@ -10,7 +10,7 @@ import { identifyDynamicParts } from "../../src/agents/DynamicPartsAgent.js";
 import { identifyInputVariables } from "../../src/agents/InputVariablesAgent.js";
 import { identifyEndUrl } from "../../src/agents/URLIdentificationAgent.js";
 import type { LLMClient } from "../../src/core/LLMClient.js";
-import * as LLMClientModule from "../../src/core/LLMClient.js";
+import { getLLMClient } from "../../src/core/LLMClient.js";
 import { SessionManager } from "../../src/core/SessionManager.js";
 import type {
   DynamicPartsResponse,
@@ -45,7 +45,7 @@ describe("Sprint 3: LLM Integration & Core Analysis Logic", () => {
     };
 
     // Mock the LLM client getter - using type assertion for test compatibility
-    vi.spyOn(LLMClientModule, "getLLMClient").mockReturnValue(
+    vi.spyOn({ getLLMClient }, "getLLMClient").mockReturnValue(
       mockLLMClient as unknown as LLMClient
     );
 
