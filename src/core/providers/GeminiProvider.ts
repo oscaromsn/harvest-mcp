@@ -179,7 +179,11 @@ export class GeminiProvider implements ILLMProvider {
         if (!lastMessage) {
           throw new HarvestError("No messages provided", "NO_MESSAGES");
         }
-        const result = await chat.sendMessage(lastMessage.content || "");
+
+        // Enhance the prompt for Gemini to encourage function calling
+        const enhancedPrompt = `${lastMessage.content || ""}\n\nIMPORTANT: You must respond by calling one of the available functions. Do not provide a text response - use the function calling capability to structure your response.`;
+
+        const result = await chat.sendMessage(enhancedPrompt);
 
         const duration = Date.now() - startTime;
         logger.info({ duration }, "Completion successful");
@@ -334,13 +338,14 @@ export class GeminiProvider implements ILLMProvider {
 
         if (
           error instanceof HarvestError &&
-          error.code !== "GEMINI_COMPLETION_FAILED"
+          error.code !== "GEMINI_COMPLETION_FAILED" &&
+          error.code !== "NO_FUNCTION_CALL"
         ) {
           logger.error(
             { attempt, error: error.message },
             "HarvestError on attempt"
           );
-          throw error; // Don't retry validation errors
+          throw error; // Don't retry validation errors, but allow retry for missing function calls
         }
 
         logger.error(
