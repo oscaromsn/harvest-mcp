@@ -1481,7 +1481,23 @@ export class HarvestMCPServer {
           this.completedSessionManager.getAllCachedSessions();
 
         // Combine and deduplicate sessions (prefer cached metadata when available)
-        const sessionsMap = new Map<string, any>();
+        interface CompletedSessionInfo {
+          sessionId: string;
+          prompt: string;
+          completedAt: string;
+          artifactsUri: string;
+          hasGeneratedCode: boolean;
+          harQuality: string;
+          isCached: boolean;
+          totalNodes: number;
+          quickAccess: {
+            dag: string;
+            logs: string;
+            status: string;
+            har: string;
+          };
+        }
+        const sessionsMap = new Map<string, CompletedSessionInfo>();
 
         // Add cached sessions first (more complete metadata)
         for (const cached of cachedSessions) {
