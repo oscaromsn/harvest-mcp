@@ -25,13 +25,31 @@ export function generateWrapperScript(session: HarvestSession): string {
     throw new Error("Session prompt is missing");
   }
 
-  // Validate that analysis is complete
-  if (!session.state.isComplete || !session.dagManager.isComplete()) {
+  // Validate that analysis is complete (use DAG as primary source of truth)
+  if (!session.dagManager.isComplete()) {
     const unresolvedNodes = session.dagManager.getUnresolvedNodes();
+
+    // Create detailed error message with actionable information
+    const errorDetails = unresolvedNodes
+      .map(
+        (n) => `  - Node ${n.nodeId}: Missing [${n.unresolvedParts.join(", ")}]`
+      )
+      .join("\n");
+
+    const actionableMessage =
+      unresolvedNodes.length === 0
+        ? "Analysis appears complete but DAG validation failed. This may indicate an internal issue with dependency resolution."
+        : `The following ${unresolvedNodes.length} nodes still have unresolved dependencies:\n${errorDetails}\n\nTo resolve this:\n  1. Continue processing with 'analysis_process_next_node'\n  2. Check for manual intervention needs with debug tools\n  3. Verify all required input variables are provided`;
+
     throw new Error(
-      `Analysis not complete. ${unresolvedNodes.length} nodes still have unresolved dependencies: ${unresolvedNodes
-        .map((n) => `${n.nodeId}: [${n.unresolvedParts.join(", ")}]`)
-        .join("; ")}`
+      `Code generation failed: Analysis not complete.\n\n${actionableMessage}`
+    );
+  }
+
+  // Warn if session state is out of sync (should not happen with new synchronization)
+  if (!session.state.isComplete) {
+    console.warn(
+      "Warning: Session state completion flag is out of sync with DAG completion. This should not happen."
     );
   }
 
