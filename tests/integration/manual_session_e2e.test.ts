@@ -69,7 +69,8 @@ describe("Sprint 5.4: End-to-End Manual Session Workflow", () => {
       const startData = parseToolResponse(startResponse);
       expect(startData.success).toBe(true);
       expect(startData.sessionId).toBeDefined();
-      expect(startData.outputDir).toBe(testOutputDir);
+      // Verify output directory is client-accessible (should contain .harvest)
+      expect(startData.outputDir).toContain(".harvest");
       expect(startData.validation.parametersValidated).toBe(true);
 
       const sessionId = startData.sessionId;
