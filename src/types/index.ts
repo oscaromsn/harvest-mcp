@@ -395,6 +395,15 @@ export const SessionStartSchema = z.object({
   cookiePath: z.string().optional(),
   prompt: z.string().min(1, "Prompt is required"),
   inputVariables: z.record(z.string()).optional(),
+  harParsingOptions: z
+    .object({
+      excludeKeywords: z.array(z.string()).optional(),
+      includeAllApiRequests: z.boolean().optional(),
+      minQualityThreshold: z.enum(["excellent", "good", "poor"]).optional(),
+      preserveAnalyticsRequests: z.boolean().optional(),
+      customFilters: z.array(z.function()).optional(),
+    })
+    .optional(),
 });
 
 export const SessionIdSchema = z.object({

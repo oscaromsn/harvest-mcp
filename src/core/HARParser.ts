@@ -16,8 +16,8 @@ import type {
 } from "../types/index.js";
 import { expandTilde } from "../utils/pathUtils.js";
 
-// Keywords to exclude from requests (analytics, tracking, etc.)
-const EXCLUDED_KEYWORDS = [
+// Default keywords to exclude from requests (analytics, tracking, etc.)
+const DEFAULT_EXCLUDED_KEYWORDS = [
   "google",
   "taboola",
   "datadog",
@@ -41,6 +41,15 @@ const EXCLUDED_KEYWORDS = [
   "matomo",
   "plausible",
 ];
+
+// Configuration interface for HAR parsing
+export interface HARParsingOptions {
+  excludeKeywords?: string[];
+  includeAllApiRequests?: boolean;
+  minQualityThreshold?: "excellent" | "good" | "poor";
+  preserveAnalyticsRequests?: boolean;
+  customFilters?: Array<(url: string) => boolean>;
+}
 
 // Headers to exclude from request processing
 const EXCLUDED_HEADER_KEYWORDS = [
@@ -180,7 +189,10 @@ function addSpecificRecommendations(
 /**
  * Validate HAR file content quality and provide actionable feedback
  */
-export function validateHARContent(harData: Har): {
+export function validateHARContent(
+  harData: Har,
+  options?: HARParsingOptions
+): {
   isValid: boolean;
   quality: "excellent" | "good" | "poor" | "empty";
   issues: string[];
@@ -246,7 +258,7 @@ export function validateHARContent(harData: Har): {
     }
 
     // Skip excluded requests for quality analysis
-    if (shouldExcludeRequest(request.url)) {
+    if (shouldExcludeRequest(request.url, options)) {
       continue;
     }
 
@@ -289,7 +301,10 @@ export function validateHARContent(harData: Har): {
 /**
  * Parse a HAR file and extract relevant request data with validation
  */
-export async function parseHARFile(harPath: string): Promise<
+export async function parseHARFile(
+  harPath: string,
+  options?: HARParsingOptions
+): Promise<
   ParsedHARData & {
     validation: ReturnType<typeof validateHARContent>;
   }
@@ -301,7 +316,7 @@ export async function parseHARFile(harPath: string): Promise<
     const harData = JSON.parse(harContent) as Har;
 
     // Validate HAR content quality
-    const validation = validateHARContent(harData);
+    const validation = validateHARContent(harData, options);
 
     if (!harData.log || !harData.log.entries) {
       throw new Error("Invalid HAR file format: missing log.entries");
@@ -320,7 +335,7 @@ export async function parseHARFile(harPath: string): Promise<
       }
 
       // Filter out excluded requests
-      if (shouldExcludeRequest(request.url)) {
+      if (shouldExcludeRequest(request.url, options)) {
         continue;
       }
 
@@ -503,10 +518,13 @@ export function formatResponse(harResponse: HarResponse): ResponseData {
 /**
  * Filter requests to remove irrelevant ones
  */
-export function filterRequests(requests: RequestModel[]): RequestModel[] {
+export function filterRequests(
+  requests: RequestModel[],
+  options?: HARParsingOptions
+): RequestModel[] {
   return requests.filter((request) => {
     // Filter by URL
-    if (shouldExcludeRequest(request.url)) {
+    if (shouldExcludeRequest(request.url, options)) {
       return false;
     }
 
@@ -534,7 +552,10 @@ export function filterRequests(requests: RequestModel[]): RequestModel[] {
 /**
  * Extract and clean URL information
  */
-export function extractURLs(urlInfos: URLInfo[]): URLInfo[] {
+export function extractURLs(
+  urlInfos: URLInfo[],
+  options?: HARParsingOptions
+): URLInfo[] {
   // Remove duplicates and sort by relevance
   const uniqueUrls = new Map<string, URLInfo>();
 
@@ -546,7 +567,7 @@ export function extractURLs(urlInfos: URLInfo[]): URLInfo[] {
   }
 
   return Array.from(uniqueUrls.values())
-    .filter((urlInfo) => !shouldExcludeRequest(urlInfo.url))
+    .filter((urlInfo) => !shouldExcludeRequest(urlInfo.url, options))
     .sort((a, b) => {
       // Prioritize API endpoints
       const aIsApi = a.url.includes("/api/") || a.responseType.includes("json");
@@ -571,12 +592,46 @@ export function extractURLs(urlInfos: URLInfo[]): URLInfo[] {
 }
 
 /**
- * Check if a request should be excluded based on URL
+ * Check if a request should be excluded based on URL and options
  */
-function shouldExcludeRequest(url: string): boolean {
+function shouldExcludeRequest(
+  url: string,
+  options?: HARParsingOptions
+): boolean {
   const lowerUrl = url.toLowerCase();
 
-  return EXCLUDED_KEYWORDS.some((keyword) =>
+  // If preserveAnalyticsRequests is true, don't exclude anything
+  if (options?.preserveAnalyticsRequests) {
+    return false;
+  }
+
+  // If includeAllApiRequests is true, only exclude non-API requests
+  if (options?.includeAllApiRequests) {
+    const isApiRequest =
+      lowerUrl.includes("/api/") ||
+      lowerUrl.includes("/v1/") ||
+      lowerUrl.includes("/v2/") ||
+      lowerUrl.includes("/rest/") ||
+      lowerUrl.includes("/graphql");
+    if (isApiRequest) {
+      return false; // Don't exclude API requests
+    }
+  }
+
+  // Use custom filters if provided
+  if (options?.customFilters) {
+    const shouldExcludeByCustomFilters = options.customFilters.some((filter) =>
+      filter(url)
+    );
+    if (shouldExcludeByCustomFilters) {
+      return true;
+    }
+  }
+
+  // Use configured exclude keywords or default
+  const excludeKeywords = options?.excludeKeywords ?? DEFAULT_EXCLUDED_KEYWORDS;
+
+  return excludeKeywords.some((keyword) =>
     lowerUrl.includes(keyword.toLowerCase())
   );
 }
