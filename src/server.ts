@@ -12,6 +12,7 @@ import { identifyDynamicParts } from "./agents/DynamicPartsAgent.js";
 import { identifyInputVariables } from "./agents/InputVariablesAgent.js";
 import { identifyEndUrl } from "./agents/URLIdentificationAgent.js";
 import { generateWrapperScript } from "./core/CodeGenerator.js";
+import { CompletedSessionManager } from "./core/CompletedSessionManager.js";
 import { parseHARFile } from "./core/HARParser.js";
 import { getLLMClient } from "./core/LLMClient.js";
 import { manualSessionManager } from "./core/ManualSessionManager.js";
@@ -154,11 +155,13 @@ export function getGlobalCLIConfig(): CLIArgs {
 export class HarvestMCPServer {
   public server: McpServer;
   public sessionManager: SessionManager;
+  public completedSessionManager: CompletedSessionManager;
   private cliConfig: CLIArgs;
 
   constructor(cliConfig: CLIArgs = {}) {
     this.cliConfig = cliConfig;
     this.sessionManager = new SessionManager();
+    this.completedSessionManager = CompletedSessionManager.getInstance();
 
     // Set global CLI config for access by other modules
     setGlobalCLIConfig(cliConfig);
@@ -417,6 +420,22 @@ export class HarvestMCPServer {
       },
       async (params): Promise<CallToolResult> => {
         return await this.handleForceDependency(params);
+      }
+    );
+
+    this.server.tool(
+      "debug_get_completion_blockers",
+      "Get detailed information about what's preventing analysis completion or code generation. Provides actionable recommendations for resolving blockers.",
+      {
+        sessionId: z
+          .string()
+          .uuid()
+          .describe(
+            "UUID of the session to analyze for completion blockers. Provides specific reasons and recommendations for resolving issues."
+          ),
+      },
+      async (params): Promise<CallToolResult> => {
+        return await this.handleGetCompletionBlockers(params);
       }
     );
 
@@ -1035,6 +1054,515 @@ export class HarvestMCPServer {
             {
               uri: "harvest://manual/sessions.json",
               text: JSON.stringify(sessionsData, null, 2),
+              mimeType: "application/json",
+            },
+          ],
+        };
+      }
+    );
+
+    // ====== COMPLETED SESSION ARTIFACTS RESOURCES ======
+
+    // Completed session artifacts metadata
+    this.server.resource(
+      "harvest://completed/{sessionId}/artifacts.json",
+      "Metadata and file list for artifacts from a completed analysis session",
+      (_uri, args) => {
+        const sessionId = args?.sessionId as string;
+        if (!sessionId) {
+          throw new HarvestError(
+            "Session ID is required",
+            "MISSING_SESSION_ID"
+          );
+        }
+
+        // Check if session is cached first (faster access)
+        const cachedMetadata =
+          this.completedSessionManager.getCachedSessionMetadata(sessionId);
+
+        if (cachedMetadata) {
+          // Use cached metadata for faster response
+          const artifactsData = {
+            sessionId,
+            completedAt: cachedMetadata.completedAt,
+            prompt: cachedMetadata.prompt,
+            analysisResult: cachedMetadata.analysisResult,
+            availableArtifacts: {
+              // Core analysis artifacts
+              dag: {
+                uri: `harvest://${sessionId}/dag.json`,
+                type: "application/json",
+                description: "Dependency graph structure",
+              },
+              logs: {
+                uri: `harvest://${sessionId}/log.txt`,
+                type: "text/plain",
+                description: "Analysis step logs",
+              },
+              status: {
+                uri: `harvest://${sessionId}/status.json`,
+                type: "application/json",
+                description: "Session status and progress",
+              },
+              // Generated code artifact (if available)
+              ...(cachedMetadata.artifactsAvailable.includes(
+                "generatedCode"
+              ) && {
+                generatedCode: {
+                  uri: `harvest://${sessionId}/generated_code.ts`,
+                  type: "text/typescript",
+                  description: "Generated TypeScript wrapper script",
+                },
+              }),
+              // HAR file artifact (cached)
+              harFile: {
+                uri: `harvest://completed/${sessionId}/har/original.har`,
+                type: "application/json",
+                description: "Original HAR file used for analysis (cached)",
+              },
+              // Cookie file artifact (if available, cached)
+              ...(cachedMetadata.artifactsAvailable.includes("cookies") && {
+                cookies: {
+                  uri: `harvest://completed/${sessionId}/cookies/original.json`,
+                  type: "application/json",
+                  description:
+                    "Original cookie data used for analysis (cached)",
+                },
+              }),
+            },
+            metadata: {
+              ...cachedMetadata.metadata,
+              sessionCreatedAt: cachedMetadata.cachedAt,
+              lastActivity: cachedMetadata.lastAccessed,
+              isCached: true,
+              cacheStatus: "available",
+            },
+          };
+
+          return {
+            contents: [
+              {
+                uri: `harvest://completed/${sessionId}/artifacts.json`,
+                text: JSON.stringify(artifactsData, null, 2),
+                mimeType: "application/json",
+              },
+            ],
+          };
+        }
+
+        // Fallback to live session data if not cached
+        const session = this.sessionManager.getSession(sessionId);
+        const analysis = this.sessionManager.analyzeCompletionState(sessionId);
+
+        if (!analysis.isComplete) {
+          throw new HarvestError(
+            `Session ${sessionId} is not completed. Complete the analysis first.`,
+            "SESSION_NOT_COMPLETED",
+            {
+              sessionId,
+              blockers: analysis.blockers,
+              recommendations: analysis.recommendations,
+            }
+          );
+        }
+
+        // Gather artifact information
+        const artifactsData = {
+          sessionId,
+          completedAt: session.lastActivity.toISOString(),
+          prompt: session.prompt,
+          analysisResult: {
+            isComplete: analysis.isComplete,
+            totalNodes: analysis.diagnostics.totalNodes,
+            codeGenerated: !!session.state.generatedCode,
+          },
+          availableArtifacts: {
+            // Core analysis artifacts
+            dag: {
+              uri: `harvest://${sessionId}/dag.json`,
+              type: "application/json",
+              description: "Dependency graph structure",
+            },
+            logs: {
+              uri: `harvest://${sessionId}/log.txt`,
+              type: "text/plain",
+              description: "Analysis step logs",
+            },
+            status: {
+              uri: `harvest://${sessionId}/status.json`,
+              type: "application/json",
+              description: "Session status and progress",
+            },
+            // Generated code artifact (if available)
+            ...(session.state.generatedCode && {
+              generatedCode: {
+                uri: `harvest://${sessionId}/generated_code.ts`,
+                type: "text/typescript",
+                description: "Generated TypeScript wrapper script",
+              },
+            }),
+            // HAR file artifact (always available)
+            harFile: {
+              uri: `harvest://completed/${sessionId}/har/original.har`,
+              type: "application/json",
+              description: "Original HAR file used for analysis",
+            },
+            // Cookie file artifact (if available)
+            ...(session.cookieData && {
+              cookies: {
+                uri: `harvest://completed/${sessionId}/cookies/original.json`,
+                type: "application/json",
+                description: "Original cookie data used for analysis",
+              },
+            }),
+          },
+          metadata: {
+            sessionCreatedAt: session.createdAt.toISOString(),
+            lastActivity: session.lastActivity.toISOString(),
+            harQuality: session.harData.validation?.quality || "unknown",
+            totalRequests: session.harData.requests.length,
+            hasAuthCookies: !!session.cookieData,
+            generatedCodeSize: session.state.generatedCode?.length || 0,
+          },
+        };
+
+        return {
+          contents: [
+            {
+              uri: `harvest://completed/${sessionId}/artifacts.json`,
+              text: JSON.stringify(artifactsData, null, 2),
+              mimeType: "application/json",
+            },
+          ],
+        };
+      }
+    );
+
+    // Completed session HAR file content
+    this.server.resource(
+      "harvest://completed/{sessionId}/har/{filename}",
+      "HAR file content from a completed analysis session",
+      async (uri, args) => {
+        const sessionId = args?.sessionId as string;
+        // Extract filename from URI path
+        const filename = uri.pathname.split("/").pop() || "";
+
+        if (!sessionId) {
+          throw new HarvestError(
+            "Session ID is required",
+            "MISSING_SESSION_ID"
+          );
+        }
+        if (!filename) {
+          throw new HarvestError("Filename is required", "MISSING_FILENAME");
+        }
+
+        // Check if session is cached first (faster access)
+        const cachedMetadata =
+          this.completedSessionManager.getCachedSessionMetadata(sessionId);
+
+        if (cachedMetadata && filename === "original.har") {
+          try {
+            // Serve cached HAR file content
+            const harContent =
+              await this.completedSessionManager.getCachedArtifact(
+                sessionId,
+                "har"
+              );
+
+            return {
+              contents: [
+                {
+                  uri: `harvest://completed/${sessionId}/har/${filename}`,
+                  text: harContent,
+                  mimeType: "application/json",
+                },
+              ],
+            };
+          } catch (cacheError) {
+            // If cached content fails, fall back to live data
+            this.sessionManager.addLog(
+              sessionId,
+              "warn",
+              `Failed to load cached HAR file, falling back to live data: ${cacheError instanceof Error ? cacheError.message : "Unknown error"}`
+            );
+          }
+        }
+
+        // Fallback to live session data
+        const session = this.sessionManager.getSession(sessionId);
+        const analysis = this.sessionManager.analyzeCompletionState(sessionId);
+
+        if (!analysis.isComplete) {
+          throw new HarvestError(
+            `Session ${sessionId} is not completed. Complete the analysis first.`,
+            "SESSION_NOT_COMPLETED",
+            { sessionId }
+          );
+        }
+
+        // Generate HAR data from live session data
+        if (filename === "original.har") {
+          const harData = {
+            log: {
+              version: "1.2",
+              creator: {
+                name: "harvest-mcp",
+                version: "1.0.0",
+              },
+              entries: session.harData.requests.map((req) => ({
+                startedDateTime: new Date().toISOString(),
+                time: 0,
+                request: {
+                  method: req.method,
+                  url: req.url,
+                  httpVersion: "HTTP/1.1",
+                  headers: Object.entries(req.headers).map(([name, value]) => ({
+                    name,
+                    value,
+                  })),
+                  queryString: Object.entries(req.queryParams || {}).map(
+                    ([name, value]) => ({ name, value })
+                  ),
+                  postData: req.body
+                    ? {
+                        mimeType:
+                          req.headers["content-type"] ||
+                          "application/octet-stream",
+                        text:
+                          typeof req.body === "string"
+                            ? req.body
+                            : JSON.stringify(req.body),
+                      }
+                    : undefined,
+                },
+                response: {
+                  status: 200,
+                  statusText: "OK",
+                  httpVersion: "HTTP/1.1",
+                  headers: [],
+                  content: { size: 0, mimeType: "text/html" },
+                },
+                cache: {},
+                timings: { send: 0, wait: 0, receive: 0 },
+              })),
+            },
+          };
+
+          return {
+            contents: [
+              {
+                uri: `harvest://completed/${sessionId}/har/${filename}`,
+                text: JSON.stringify(harData, null, 2),
+                mimeType: "application/json",
+              },
+            ],
+          };
+        }
+
+        throw new HarvestError(
+          `HAR file not found: ${filename}`,
+          "HAR_FILE_NOT_FOUND",
+          { sessionId, filename }
+        );
+      }
+    );
+
+    // Completed session cookie file content
+    this.server.resource(
+      "harvest://completed/{sessionId}/cookies/{filename}",
+      "Cookie file content from a completed analysis session",
+      async (uri, args) => {
+        const sessionId = args?.sessionId as string;
+        // Extract filename from URI path
+        const filename = uri.pathname.split("/").pop() || "";
+
+        if (!sessionId) {
+          throw new HarvestError(
+            "Session ID is required",
+            "MISSING_SESSION_ID"
+          );
+        }
+        if (!filename) {
+          throw new HarvestError("Filename is required", "MISSING_FILENAME");
+        }
+
+        // Check if session is cached first (faster access)
+        const cachedMetadata =
+          this.completedSessionManager.getCachedSessionMetadata(sessionId);
+
+        if (cachedMetadata && filename === "original.json") {
+          if (!cachedMetadata.artifactsAvailable.includes("cookies")) {
+            throw new HarvestError(
+              `No cookie data available for session ${sessionId}`,
+              "NO_COOKIE_DATA",
+              { sessionId }
+            );
+          }
+
+          try {
+            // Serve cached cookie file content
+            const cookieContent =
+              await this.completedSessionManager.getCachedArtifact(
+                sessionId,
+                "cookies"
+              );
+
+            return {
+              contents: [
+                {
+                  uri: `harvest://completed/${sessionId}/cookies/${filename}`,
+                  text: cookieContent,
+                  mimeType: "application/json",
+                },
+              ],
+            };
+          } catch (cacheError) {
+            // If cached content fails, fall back to live data
+            this.sessionManager.addLog(
+              sessionId,
+              "warn",
+              `Failed to load cached cookie file, falling back to live data: ${cacheError instanceof Error ? cacheError.message : "Unknown error"}`
+            );
+          }
+        }
+
+        // Fallback to live session data
+        const session = this.sessionManager.getSession(sessionId);
+        const analysis = this.sessionManager.analyzeCompletionState(sessionId);
+
+        if (!analysis.isComplete) {
+          throw new HarvestError(
+            `Session ${sessionId} is not completed. Complete the analysis first.`,
+            "SESSION_NOT_COMPLETED",
+            { sessionId }
+          );
+        }
+
+        if (!session.cookieData) {
+          throw new HarvestError(
+            `No cookie data available for session ${sessionId}`,
+            "NO_COOKIE_DATA",
+            { sessionId }
+          );
+        }
+
+        if (filename === "original.json") {
+          return {
+            contents: [
+              {
+                uri: `harvest://completed/${sessionId}/cookies/${filename}`,
+                text: JSON.stringify(session.cookieData, null, 2),
+                mimeType: "application/json",
+              },
+            ],
+          };
+        }
+
+        throw new HarvestError(
+          `Cookie file not found: ${filename}`,
+          "COOKIE_FILE_NOT_FOUND",
+          { sessionId, filename }
+        );
+      }
+    );
+
+    // Global artifacts discovery
+    this.server.resource(
+      "harvest://artifacts/list.json",
+      "List all completed sessions with available artifacts",
+      () => {
+        // Get both live and cached completed sessions
+        const allSessions = this.sessionManager.listSessions();
+        const liveCompletedSessions = allSessions.filter(
+          (session) => session.isComplete
+        );
+        const cachedSessions =
+          this.completedSessionManager.getAllCachedSessions();
+
+        // Combine and deduplicate sessions (prefer cached metadata when available)
+        const sessionsMap = new Map<string, any>();
+
+        // Add cached sessions first (more complete metadata)
+        for (const cached of cachedSessions) {
+          sessionsMap.set(cached.sessionId, {
+            sessionId: cached.sessionId,
+            prompt: cached.prompt,
+            completedAt: cached.completedAt,
+            artifactsUri: `harvest://completed/${cached.sessionId}/artifacts.json`,
+            hasGeneratedCode: cached.analysisResult.codeGenerated,
+            harQuality: cached.metadata.harQuality,
+            isCached: true,
+            totalNodes: cached.analysisResult.totalNodes,
+            quickAccess: {
+              dag: `harvest://${cached.sessionId}/dag.json`,
+              logs: `harvest://${cached.sessionId}/log.txt`,
+              status: `harvest://${cached.sessionId}/status.json`,
+              har: `harvest://completed/${cached.sessionId}/har/original.har`,
+            },
+          });
+        }
+
+        // Add live sessions if not already cached
+        for (const live of liveCompletedSessions) {
+          if (!sessionsMap.has(live.id)) {
+            sessionsMap.set(live.id, {
+              sessionId: live.id,
+              prompt: live.prompt,
+              completedAt: live.lastActivity.toISOString(),
+              artifactsUri: `harvest://completed/${live.id}/artifacts.json`,
+              hasGeneratedCode: live.nodeCount > 0,
+              harQuality: "unknown",
+              isCached: false,
+              totalNodes: live.nodeCount,
+              quickAccess: {
+                dag: `harvest://${live.id}/dag.json`,
+                logs: `harvest://${live.id}/log.txt`,
+                status: `harvest://${live.id}/status.json`,
+                har: `harvest://completed/${live.id}/har/original.har`,
+              },
+            });
+          }
+        }
+
+        const completedSessions = Array.from(sessionsMap.values());
+
+        const artifactsList = {
+          totalSessions: allSessions.length,
+          completedSessions: completedSessions.length,
+          lastUpdated: new Date().toISOString(),
+          sessions: completedSessions,
+          summary: {
+            averageNodes:
+              completedSessions.length > 0
+                ? Math.round(
+                    completedSessions.reduce(
+                      (sum, s) => sum + s.totalNodes,
+                      0
+                    ) / completedSessions.length
+                  )
+                : 0,
+            sessionsWithCode: completedSessions.filter(
+              (s) => s.hasGeneratedCode
+            ).length,
+            cachedSessions: completedSessions.filter((s) => s.isCached).length,
+            liveSessions: completedSessions.filter((s) => !s.isCached).length,
+            oldestSession:
+              completedSessions.length > 0
+                ? completedSessions.reduce((oldest, s) =>
+                    new Date(s.completedAt) < new Date(oldest.completedAt)
+                      ? s
+                      : oldest
+                  ).completedAt
+                : null,
+          },
+        };
+
+        return {
+          contents: [
+            {
+              uri: "harvest://artifacts/list.json",
+              text: JSON.stringify(artifactsList, null, 2),
               mimeType: "application/json",
             },
           ],
@@ -2090,6 +2618,9 @@ export class HarvestMCPServer {
       `Completed processing node ${nodeId}. Added ${newNodesAdded} new nodes. ${remainingNodes} nodes remaining.`
     );
 
+    // Sync completion state after node processing
+    this.sessionManager.syncCompletionState(sessionId);
+
     return {
       content: [
         {
@@ -2476,6 +3007,99 @@ export class HarvestMCPServer {
   }
 
   /**
+   * Handle debug_get_completion_blockers tool call
+   */
+  public async handleGetCompletionBlockers(
+    args: unknown
+  ): Promise<CallToolResult> {
+    try {
+      const argsObj = args as { sessionId: string };
+
+      // Use enhanced completion state analysis
+      const analysis = this.sessionManager.analyzeCompletionState(
+        argsObj.sessionId
+      );
+
+      // Determine overall status and next action based on analysis
+      let status: string;
+      let nextAction: string;
+
+      if (analysis.isComplete) {
+        status = "ready_for_code_generation";
+        nextAction = "Use 'codegen_generate_wrapper_script' to generate code";
+      } else if (
+        analysis.diagnostics.pendingInQueue > 0 ||
+        analysis.diagnostics.unresolvedNodes > 0
+      ) {
+        status = "analysis_in_progress";
+        nextAction = "Continue with 'analysis_process_next_node'";
+      } else if (analysis.diagnostics.totalNodes === 0) {
+        status = "analysis_not_started";
+        nextAction = "Start with 'analysis_run_initial_analysis'";
+      } else {
+        status = "analysis_stalled";
+        nextAction = "Check session status and consider restarting analysis";
+      }
+
+      // Add status-specific recommendations
+      if (analysis.isComplete) {
+        analysis.recommendations.push(
+          "Analysis appears complete - ready for code generation"
+        );
+      } else {
+        analysis.recommendations.push(
+          "Address the blockers listed above to proceed"
+        );
+        if (analysis.blockers.length > 2) {
+          analysis.recommendations.push(
+            "Focus on the first blocker first, as others may resolve automatically"
+          );
+        }
+      }
+
+      this.sessionManager.addLog(
+        argsObj.sessionId,
+        "info",
+        `Completion blocker analysis: ${analysis.blockers.length} blockers found, status: ${status}`
+      );
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              status,
+              canGenerateCode: analysis.isComplete,
+              blockers: analysis.blockers,
+              recommendations: analysis.recommendations,
+              nextAction,
+              diagnostics: {
+                ...analysis.diagnostics,
+                stateSynchronized:
+                  analysis.diagnostics.dagComplete === analysis.isComplete,
+              },
+              summary:
+                analysis.blockers.length === 0
+                  ? "No blockers found - analysis is complete and ready for code generation"
+                  : `${analysis.blockers.length} blockers preventing completion - see recommendations for resolution steps`,
+            }),
+          },
+        ],
+      };
+    } catch (error) {
+      if (error instanceof HarvestError) {
+        throw error;
+      }
+
+      throw new HarvestError(
+        `Failed to analyze completion blockers: ${error instanceof Error ? error.message : "Unknown error"}`,
+        "COMPLETION_BLOCKERS_ANALYSIS_FAILED",
+        { originalError: error }
+      );
+    }
+  }
+
+  /**
    * Handle codegen.generate_wrapper_script tool call
    */
   public async handleGenerateWrapperScript(
@@ -2485,20 +3109,44 @@ export class HarvestMCPServer {
       const argsObj = args as { sessionId: string };
       const session = this.sessionManager.getSession(argsObj.sessionId);
 
-      // Validate that analysis is complete
-      if (!session.state.isComplete || !session.dagManager.isComplete()) {
-        const unresolvedNodes = session.dagManager.getUnresolvedNodes();
-        throw new HarvestError(
-          `Cannot generate code - analysis not complete. ${unresolvedNodes.length} nodes have unresolved dependencies`,
-          "ANALYSIS_INCOMPLETE",
-          {
-            unresolvedNodes: unresolvedNodes.map((n) => ({
-              nodeId: n.nodeId,
-              unresolvedParts: n.unresolvedParts,
-            })),
-          }
-        );
+      // Use comprehensive completion analysis for detailed validation and error reporting
+      const analysis = this.sessionManager.analyzeCompletionState(
+        argsObj.sessionId
+      );
+
+      if (!analysis.isComplete) {
+        // Create comprehensive error message with specific blockers and recommendations
+        const blockersList = analysis.blockers
+          .map((blocker, index) => `  ${index + 1}. ${blocker}`)
+          .join("\n");
+        const recommendationsList = analysis.recommendations
+          .map((rec, index) => `  ${index + 1}. ${rec}`)
+          .join("\n");
+
+        const detailedMessage = `Code generation failed - analysis prerequisites not met.
+
+🚫 Blockers preventing completion:
+${blockersList}
+
+💡 Recommended actions:
+${recommendationsList}
+
+📊 Analysis diagnostics:
+  - Master node identified: ${analysis.diagnostics.hasMasterNode ? "✅" : "❌"}
+  - Target action URL found: ${analysis.diagnostics.hasActionUrl ? "✅" : "❌"}
+  - DAG completion: ${analysis.diagnostics.dagComplete ? "✅" : "❌"}
+  - Processing queue: ${analysis.diagnostics.pendingInQueue} pending, ${analysis.diagnostics.queueEmpty ? "empty" : "active"}
+  - Node resolution: ${analysis.diagnostics.totalNodes - analysis.diagnostics.unresolvedNodes}/${analysis.diagnostics.totalNodes} resolved`;
+
+        throw new HarvestError(detailedMessage, "ANALYSIS_INCOMPLETE", {
+          blockers: analysis.blockers,
+          recommendations: analysis.recommendations,
+          diagnostics: analysis.diagnostics,
+        });
       }
+
+      // Sync completion state if needed (should already be synced by workflow)
+      this.sessionManager.syncCompletionState(argsObj.sessionId);
 
       this.sessionManager.addLog(
         argsObj.sessionId,
@@ -2517,6 +3165,30 @@ export class HarvestMCPServer {
         "info",
         `Code generation completed successfully - ${generatedCode.length} characters generated`
       );
+
+      // Cache the completed session artifacts for future access
+      try {
+        const analysis = this.sessionManager.analyzeCompletionState(
+          argsObj.sessionId
+        );
+        await this.completedSessionManager.cacheCompletedSession(
+          session,
+          analysis
+        );
+
+        this.sessionManager.addLog(
+          argsObj.sessionId,
+          "info",
+          "Session artifacts cached successfully for future access"
+        );
+      } catch (cacheError) {
+        // Log cache error but don't fail the code generation
+        this.sessionManager.addLog(
+          argsObj.sessionId,
+          "warn",
+          `Failed to cache session artifacts: ${cacheError instanceof Error ? cacheError.message : "Unknown error"}`
+        );
+      }
 
       return {
         content: [
@@ -3574,6 +4246,8 @@ export class HarvestMCPServer {
 
       if (completeData.isComplete) {
         isComplete = true;
+        // Sync session completion state with DAG completion
+        this.sessionManager.syncCompletionState(argsObj.sessionId);
         steps.push(`✅ Analysis complete after ${iterations} iterations`);
         break;
       }
@@ -3598,9 +4272,21 @@ export class HarvestMCPServer {
     }
 
     if (!isComplete) {
+      // Use enhanced completion analysis to provide detailed information about what's blocking completion
+      const analysis = this.sessionManager.analyzeCompletionState(
+        argsObj.sessionId
+      );
       warnings.push(
         `Analysis incomplete after ${argsObj.maxIterations} iterations`
       );
+      warnings.push(
+        `Blockers: ${analysis.blockers.length > 0 ? analysis.blockers.join("; ") : "Unknown blockers"}`
+      );
+      if (analysis.diagnostics.unresolvedNodes > 0) {
+        warnings.push(
+          `${analysis.diagnostics.unresolvedNodes} of ${analysis.diagnostics.totalNodes} nodes still unresolved`
+        );
+      }
     }
 
     return { isComplete, iterations };
@@ -3628,7 +4314,20 @@ export class HarvestMCPServer {
         );
 
         if (codeResult.isError) {
+          // Use enhanced completion analysis to understand why code generation failed
+          const analysis = this.sessionManager.analyzeCompletionState(
+            argsObj.sessionId
+          );
           warnings.push("Code generation failed");
+          if (analysis.isComplete) {
+            warnings.push(
+              "Reason: Unknown code generation error despite complete analysis"
+            );
+          } else {
+            warnings.push(
+              `Reason: Analysis not actually complete - ${analysis.blockers.join("; ")}`
+            );
+          }
         } else {
           generatedCode = codeData.code || "";
           steps.push(
@@ -3636,9 +4335,18 @@ export class HarvestMCPServer {
           );
         }
       } catch (error) {
+        // Use enhanced completion analysis to provide context for the error
+        const analysis = this.sessionManager.analyzeCompletionState(
+          argsObj.sessionId
+        );
         warnings.push(
           `Code generation error: ${error instanceof Error ? error.message : "Unknown error"}`
         );
+        if (!analysis.isComplete) {
+          warnings.push(
+            `Analysis state issue: ${analysis.blockers.join("; ")}`
+          );
+        }
       }
     }
 
@@ -4004,6 +4712,11 @@ export class HarvestMCPServer {
         if (typeof completeContent === "string") {
           const completeData = JSON.parse(completeContent);
           isComplete = completeData.isComplete;
+
+          // Sync session completion state with DAG completion
+          if (isComplete) {
+            this.sessionManager.syncCompletionState(sessionId);
+          }
         }
 
         if (!isComplete) {
@@ -4096,14 +4809,8 @@ export class HarvestMCPServer {
     warnings: string[],
     recommendations: string[]
   ): Promise<CallToolResult> {
-    const unresolvedResult = await this.handleGetUnresolvedNodes({ sessionId });
-    const unresolvedContent = unresolvedResult.content?.[0]?.text;
-    let unresolvedInfo = "Unknown";
-
-    if (typeof unresolvedContent === "string") {
-      const unresolvedData = JSON.parse(unresolvedContent);
-      unresolvedInfo = `${unresolvedData.totalUnresolved} unresolved nodes`;
-    }
+    // Use enhanced completion analysis for detailed error information
+    const analysis = this.sessionManager.analyzeCompletionState(sessionId);
 
     return {
       content: [
@@ -4118,14 +4825,28 @@ export class HarvestMCPServer {
             analysisSteps,
             warnings,
             error: "Analysis incomplete",
-            unresolvedInfo,
+            blockers: analysis.blockers,
+            diagnostics: {
+              ...analysis.diagnostics,
+              analysisProgress: `${analysis.diagnostics.totalNodes - analysis.diagnostics.unresolvedNodes}/${analysis.diagnostics.totalNodes} nodes resolved`,
+            },
             recommendations: [
+              // Add specific recommendations from analysis first
+              ...analysis.recommendations,
+              // Then add general workflow recommendations
               "🔍 Use debug tools to investigate unresolved dependencies",
               "📝 Try capturing a more complete workflow",
               "🎯 Focus on the specific action you want to automate",
               ...recommendations,
             ],
             debugSessionId: sessionId,
+            nextSteps:
+              analysis.blockers.length > 0
+                ? [
+                    "📋 Address the blockers listed above",
+                    "🔄 Continue with 'analysis_process_next_node'",
+                  ]
+                : ["🔄 Continue processing with available tools"],
           }),
         },
       ],
@@ -4271,34 +4992,32 @@ export class HarvestMCPServer {
       const argsObj = args as { sessionId: string };
       const session = this.sessionManager.getSession(argsObj.sessionId);
 
+      // Use comprehensive completion analysis for accurate status and recommendations
+      const analysis = this.sessionManager.analyzeCompletionState(
+        argsObj.sessionId
+      );
+
       // Calculate progress metrics
-      const totalNodes = session.dagManager.getNodeCount();
-      const unresolvedNodes = session.dagManager.getUnresolvedNodes().length;
+      const totalNodes = analysis.diagnostics.totalNodes;
+      const unresolvedNodes = analysis.diagnostics.unresolvedNodes;
       const resolvedNodes = totalNodes - unresolvedNodes;
       const progressPercent =
         totalNodes > 0 ? Math.round((resolvedNodes / totalNodes) * 100) : 0;
 
-      // Determine next actions
-      const nextActions: string[] = [];
+      // Use analysis recommendations as next actions (more comprehensive and accurate)
+      const nextActions: string[] = [...analysis.recommendations];
       const warnings: string[] = [];
 
-      if (!session.state.masterNodeId) {
+      // Add specific progress indicators if analysis is in progress
+      if (!analysis.isComplete && unresolvedNodes > 0) {
         nextActions.push(
-          "Run analysis_run_initial_analysis to identify the target URL"
+          `📊 Progress: ${resolvedNodes}/${totalNodes} nodes resolved (${progressPercent}%)`
         );
-      } else if (unresolvedNodes > 0) {
-        nextActions.push(
-          "Run analysis_process_next_node to continue resolving dependencies"
-        );
-        nextActions.push(`${unresolvedNodes} nodes remaining to process`);
-      } else if (session.state.isComplete) {
-        nextActions.push(
-          "Analysis complete - run codegen_generate_wrapper_script to generate code"
-        );
-      } else {
-        nextActions.push(
-          "Run analysis_is_complete to check if analysis is finished"
-        );
+      }
+
+      // Add blockers as warnings if they exist
+      if (analysis.blockers.length > 0) {
+        warnings.push(`🚫 Current blockers: ${analysis.blockers.join("; ")}`);
       }
 
       // Check for potential issues
@@ -4336,22 +5055,29 @@ export class HarvestMCPServer {
               success: true,
               sessionId: argsObj.sessionId,
               status: {
-                isComplete: session.state.isComplete,
-                hasActionUrl: !!session.state.actionUrl,
-                hasMasterNode: !!session.state.masterNodeId,
+                isComplete: analysis.isComplete,
+                hasActionUrl: analysis.diagnostics.hasActionUrl,
+                hasMasterNode: analysis.diagnostics.hasMasterNode,
                 progressPercent,
-                phase: session.state.masterNodeId
-                  ? session.state.isComplete
+                phase: analysis.diagnostics.hasMasterNode
+                  ? analysis.isComplete
                     ? "complete"
                     : "processing"
                   : "initialization",
+                blockers: analysis.blockers,
+                canGenerateCode: analysis.isComplete,
+                queueStatus: analysis.diagnostics.queueEmpty
+                  ? "empty"
+                  : "active",
               },
               progress: {
                 totalNodes,
                 resolvedNodes,
                 unresolvedNodes,
                 currentlyProcessing: session.state.inProcessNodeId,
-                toBeProcessed: session.state.toBeProcessedNodes.length,
+                toBeProcessed: analysis.diagnostics.pendingInQueue,
+                dagComplete: analysis.diagnostics.dagComplete,
+                queueEmpty: analysis.diagnostics.queueEmpty,
               },
               sessionInfo: {
                 prompt: session.prompt,
