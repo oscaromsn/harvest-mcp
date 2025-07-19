@@ -46,32 +46,39 @@ interface GeminiFunctionDeclaration {
   parameters?: GeminiParameters;
 }
 
-interface GeminiApiResult {
-  response: {
-    text(): string;
-    functionCalls():
-      | Array<{
-          name: string;
-          args: Record<string, unknown>;
-        }>
-      | undefined;
-    candidates?: Array<{
-      content: {
-        parts: Array<{
-          text?: string;
-          functionCall?: {
-            name: string;
-            args: Record<string, unknown>;
-          };
-        }>;
-      };
-    }>;
-    usageMetadata?: {
-      promptTokenCount: number;
-      candidatesTokenCount: number;
-      totalTokenCount: number;
-    };
+interface GeminiFunctionCall {
+  name: string;
+  args: Record<string, unknown>;
+}
+
+interface GeminiPart {
+  text?: string;
+  functionCall?: GeminiFunctionCall;
+}
+
+interface GeminiCandidate {
+  content: {
+    parts: GeminiPart[];
   };
+  finishReason?: string;
+  index?: number;
+}
+
+interface GeminiUsageMetadata {
+  promptTokenCount: number;
+  candidatesTokenCount: number;
+  totalTokenCount: number;
+}
+
+interface GeminiResponse {
+  text(): string;
+  functionCalls(): GeminiFunctionCall[] | undefined;
+  candidates?: GeminiCandidate[];
+  usageMetadata?: GeminiUsageMetadata;
+}
+
+interface GeminiApiResult {
+  response: GeminiResponse;
 }
 
 /**
@@ -112,6 +119,7 @@ export class GeminiProvider implements ILLMProvider {
     ];
   }
 
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Complex LLM integration requires multiple conditional paths
   async generateCompletion(
     messages: Message[],
     options?: CompletionOptions
@@ -146,8 +154,8 @@ export class GeminiProvider implements ILLMProvider {
 
       // Handle function calling
       if (options?.functions && options.functions.length > 0) {
-        // Create function declarations for Gemini
-        const functions = options.functions.map((func) =>
+        // Convert function definitions to Gemini format with proper typing
+        const geminiDeclarations = options.functions.map((func) =>
           this.convertToGeminiFunctionDeclaration(func)
         );
 
@@ -155,8 +163,8 @@ export class GeminiProvider implements ILLMProvider {
           model: modelName,
           tools: [
             {
-              // biome-ignore lint/suspicious/noExplicitAny: Gemini API requires any type
-              functionDeclarations: functions as unknown as any,
+              // biome-ignore lint/suspicious/noExplicitAny: Required for Google AI SDK compatibility
+              functionDeclarations: geminiDeclarations as any,
             },
           ],
         });
@@ -209,11 +217,38 @@ export class GeminiProvider implements ILLMProvider {
         throw error;
       }
 
-      throw new HarvestError(
-        `Gemini completion failed: ${error instanceof Error ? error.message : "Unknown error"}`,
-        "GEMINI_COMPLETION_FAILED",
-        { originalError: error }
-      );
+      // Enhanced error categorization for Gemini-specific issues
+      let errorCode = "GEMINI_COMPLETION_FAILED";
+      let errorMessage = `Gemini completion failed: ${error instanceof Error ? error.message : "Unknown error"}`;
+
+      if (error instanceof Error) {
+        const message = error.message.toLowerCase();
+
+        if (message.includes("api key") || message.includes("authentication")) {
+          errorCode = "GEMINI_AUTH_ERROR";
+          errorMessage =
+            "Gemini API authentication failed. Check your API key.";
+        } else if (message.includes("quota") || message.includes("limit")) {
+          errorCode = "GEMINI_QUOTA_EXCEEDED";
+          errorMessage = "Gemini API quota exceeded. Check your usage limits.";
+        } else if (message.includes("rate limit")) {
+          errorCode = "GEMINI_RATE_LIMITED";
+          errorMessage =
+            "Gemini API rate limit exceeded. Please retry after a delay.";
+        } else if (message.includes("model") || message.includes("not found")) {
+          errorCode = "GEMINI_MODEL_ERROR";
+          errorMessage = `Gemini model error: ${error.message}`;
+        } else if (message.includes("timeout") || message.includes("network")) {
+          errorCode = "GEMINI_NETWORK_ERROR";
+          errorMessage = `Gemini network error: ${error.message}`;
+        }
+      }
+
+      throw new HarvestError(errorMessage, errorCode, {
+        originalError: error,
+        model: options?.model ?? this.config?.model ?? this.getDefaultModel(),
+        provider: "gemini",
+      });
     }
   }
 
@@ -243,9 +278,30 @@ export class GeminiProvider implements ILLMProvider {
         );
 
         if (!response.functionCall) {
+          logger.error(
+            {
+              responseContent: response.content?.substring(0, 200),
+              hasContent: !!response.content,
+              functionName: functionDef.name,
+              attempt,
+              model:
+                options?.model ?? this.config?.model ?? this.getDefaultModel(),
+            },
+            "No function call found in Gemini response"
+          );
+
           throw new HarvestError(
-            "No function call found in response",
-            "NO_FUNCTION_CALL"
+            `No function call found in response. Model: ${options?.model ?? this.config?.model ?? this.getDefaultModel()}, ` +
+              `Function: ${functionDef.name}, Attempt: ${attempt}. ` +
+              `Response contained: ${response.content?.substring(0, 100) || "no content"}...`,
+            "NO_FUNCTION_CALL",
+            {
+              functionName: functionDef.name,
+              model:
+                options?.model ?? this.config?.model ?? this.getDefaultModel(),
+              attempt,
+              responseContent: response.content,
+            }
           );
         }
 
@@ -406,14 +462,29 @@ export class GeminiProvider implements ILLMProvider {
     }
   }
 
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Response parsing requires multiple format checks for compatibility
   private parseGeminiResponse(result: GeminiApiResult): CompletionResponse {
     const response = result.response;
 
-    // Check for function calls
+    logger.debug(
+      {
+        hasFunctionCallsMethod: typeof response.functionCalls === "function",
+        hasCandidates: !!response.candidates,
+        candidatesLength: response.candidates?.length,
+        responseStructure: Object.keys(response),
+      },
+      "Parsing Gemini response structure"
+    );
+
+    // Check for function calls using the direct method
     const functionCalls = response.functionCalls();
     if (functionCalls && functionCalls.length > 0) {
       const functionCall = functionCalls[0];
       if (functionCall) {
+        logger.debug(
+          { functionName: functionCall.name },
+          "Found function call via functionCalls() method"
+        );
         return {
           content: null,
           functionCall: {
@@ -432,9 +503,48 @@ export class GeminiProvider implements ILLMProvider {
       }
     }
 
+    // Also check candidates array (alternative response format)
+    if (response.candidates && response.candidates.length > 0) {
+      const candidate = response.candidates[0];
+      if (candidate?.content?.parts) {
+        for (const part of candidate.content.parts) {
+          if (part.functionCall) {
+            logger.debug(
+              { functionName: part.functionCall.name },
+              "Found function call via candidates array"
+            );
+            return {
+              content: null,
+              functionCall: {
+                name: part.functionCall.name,
+                arguments: JSON.stringify(part.functionCall.args),
+              },
+              usage: response.usageMetadata
+                ? {
+                    promptTokens: response.usageMetadata.promptTokenCount || 0,
+                    completionTokens:
+                      response.usageMetadata.candidatesTokenCount || 0,
+                    totalTokens: response.usageMetadata.totalTokenCount || 0,
+                  }
+                : undefined,
+            };
+          }
+        }
+      }
+    }
+
     // Regular text response
+    const textContent = response.text();
+    logger.debug(
+      {
+        contentLength: textContent?.length,
+        hasContent: !!textContent,
+      },
+      "Returning text response"
+    );
+
     return {
-      content: response.text(),
+      content: textContent,
       usage: response.usageMetadata
         ? {
             promptTokens: response.usageMetadata.promptTokenCount || 0,
