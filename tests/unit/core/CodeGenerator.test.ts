@@ -127,7 +127,23 @@ describe("CodeGenerator", () => {
     });
 
     it("should throw error if analysis is not complete", () => {
-      session.state.isComplete = false;
+      // Create a request for the incomplete node
+      const incompleteRequest = new Request(
+        "GET",
+        "https://api.example.com/incomplete",
+        { Authorization: "Bearer token123" }
+      );
+
+      // Add a node with unresolved dynamic parts to make DAG incomplete
+      const incompleteNodeId = session.dagManager.addNode("curl", {
+        key: incompleteRequest,
+        value: null,
+      });
+
+      // Update the node to have unresolved dynamic parts
+      session.dagManager.updateNode(incompleteNodeId, {
+        dynamicParts: ["unresolved_part"],
+      });
 
       expect(() => {
         generateWrapperScript(session);

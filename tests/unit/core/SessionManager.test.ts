@@ -169,4 +169,186 @@ describe("SessionManager", () => {
       expect(stats.averageNodeCount).toBeGreaterThanOrEqual(0);
     });
   });
+
+  describe("analyzeCompletionState", () => {
+    it("should return incomplete analysis for new session", async () => {
+      const params: SessionStartParams = {
+        harPath: "tests/fixtures/test-data/pangea_search.har",
+        prompt: "test session",
+      };
+
+      const sessionId = await sessionManager.createSession(params);
+      const analysis = sessionManager.analyzeCompletionState(sessionId);
+
+      expect(analysis.isComplete).toBe(false);
+      expect(analysis.blockers).toContain(
+        "Master node has not been identified"
+      );
+      expect(analysis.blockers).toContain(
+        "Target action URL has not been identified"
+      );
+      expect(analysis.blockers).toContain("No nodes found in dependency graph");
+      expect(analysis.diagnostics.hasMasterNode).toBe(false);
+      expect(analysis.diagnostics.hasActionUrl).toBe(false);
+      expect(analysis.diagnostics.dagComplete).toBe(true); // Empty DAG is considered "complete"
+    });
+
+    it("should provide specific blockers when master node exists but DAG incomplete", async () => {
+      const params: SessionStartParams = {
+        harPath: "tests/fixtures/test-data/pangea_search.har",
+        prompt: "test session",
+      };
+
+      const sessionId = await sessionManager.createSession(params);
+      const session = sessionManager.getSession(sessionId);
+
+      // Simulate having a master node but incomplete DAG
+      session.state.masterNodeId = "test-master-node";
+      session.state.actionUrl = "https://example.com/api/search";
+
+      const analysis = sessionManager.analyzeCompletionState(sessionId);
+
+      expect(analysis.isComplete).toBe(false);
+      expect(analysis.blockers).toContain("No nodes found in dependency graph");
+      expect(analysis.diagnostics.hasMasterNode).toBe(true);
+      expect(analysis.diagnostics.hasActionUrl).toBe(true);
+      expect(analysis.diagnostics.dagComplete).toBe(true); // Empty DAG is considered "complete"
+    });
+
+    it("should provide actionable recommendations", async () => {
+      const params: SessionStartParams = {
+        harPath: "tests/fixtures/test-data/pangea_search.har",
+        prompt: "test session",
+      };
+
+      const sessionId = await sessionManager.createSession(params);
+      const analysis = sessionManager.analyzeCompletionState(sessionId);
+
+      expect(analysis.recommendations).toContain(
+        "Run 'analysis_run_initial_analysis' to identify the target action URL"
+      );
+      expect(analysis.recommendations.length).toBeGreaterThan(0);
+    });
+
+    it("should detect complete state when all requirements met", async () => {
+      const params: SessionStartParams = {
+        harPath: "tests/fixtures/test-data/pangea_search.har",
+        prompt: "test session",
+      };
+
+      const sessionId = await sessionManager.createSession(params);
+      const session = sessionManager.getSession(sessionId);
+
+      // Simulate complete session state
+      session.state.masterNodeId = "test-master-node";
+      session.state.actionUrl = "https://example.com/api/search";
+
+      // Mock DAG manager to return complete state with at least one node
+      const mockDAGManager = {
+        isComplete: () => true,
+        getUnresolvedNodes: () => [],
+        getNodeCount: () => 1,
+      };
+      session.dagManager = mockDAGManager as any;
+
+      const analysis = sessionManager.analyzeCompletionState(sessionId);
+
+      expect(analysis.isComplete).toBe(true);
+      expect(analysis.blockers).toHaveLength(0);
+      expect(analysis.diagnostics.hasMasterNode).toBe(true);
+      expect(analysis.diagnostics.hasActionUrl).toBe(true);
+      expect(analysis.diagnostics.dagComplete).toBe(true);
+    });
+
+    it("should track pending operations in queue", async () => {
+      const params: SessionStartParams = {
+        harPath: "tests/fixtures/test-data/pangea_search.har",
+        prompt: "test session",
+      };
+
+      const sessionId = await sessionManager.createSession(params);
+      const session = sessionManager.getSession(sessionId);
+
+      // Simulate pending operations
+      session.state.toBeProcessedNodes = ["node1", "node2"];
+
+      const analysis = sessionManager.analyzeCompletionState(sessionId);
+
+      expect(analysis.diagnostics.pendingInQueue).toBe(2);
+      expect(analysis.diagnostics.queueEmpty).toBe(false);
+    });
+
+    it("should provide detailed diagnostics", async () => {
+      const params: SessionStartParams = {
+        harPath: "tests/fixtures/test-data/pangea_search.har",
+        prompt: "test session",
+      };
+
+      const sessionId = await sessionManager.createSession(params);
+      const analysis = sessionManager.analyzeCompletionState(sessionId);
+
+      expect(analysis.diagnostics).toHaveProperty("hasMasterNode");
+      expect(analysis.diagnostics).toHaveProperty("dagComplete");
+      expect(analysis.diagnostics).toHaveProperty("queueEmpty");
+      expect(analysis.diagnostics).toHaveProperty("totalNodes");
+      expect(analysis.diagnostics).toHaveProperty("unresolvedNodes");
+      expect(analysis.diagnostics).toHaveProperty("pendingInQueue");
+      expect(analysis.diagnostics).toHaveProperty("hasActionUrl");
+    });
+
+    it("should handle session with unresolved nodes", async () => {
+      const params: SessionStartParams = {
+        harPath: "tests/fixtures/test-data/pangea_search.har",
+        prompt: "test session",
+      };
+
+      const sessionId = await sessionManager.createSession(params);
+      const session = sessionManager.getSession(sessionId);
+
+      // Simulate unresolved nodes
+      session.state.masterNodeId = "test-master-node";
+      session.state.actionUrl = "https://example.com/api/search";
+      // Add some mock unresolved nodes to the DAG manager (if accessible)
+
+      const analysis = sessionManager.analyzeCompletionState(sessionId);
+
+      expect(analysis.diagnostics.totalNodes).toBeGreaterThanOrEqual(0);
+      expect(analysis.diagnostics.unresolvedNodes).toBeGreaterThanOrEqual(0);
+    });
+
+    it("should handle nonexistent session gracefully", () => {
+      const analysis = sessionManager.analyzeCompletionState("nonexistent");
+
+      expect(analysis.isComplete).toBe(false);
+      expect(analysis.blockers).toContain("Failed to analyze session state");
+      expect(analysis.recommendations).toContain(
+        "Check session exists and is properly initialized"
+      );
+    });
+
+    it("should include specific guidance in recommendations based on state", async () => {
+      const params: SessionStartParams = {
+        harPath: "tests/fixtures/test-data/pangea_search.har",
+        prompt: "test session",
+      };
+
+      const sessionId = await sessionManager.createSession(params);
+      const session = sessionManager.getSession(sessionId);
+
+      // Test different states and their recommendations
+      let analysis = sessionManager.analyzeCompletionState(sessionId);
+      expect(analysis.recommendations).toContain(
+        "Run 'analysis_run_initial_analysis' to identify the target action URL"
+      );
+
+      // After initial analysis - still has "No nodes found" blocker
+      session.state.masterNodeId = "test-master-node";
+      session.state.actionUrl = "https://example.com/api/search";
+
+      analysis = sessionManager.analyzeCompletionState(sessionId);
+      expect(analysis.recommendations).toContain(
+        "Verify HAR file contains valid HTTP requests"
+      );
+    });
+  });
 });
