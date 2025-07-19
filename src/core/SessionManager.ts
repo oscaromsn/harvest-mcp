@@ -15,6 +15,24 @@ import { parseHARFile } from "./HARParser.js";
 
 const logger = createComponentLogger("session-manager");
 
+/**
+ * Comprehensive analysis completion interface
+ */
+export interface CompletionAnalysis {
+  isComplete: boolean;
+  blockers: string[];
+  recommendations: string[];
+  diagnostics: {
+    hasMasterNode: boolean;
+    dagComplete: boolean;
+    queueEmpty: boolean;
+    totalNodes: number;
+    unresolvedNodes: number;
+    pendingInQueue: number;
+    hasActionUrl: boolean;
+  };
+}
+
 export class SessionManager {
   private sessions = new Map<string, HarvestSession>();
   private readonly MAX_SESSIONS = 100;
@@ -461,6 +479,143 @@ export class SessionManager {
         ],
       };
     }
+  }
+
+  /**
+   * Enhanced completion state analysis with comprehensive validation
+   * This replaces the simple syncCompletionState with thorough checking
+   */
+  analyzeCompletionState(sessionId: string): CompletionAnalysis {
+    try {
+      const session = this.getSession(sessionId);
+      const blockers: string[] = [];
+      const recommendations: string[] = [];
+
+      // Gather diagnostic information
+      const dagComplete = session.dagManager.isComplete();
+      const unresolvedNodes = session.dagManager.getUnresolvedNodes();
+      const hasMasterNode = !!session.state.masterNodeId;
+      const hasActionUrl = !!session.state.actionUrl;
+      const queueEmpty = session.state.toBeProcessedNodes.length === 0;
+      const totalNodes = session.dagManager.getNodeCount();
+
+      const diagnostics = {
+        hasMasterNode,
+        dagComplete,
+        queueEmpty,
+        totalNodes,
+        unresolvedNodes: unresolvedNodes.length,
+        pendingInQueue: session.state.toBeProcessedNodes.length,
+        hasActionUrl,
+      };
+
+      // Condition 1: Master node must be identified
+      if (!hasMasterNode) {
+        blockers.push("Master node has not been identified");
+        recommendations.push(
+          "Run 'analysis_run_initial_analysis' to identify the target action URL"
+        );
+      }
+
+      // Condition 2: Action URL must be identified
+      if (!hasActionUrl) {
+        blockers.push("Target action URL has not been identified");
+        recommendations.push(
+          "Ensure initial analysis successfully identifies the main workflow URL"
+        );
+      }
+
+      // Condition 3: DAG must be fully resolved
+      if (!dagComplete) {
+        blockers.push(
+          `${unresolvedNodes.length} nodes still have unresolved dynamic parts`
+        );
+        recommendations.push(
+          "Continue processing with 'analysis_process_next_node'"
+        );
+        recommendations.push(
+          "Use 'debug_get_unresolved_nodes' to see specific unresolved parts"
+        );
+      }
+
+      // Condition 4: Processing queue must be empty
+      if (!queueEmpty) {
+        blockers.push(
+          `${session.state.toBeProcessedNodes.length} nodes are still pending in the processing queue`
+        );
+        recommendations.push(
+          "Continue processing with 'analysis_process_next_node' until queue is empty"
+        );
+      }
+
+      // Condition 5: Must have at least one node (not an empty analysis)
+      if (totalNodes === 0) {
+        blockers.push("No nodes found in dependency graph");
+        recommendations.push("Verify HAR file contains valid HTTP requests");
+        recommendations.push("Re-run initial analysis if needed");
+      }
+
+      const isComplete = blockers.length === 0;
+
+      // Update session state if it has changed
+      if (session.state.isComplete !== isComplete) {
+        session.state.isComplete = isComplete;
+
+        if (isComplete) {
+          this.addLog(
+            sessionId,
+            "info",
+            "Analysis completion validated: all prerequisites met, ready for code generation"
+          );
+        } else {
+          this.addLog(
+            sessionId,
+            "info",
+            `Analysis not complete: ${blockers.length} blockers identified: ${blockers.join(", ")}`
+          );
+        }
+      }
+
+      return {
+        isComplete,
+        blockers,
+        recommendations,
+        diagnostics,
+      };
+    } catch (error) {
+      logger.error(
+        {
+          sessionId,
+          error: error instanceof Error ? error.message : "Unknown error",
+        },
+        "Failed to analyze completion state"
+      );
+
+      return {
+        isComplete: false,
+        blockers: ["Failed to analyze session state"],
+        recommendations: ["Check session exists and is properly initialized"],
+        diagnostics: {
+          hasMasterNode: false,
+          dagComplete: false,
+          queueEmpty: false,
+          totalNodes: 0,
+          unresolvedNodes: 0,
+          pendingInQueue: 0,
+          hasActionUrl: false,
+        },
+      };
+    }
+  }
+
+  /**
+   * Backward-compatible sync method that uses enhanced validation
+   * This maintains existing API while providing enhanced functionality
+   */
+  syncCompletionState(sessionId: string): void {
+    this.analyzeCompletionState(sessionId);
+    // The state is already updated in analyzeCompletionState
+    // This method now just provides the legacy interface
   }
 
   /**
