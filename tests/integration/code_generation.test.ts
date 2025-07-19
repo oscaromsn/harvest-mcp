@@ -155,7 +155,9 @@ describe("Code Generation Integration Tests", () => {
 
       await expect(
         server.handleGenerateWrapperScript({ sessionId })
-      ).rejects.toThrow("Cannot generate code - analysis not complete");
+      ).rejects.toThrow(
+        "Code generation failed - analysis prerequisites not met"
+      );
     });
 
     it("should include proper session metadata in generated code", async () => {
