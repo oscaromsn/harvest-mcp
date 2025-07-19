@@ -2988,14 +2988,55 @@ export class HarvestMCPServer {
 
       // Since session is not in active sessions, we need to construct the artifact paths
       // from the expected output directory structure
-      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-      const basePath = `${process.env.HARVEST_SHARED_DIR || "/tmp/harvest-manual-sessions"}/${argsObj.manualSessionId}`;
+      const { readdir, access } = await import("node:fs/promises");
+      const { join } = await import("node:path");
+      const { homedir } = await import("node:os");
+      const sharedDir =
+        process.env.HARVEST_SHARED_DIR || join(homedir(), ".harvest", "shared");
+      const sessionDir = join(sharedDir, argsObj.manualSessionId);
 
-      // Try to find HAR and cookie files in the expected paths
-      const harPath = `${basePath}/network-${timestamp}.har`;
-      let cookiePath = argsObj.cookiePath;
-      if (!cookiePath) {
-        cookiePath = `${basePath}/cookies-${timestamp}.json`;
+      // Find actual HAR and cookie files in the session directory
+      let harPath: string;
+      let cookiePath: string | undefined = argsObj.cookiePath;
+
+      try {
+        const files = await readdir(sessionDir);
+        const harFile = files.find((file: string) => file.endsWith(".har"));
+        const cookieFile = files.find(
+          (file: string) => file.endsWith(".json") && file.includes("cookies")
+        );
+
+        if (!harFile) {
+          throw new HarvestError(
+            `No HAR file found in manual session directory: ${sessionDir}. Found files: ${files.join(", ")}`,
+            "NO_HAR_FILE_FOUND"
+          );
+        }
+
+        harPath = join(sessionDir, harFile);
+        if (!cookiePath && cookieFile) {
+          cookiePath = join(sessionDir, cookieFile);
+        }
+
+        // Verify HAR file exists
+        await access(harPath);
+        if (cookiePath) {
+          try {
+            await access(cookiePath);
+          } catch {
+            // Cookie file doesn't exist, continue without it
+            cookiePath = undefined;
+          }
+        }
+      } catch (error) {
+        if (error instanceof HarvestError) {
+          throw error;
+        }
+
+        throw new HarvestError(
+          `Failed to access manual session directory ${sessionDir}: ${error instanceof Error ? error.message : "Unknown error"}`,
+          "SESSION_DIRECTORY_ACCESS_FAILED"
+        );
       }
 
       // Create the analysis session
@@ -3401,7 +3442,8 @@ export class HarvestMCPServer {
             saveHar: true,
             saveCookies: true,
             saveScreenshots: true,
-            outputDir: "~/Desktop",
+            // Use client-accessible shared directory instead of Desktop
+            outputDir: process.env.HARVEST_SHARED_DIR || "~/.harvest/shared",
           },
         },
       };
