@@ -369,6 +369,12 @@ export class ManualSessionManager {
             );
           artifacts = artifactCollection.artifacts;
 
+          // Add MCP URIs to artifacts for resource access
+          artifacts = artifacts.map((artifact) => ({
+            ...artifact,
+            mcpUri: this.generateMcpUriForArtifact(sessionId, artifact),
+          }));
+
           // Filter artifacts by type if specified
           if (options.artifactTypes && options.artifactTypes.length > 0) {
             artifacts = artifacts.filter((artifact) =>
@@ -428,6 +434,11 @@ export class ManualSessionManager {
             const harPath = join(session.outputDir, `network-${timestamp}.har`);
             const harArtifact =
               await session.artifactCollector.generateHarFile(harPath);
+            // Add MCP URI for the artifact
+            harArtifact.mcpUri = this.generateMcpUriForArtifact(
+              sessionId,
+              harArtifact
+            );
             artifacts.push(harArtifact);
 
             logger.info(
@@ -442,7 +453,14 @@ export class ManualSessionManager {
 
         // Include any artifacts that were already collected during the session
         if (session.artifacts && session.artifacts.length > 0) {
-          artifacts.push(...session.artifacts);
+          // Add MCP URIs to existing artifacts if they don't have them
+          const artifactsWithUris = session.artifacts.map((artifact) => ({
+            ...artifact,
+            mcpUri:
+              artifact.mcpUri ||
+              this.generateMcpUriForArtifact(sessionId, artifact),
+          }));
+          artifacts.push(...artifactsWithUris);
         }
       } catch (error) {
         logger.warn(
@@ -939,6 +957,8 @@ export class ManualSessionManager {
       screenshotPath
     );
 
+    // Add MCP URI for the artifact
+    artifact.mcpUri = this.generateMcpUriForArtifact(sessionId, artifact);
     session.artifacts.push(artifact);
     logger.info(
       `[ManualSessionManager] Screenshot taken for session ${sessionId}: ${artifact.path}`
@@ -1465,9 +1485,9 @@ export class ManualSessionManager {
       "[ManualSessionManager] Performing aggressive cleanup due to memory pressure"
     );
 
-    // Close sessions that have been running for more than 30 minutes
+    // Close sessions that have been running for more than 2 hours (extended for HAR file access)
     const now = Date.now();
-    const oldSessionThreshold = 30 * 60 * 1000; // 30 minutes
+    const oldSessionThreshold = 120 * 60 * 1000; // 2 hours (was 30 minutes)
 
     for (const [sessionId, session] of this.activeSessions) {
       const sessionAge = now - session.startTime;
@@ -1694,6 +1714,29 @@ export class ManualSessionManager {
       }
       logger.warn(`[ManualSessionManager] Failed to get page title: ${error}`);
       return "Unknown";
+    }
+  }
+
+  /**
+   * Generate MCP URI for accessing manual session artifacts
+   */
+  private generateMcpUriForArtifact(
+    sessionId: string,
+    artifact: Artifact
+  ): string {
+    const filename = artifact.path.split("/").pop() || "unknown";
+
+    switch (artifact.type) {
+      case "har":
+        return `harvest://manual/${sessionId}/artifacts/har/${filename}`;
+      case "cookies":
+        return `harvest://manual/${sessionId}/artifacts/cookies/${filename}`;
+      case "screenshot":
+        return `harvest://manual/${sessionId}/artifacts/screenshots/${filename}`;
+      case "log":
+        return `harvest://manual/${sessionId}/artifacts/logs/${filename}`;
+      default:
+        return `harvest://manual/${sessionId}/artifacts/other/${filename}`;
     }
   }
 }

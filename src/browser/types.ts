@@ -54,6 +54,7 @@ export interface Artifact {
   path: string;
   size?: number;
   timestamp?: string;
+  mcpUri?: string; // MCP resource URI for accessing this artifact
 }
 
 export interface ArtifactCollection {
