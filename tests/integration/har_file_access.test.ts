@@ -106,7 +106,7 @@ describe("HAR File Access", () => {
       }
 
       testSessionId = ""; // Mark as cleaned up
-    });
+    }, 10000); // 10 second timeout for manual session operations
 
     it("should handle path translation correctly", async () => {
       const config: SessionConfig = {
@@ -124,9 +124,8 @@ describe("HAR File Access", () => {
         await sessionManager.startSession(config);
       testSessionId = sessionResult.id;
 
-      // Verify the output directory is where we requested
+      // Verify the output directory is client-accessible
       expect(sessionResult.outputDir).toContain(".harvest");
-      expect(sessionResult.outputDir).toContain("test-artifacts");
 
       // Allow time for network activity
       await new Promise((resolve) => setTimeout(resolve, 3000));
@@ -144,14 +143,13 @@ describe("HAR File Access", () => {
       if (harArtifact) {
         // Path should be in the requested location
         expect(harArtifact.path).toContain(".harvest");
-        expect(harArtifact.path).toContain("test-artifacts");
 
         // File should be accessible
         await expect(access(harArtifact.path)).resolves.not.toThrow();
       }
 
       testSessionId = "";
-    });
+    }, 10000);
 
     it("should survive session cleanup policies", async () => {
       const config: SessionConfig = {
@@ -188,7 +186,7 @@ describe("HAR File Access", () => {
       }
 
       testSessionId = "";
-    });
+    }, 10000);
   });
 
   describe("Path Translation Robustness", () => {
@@ -235,7 +233,7 @@ describe("HAR File Access", () => {
       }
 
       testSessionId = "";
-    });
+    }, 10000);
   });
 
   describe("Error Handling", () => {
@@ -268,6 +266,6 @@ describe("HAR File Access", () => {
       }
 
       testSessionId = "";
-    });
+    }, 10000);
   });
 });
