@@ -29,7 +29,7 @@ describe("MCP Resource Artifact Serving", () => {
 
     try {
       sessionId = await sessionManager.createSession(params);
-    } catch (error) {
+    } catch (_error) {
       console.warn("HAR test files not available, some tests will be skipped");
     }
   });
