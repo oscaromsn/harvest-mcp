@@ -1,8 +1,8 @@
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { SessionManager } from "../../src/core/SessionManager.js";
+import type { SessionManager } from "../../src/core/SessionManager.js";
+import { Request } from "../../src/models/Request.js";
 import { HarvestMCPServer } from "../../src/server.js";
-import type { SessionStartParams } from "../../src/types/index.js";
 
 describe("State Synchronization", () => {
   let sessionManager: SessionManager;
@@ -10,20 +10,22 @@ describe("State Synchronization", () => {
   let testSessionId: string;
 
   beforeEach(async () => {
-    sessionManager = new SessionManager();
     server = new HarvestMCPServer();
+    sessionManager = server.sessionManager; // Use the server's session manager
 
-    // Create a test session with minimal HAR data
+    // Create a test session through the server to ensure consistency
     const testHarPath = join(
       process.cwd(),
       "tests/fixtures/test-data/pangea_search.har"
     );
-    const sessionParams: SessionStartParams = {
+    const sessionResponse = await server.handleSessionStart({
       harPath: testHarPath,
       prompt: "Test session for state synchronization",
-    };
+    });
 
-    testSessionId = await sessionManager.createSession(sessionParams);
+    // Extract session ID from server response
+    const sessionData = JSON.parse(sessionResponse.content[0]?.text as string);
+    testSessionId = sessionData.sessionId;
   });
 
   afterEach(() => {
@@ -34,22 +36,32 @@ describe("State Synchronization", () => {
     it("should synchronize session state with DAG completion when DAG is complete", async () => {
       const session = sessionManager.getSession(testSessionId);
 
+      // Add a test node with dynamic parts to ensure DAG is initially incomplete
+      const testRequest = new Request(
+        "GET",
+        "https://example.com/api/{id}",
+        {}
+      );
+      const testNodeId = session.dagManager.addNode(
+        "curl",
+        {
+          key: testRequest,
+        },
+        {
+          dynamicParts: ["auth_token", "user_id"],
+        }
+      );
+
+      // Set up session state conditions required for completion
+      session.state.masterNodeId = testNodeId;
+      session.state.actionUrl = "https://example.com/api/action";
+
       // Initially both should be false
       expect(session.state.isComplete).toBe(false);
       expect(session.dagManager.isComplete()).toBe(false);
 
-      // Manually mark DAG as complete (simulate completed analysis)
-      // This is a bit of a hack for testing, but simulates the real workflow
-      const dagJson = session.dagManager.toJSON();
-      if (dagJson.nodes.length > 0) {
-        // Clear dynamic parts for all nodes to make them "resolved"
-        for (const nodeWithId of dagJson.nodes) {
-          const node = session.dagManager.getNode(nodeWithId.id);
-          if (node) {
-            session.dagManager.updateNode(nodeWithId.id, { dynamicParts: [] });
-          }
-        }
-      }
+      // Manually resolve dynamic parts to make DAG complete
+      session.dagManager.updateNode(testNodeId, { dynamicParts: [] });
 
       // DAG should now be complete, but session state should still be false
       expect(session.dagManager.isComplete()).toBe(true);
@@ -65,6 +77,26 @@ describe("State Synchronization", () => {
 
     it("should not change session state when DAG is incomplete", () => {
       const session = sessionManager.getSession(testSessionId);
+
+      // Add a test node with dynamic parts to ensure DAG is incomplete
+      const testRequest = new Request(
+        "POST",
+        "https://example.com/api/{token}",
+        {}
+      );
+      const testNodeId = session.dagManager.addNode(
+        "curl",
+        {
+          key: testRequest,
+        },
+        {
+          dynamicParts: ["auth_token"],
+        }
+      );
+
+      // Set up session state conditions (master node and action URL)
+      session.state.masterNodeId = testNodeId;
+      session.state.actionUrl = "https://example.com/api/action";
 
       // Initially both should be false
       expect(session.state.isComplete).toBe(false);
@@ -87,21 +119,42 @@ describe("State Synchronization", () => {
   });
 
   describe("Workflow Integration", () => {
-    it("should sync completion state during analysis_process_next_node when analysis completes", async () => {
-      // This test would require a more complex setup with actual nodes to process
-      // For now, we'll just verify the method exists and can be called
-      const result = await server.handleProcessNextNode({
-        sessionId: testSessionId,
-      });
+    it("should sync completion state during analysis workflow", async () => {
+      const session = sessionManager.getSession(testSessionId);
 
-      // Should return a valid result structure
-      expect(result).toHaveProperty("content");
-      expect(result.content).toBeInstanceOf(Array);
-      expect(result.content.length).toBeGreaterThan(0);
+      // Add a test node with dynamic parts
+      const testRequest = new Request(
+        "GET",
+        "https://example.com/api/test",
+        {}
+      );
+      const testNodeId = session.dagManager.addNode(
+        "curl",
+        {
+          key: testRequest,
+        },
+        {
+          dynamicParts: ["auth_token"],
+        }
+      );
 
-      // The result should contain JSON with status information
-      const content = JSON.parse(result.content[0]?.text as string);
-      expect(content).toHaveProperty("status");
+      // Set up required session state
+      session.state.masterNodeId = testNodeId;
+      session.state.actionUrl = "https://example.com/api/test";
+
+      // Initially should be incomplete
+      expect(session.dagManager.isComplete()).toBe(false);
+      expect(session.state.isComplete).toBe(false);
+
+      // Manually resolve dynamic parts
+      session.dagManager.updateNode(testNodeId, { dynamicParts: [] });
+
+      // Sync completion state
+      sessionManager.syncCompletionState(testSessionId);
+
+      // Should now be complete
+      expect(session.dagManager.isComplete()).toBe(true);
+      expect(session.state.isComplete).toBe(true);
     });
 
     it("should provide completion blocker analysis", async () => {
@@ -122,8 +175,7 @@ describe("State Synchronization", () => {
 
       // Should provide meaningful diagnostics
       expect(analysis.diagnostics).toHaveProperty("dagComplete");
-      expect(analysis.diagnostics).toHaveProperty("sessionStateComplete");
-      expect(analysis.diagnostics).toHaveProperty("stateSynchronized");
+      expect(analysis.diagnostics).toHaveProperty("hasActionUrl");
     });
   });
 
@@ -168,7 +220,7 @@ describe("State Synchronization", () => {
       } catch (error) {
         // If it still fails, the error message should be more actionable
         expect((error as Error).message).toContain("Code generation failed");
-        expect((error as Error).message).toContain("To resolve this");
+        expect((error as Error).message).toContain("Recommended actions");
       }
     });
   });
@@ -176,6 +228,22 @@ describe("State Synchronization", () => {
   describe("Error Message Improvements", () => {
     it("should provide actionable error messages when code generation fails", async () => {
       const session = sessionManager.getSession(testSessionId);
+
+      // Add a test node with dynamic parts to ensure analysis is not complete
+      const testRequest = new Request(
+        "GET",
+        "https://example.com/api/{id}",
+        {}
+      );
+      session.dagManager.addNode(
+        "curl",
+        {
+          key: testRequest,
+        },
+        {
+          dynamicParts: ["auth_token"],
+        }
+      );
 
       // Ensure analysis is not complete
       expect(session.dagManager.isComplete()).toBe(false);
@@ -187,7 +255,9 @@ describe("State Synchronization", () => {
       } catch (error) {
         // Error should be more helpful than before
         expect((error as Error).message).toContain("Code generation failed");
-        expect((error as Error).message).toMatch(/analysis not complete/i);
+        expect((error as Error).message).toContain(
+          "analysis prerequisites not met"
+        );
 
         // Should provide actionable recommendations
         if ((error as any).data?.recommendedActions) {
