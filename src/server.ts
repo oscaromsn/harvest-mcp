@@ -516,6 +516,34 @@ export class HarvestMCPServer {
       }
     );
 
+    this.server.tool(
+      "session_convert_manual_to_analysis",
+      "Convert a completed manual session to an analysis session for automated API analysis and code generation.",
+      {
+        manualSessionId: z
+          .string()
+          .uuid("Manual session ID must be a valid UUID")
+          .describe(
+            "UUID of the completed manual session to convert. Use session_stop_manual first to collect artifacts."
+          ),
+        prompt: z
+          .string()
+          .min(1)
+          .describe(
+            "Description of what the analysis should accomplish. This guides the AI analysis and code generation process."
+          ),
+        cookiePath: z
+          .string()
+          .optional()
+          .describe(
+            "Optional path to cookie file in Netscape format. Will use cookies from manual session if not provided."
+          ),
+      },
+      async (params): Promise<CallToolResult> => {
+        return await this.handleConvertManualToAnalysisSession(params);
+      }
+    );
+
     // Simplified workflow tools
     this.server.tool(
       "workflow_complete_analysis",
@@ -2927,6 +2955,95 @@ export class HarvestMCPServer {
       throw new HarvestError(
         `Failed to recover session: ${error instanceof Error ? error.message : "Unknown error"}`,
         "MANUAL_SESSION_RECOVERY_FAILED",
+        { originalError: error }
+      );
+    }
+  }
+
+  /**
+   * Handle session_convert_manual_to_analysis tool call
+   */
+  public async handleConvertManualToAnalysisSession(
+    args: unknown
+  ): Promise<CallToolResult> {
+    try {
+      const argsObj = args as {
+        manualSessionId: string;
+        prompt: string;
+        cookiePath?: string;
+      };
+
+      // First, try to get the session status to check if it's active
+      const sessionStatus = await manualSessionManager.getSessionInfo(
+        argsObj.manualSessionId
+      );
+
+      // If session is still active, it needs to be stopped first
+      if (sessionStatus) {
+        throw new HarvestError(
+          "Manual session is still active and must be stopped before conversion. Use session_stop_manual first.",
+          "MANUAL_SESSION_STILL_ACTIVE"
+        );
+      }
+
+      // Since session is not in active sessions, we need to construct the artifact paths
+      // from the expected output directory structure
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const basePath = `${process.env.HARVEST_SHARED_DIR || "/tmp/harvest-manual-sessions"}/${argsObj.manualSessionId}`;
+
+      // Try to find HAR and cookie files in the expected paths
+      const harPath = `${basePath}/network-${timestamp}.har`;
+      let cookiePath = argsObj.cookiePath;
+      if (!cookiePath) {
+        cookiePath = `${basePath}/cookies-${timestamp}.json`;
+      }
+
+      // Create the analysis session
+      const sessionStartResponse = await this.sessionManager.createSession({
+        harPath,
+        prompt: argsObj.prompt,
+        cookiePath,
+      });
+
+      // Add metadata to session logs for tracking
+      this.sessionManager.addLog(
+        sessionStartResponse,
+        "info",
+        `Converted from manual session ${argsObj.manualSessionId}`
+      );
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              success: true,
+              manualSessionId: argsObj.manualSessionId,
+              analysisSessionId: sessionStartResponse,
+              message:
+                "Manual session successfully converted to analysis session",
+              harPath,
+              cookiePath,
+              nextSteps: [
+                "Use analysis_run_initial_analysis to start analyzing the workflow",
+                "Use analysis_process_next_node to process dependencies",
+                "Use analysis_is_complete to check if analysis is finished",
+                "Use codegen_generate_wrapper_script to generate executable code",
+              ],
+              workflowRecommendation:
+                "Use workflow_complete_analysis for automatic end-to-end processing",
+            }),
+          },
+        ],
+      };
+    } catch (error) {
+      if (error instanceof HarvestError) {
+        throw error;
+      }
+
+      throw new HarvestError(
+        `Failed to convert manual session to analysis session: ${error instanceof Error ? error.message : "Unknown error"}`,
+        "MANUAL_TO_ANALYSIS_CONVERSION_FAILED",
         { originalError: error }
       );
     }
