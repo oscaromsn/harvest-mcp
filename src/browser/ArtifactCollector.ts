@@ -354,12 +354,37 @@ export class ArtifactCollector {
 
       // Register path for client access if needed
       if (this.clientAccessible) {
-        const clientPath = pathTranslator.translateForClient(outputPath);
-        pathTranslator.registerPath(outputPath, clientPath);
-        logBrowserOperation("har_path_registered", {
-          serverPath: outputPath,
-          clientPath,
-        });
+        try {
+          const clientPath = pathTranslator.translateForClient(outputPath);
+
+          // Verify the translation is meaningful (not just returning the original path)
+          if (clientPath !== outputPath || outputPath.includes(".harvest")) {
+            pathTranslator.registerPath(outputPath, clientPath);
+            logBrowserOperation("har_path_registered", {
+              serverPath: outputPath,
+              clientPath,
+              registrationSuccess: true,
+            });
+          } else {
+            logBrowserOperation("har_path_registration_skipped", {
+              serverPath: outputPath,
+              reason: "Path not in client-accessible location",
+              pathIncludes: {
+                harvest: outputPath.includes(".harvest"),
+                temp: outputPath.includes("tmp"),
+                home: outputPath.includes(process.env.HOME || ""),
+              },
+            });
+          }
+        } catch (translationError) {
+          logBrowserOperation("har_path_registration_failed", {
+            serverPath: outputPath,
+            error:
+              translationError instanceof Error
+                ? translationError.message
+                : "Unknown error",
+          });
+        }
       }
 
       const artifact: Artifact = {
@@ -435,12 +460,37 @@ export class ArtifactCollector {
 
       // Register path for client access if needed
       if (this.clientAccessible) {
-        const clientPath = pathTranslator.translateForClient(outputPath);
-        pathTranslator.registerPath(outputPath, clientPath);
-        logBrowserOperation("cookie_path_registered", {
-          serverPath: outputPath,
-          clientPath,
-        });
+        try {
+          const clientPath = pathTranslator.translateForClient(outputPath);
+
+          // Verify the translation is meaningful (not just returning the original path)
+          if (clientPath !== outputPath || outputPath.includes(".harvest")) {
+            pathTranslator.registerPath(outputPath, clientPath);
+            logBrowserOperation("cookie_path_registered", {
+              serverPath: outputPath,
+              clientPath,
+              registrationSuccess: true,
+            });
+          } else {
+            logBrowserOperation("cookie_path_registration_skipped", {
+              serverPath: outputPath,
+              reason: "Path not in client-accessible location",
+              pathIncludes: {
+                harvest: outputPath.includes(".harvest"),
+                temp: outputPath.includes("tmp"),
+                home: outputPath.includes(process.env.HOME || ""),
+              },
+            });
+          }
+        } catch (translationError) {
+          logBrowserOperation("cookie_path_registration_failed", {
+            serverPath: outputPath,
+            error:
+              translationError instanceof Error
+                ? translationError.message
+                : "Unknown error",
+          });
+        }
       }
 
       const artifact: Artifact = {

@@ -104,11 +104,16 @@ export async function getSafeOutputDirectory(
 
     try {
       const result = await createSafeDirectory(sharedPath, "harvest-shared");
-      logger.info(
-        { sharedPath: result, sessionId },
-        "Created client-accessible directory"
-      );
-      return result;
+
+      // Verify the result is actually in the shared directory for client accessibility
+      if (result.includes(".harvest") || result.includes("harvest-shared")) {
+        logger.info(
+          { sharedPath: result, sessionId },
+          "Created client-accessible directory"
+        );
+        return result;
+      }
+      throw new Error("Created directory is not client-accessible");
     } catch (error) {
       logger.error(
         `Failed to create client-accessible directory: ${sharedPath}`,
@@ -116,7 +121,48 @@ export async function getSafeOutputDirectory(
           error: error instanceof Error ? error.message : "Unknown error",
         }
       );
-      // Continue to regular fallback logic
+
+      // For client-accessible requirements, try additional fallbacks in accessible locations
+      const fallbackPaths = [
+        join(
+          homedir(),
+          ".harvest",
+          "temp",
+          sessionId || `session-${Date.now()}`
+        ),
+        join(
+          homedir(),
+          ".harvest",
+          "artifacts",
+          sessionId || `session-${Date.now()}`
+        ),
+      ];
+
+      for (const fallbackPath of fallbackPaths) {
+        try {
+          const result = await createSafeDirectory(
+            fallbackPath,
+            "harvest-shared"
+          );
+          logger.warn(
+            { fallbackPath: result, originalPath: sharedPath },
+            "Using client-accessible fallback directory"
+          );
+          return result;
+        } catch (fallbackError) {
+          logger.warn(`Client-accessible fallback failed: ${fallbackPath}`, {
+            error:
+              fallbackError instanceof Error
+                ? fallbackError.message
+                : "Unknown error",
+          });
+        }
+      }
+
+      // If all client-accessible options fail, throw error instead of falling back to temp
+      throw new Error(
+        `Cannot create client-accessible directory. All attempts failed: ${sharedPath}, ${fallbackPaths.join(", ")}`
+      );
     }
   }
 
