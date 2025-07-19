@@ -43,8 +43,30 @@ export class SessionManager {
     const now = new Date();
 
     try {
-      // Parse HAR file with validation
-      const harData = await parseHARFile(params.harPath);
+      // Parse HAR file with validation and options
+      // Transform Zod schema to match HARParsingOptions interface
+      const harParsingOptions = params.harParsingOptions
+        ? {
+            ...(params.harParsingOptions.excludeKeywords !== undefined && {
+              excludeKeywords: params.harParsingOptions.excludeKeywords,
+            }),
+            ...(params.harParsingOptions.includeAllApiRequests !==
+              undefined && {
+              includeAllApiRequests:
+                params.harParsingOptions.includeAllApiRequests,
+            }),
+            ...(params.harParsingOptions.minQualityThreshold !== undefined && {
+              minQualityThreshold: params.harParsingOptions.minQualityThreshold,
+            }),
+            ...(params.harParsingOptions.preserveAnalyticsRequests !==
+              undefined && {
+              preserveAnalyticsRequests:
+                params.harParsingOptions.preserveAnalyticsRequests,
+            }),
+          }
+        : undefined;
+
+      const harData = await parseHARFile(params.harPath, harParsingOptions);
 
       // Log HAR validation results
       if (harData.validation) {
@@ -288,6 +310,157 @@ export class SessionManager {
       activeSessions,
       averageNodeCount: Math.round(averageNodeCount * 100) / 100,
     };
+  }
+
+  /**
+   * Repopulate processing queue with unresolved nodes
+   */
+  repopulateProcessingQueue(sessionId: string): {
+    success: boolean;
+    addedNodes: number;
+    message: string;
+  } {
+    try {
+      const session = this.getSession(sessionId);
+      const unresolvedNodes = session.dagManager.getUnresolvedNodes();
+
+      // Clear current queue and repopulate
+      session.state.toBeProcessedNodes = [];
+      for (const node of unresolvedNodes) {
+        session.state.toBeProcessedNodes.push(node.nodeId);
+      }
+
+      this.addLog(
+        sessionId,
+        "info",
+        `Repopulated processing queue with ${unresolvedNodes.length} unresolved nodes`
+      );
+
+      return {
+        success: true,
+        addedNodes: unresolvedNodes.length,
+        message: `Successfully added ${unresolvedNodes.length} nodes to processing queue`,
+      };
+    } catch (error) {
+      this.addLog(
+        sessionId,
+        "error",
+        `Failed to repopulate queue: ${error instanceof Error ? error.message : "Unknown error"}`
+      );
+
+      return {
+        success: false,
+        addedNodes: 0,
+        message: `Failed to repopulate queue: ${error instanceof Error ? error.message : "Unknown error"}`,
+      };
+    }
+  }
+
+  /**
+   * Manually add a specific node to the processing queue
+   */
+  addNodeToQueue(
+    sessionId: string,
+    nodeId: string
+  ): {
+    success: boolean;
+    message: string;
+  } {
+    try {
+      const session = this.getSession(sessionId);
+
+      // Check if node exists in DAG by checking unresolved nodes and DAG
+      const allNodes = session.dagManager
+        .getUnresolvedNodes()
+        .map((n) => n.nodeId);
+      const nodeExists = allNodes.includes(nodeId);
+      if (!nodeExists) {
+        return {
+          success: false,
+          message: `Node ${nodeId} not found in dependency graph`,
+        };
+      }
+
+      // Check if node is already in queue
+      if (session.state.toBeProcessedNodes.includes(nodeId)) {
+        return {
+          success: false,
+          message: `Node ${nodeId} is already in processing queue`,
+        };
+      }
+
+      // Add to queue
+      session.state.toBeProcessedNodes.push(nodeId);
+
+      this.addLog(
+        sessionId,
+        "info",
+        `Manually added node ${nodeId} to processing queue`
+      );
+
+      return {
+        success: true,
+        message: `Successfully added node ${nodeId} to processing queue`,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        message: `Failed to add node to queue: ${error instanceof Error ? error.message : "Unknown error"}`,
+      };
+    }
+  }
+
+  /**
+   * Get queue status and recovery options
+   */
+  getQueueStatus(sessionId: string): {
+    queueLength: number;
+    unresolvedNodeCount: number;
+    canRepopulate: boolean;
+    recommendations: string[];
+  } {
+    try {
+      const session = this.getSession(sessionId);
+      const unresolvedNodes = session.dagManager.getUnresolvedNodes();
+      const queueLength = session.state.toBeProcessedNodes.length;
+      const unresolvedNodeCount = unresolvedNodes.length;
+
+      const recommendations: string[] = [];
+
+      if (queueLength === 0 && unresolvedNodeCount > 0) {
+        recommendations.push(
+          "Queue is empty but unresolved nodes exist - use repopulateProcessingQueue"
+        );
+      }
+
+      if (queueLength > 0 && unresolvedNodeCount === 0) {
+        recommendations.push(
+          "Queue has nodes but all nodes are resolved - clear queue or investigate"
+        );
+      }
+
+      if (queueLength === 0 && unresolvedNodeCount === 0) {
+        recommendations.push(
+          "Analysis appears complete - use codegen_generate_wrapper_script"
+        );
+      }
+
+      return {
+        queueLength,
+        unresolvedNodeCount,
+        canRepopulate: unresolvedNodeCount > 0,
+        recommendations,
+      };
+    } catch (error) {
+      return {
+        queueLength: 0,
+        unresolvedNodeCount: 0,
+        canRepopulate: false,
+        recommendations: [
+          `Error getting queue status: ${error instanceof Error ? error.message : "Unknown error"}`,
+        ],
+      };
+    }
   }
 
   /**
