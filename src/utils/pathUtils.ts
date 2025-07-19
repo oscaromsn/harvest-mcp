@@ -95,104 +95,172 @@ export async function getSafeOutputDirectory(
   sessionId?: string,
   clientAccessible = false
 ): Promise<string> {
-  // If client accessibility is required, use shared directory
   if (clientAccessible) {
-    const sharedBaseDir =
-      process.env.HARVEST_SHARED_DIR || join(homedir(), ".harvest", "shared");
-    const sessionPart = sessionId ? `/${sessionId}` : `/session-${Date.now()}`;
-    const sharedPath = `${sharedBaseDir}${sessionPart}`;
+    return handleClientAccessibleDirectory(sessionId);
+  }
 
+  // Try in order: requested dir, default dir, temp dir
+  const candidates = buildDirectoryCandidates(
+    requestedDir,
+    defaultDir,
+    sessionId
+  );
+
+  for (const { path, label } of candidates) {
     try {
-      const result = await createSafeDirectory(sharedPath, "harvest-shared");
-
-      // Verify the result is actually in the shared directory for client accessibility
-      if (result.includes(".harvest") || result.includes("harvest-shared")) {
-        logger.info(
-          { sharedPath: result, sessionId },
-          "Created client-accessible directory"
-        );
-        return result;
-      }
-      throw new Error("Created directory is not client-accessible");
+      return await createSafeDirectory(path, "harvest-manual");
     } catch (error) {
-      logger.error(
-        `Failed to create client-accessible directory: ${sharedPath}`,
-        {
+      if (label !== "temp") {
+        // Don't log for final fallback
+        logger.warn(`${label} directory creation failed: ${path}`, {
           error: error instanceof Error ? error.message : "Unknown error",
-        }
-      );
-
-      // For client-accessible requirements, try additional fallbacks in accessible locations
-      const fallbackPaths = [
-        join(
-          homedir(),
-          ".harvest",
-          "temp",
-          sessionId || `session-${Date.now()}`
-        ),
-        join(
-          homedir(),
-          ".harvest",
-          "artifacts",
-          sessionId || `session-${Date.now()}`
-        ),
-      ];
-
-      for (const fallbackPath of fallbackPaths) {
-        try {
-          const result = await createSafeDirectory(
-            fallbackPath,
-            "harvest-shared"
-          );
-          logger.warn(
-            { fallbackPath: result, originalPath: sharedPath },
-            "Using client-accessible fallback directory"
-          );
-          return result;
-        } catch (fallbackError) {
-          logger.warn(`Client-accessible fallback failed: ${fallbackPath}`, {
-            error:
-              fallbackError instanceof Error
-                ? fallbackError.message
-                : "Unknown error",
-          });
-        }
+        });
       }
-
-      // If all client-accessible options fail, throw error instead of falling back to temp
-      throw new Error(
-        `Cannot create client-accessible directory. All attempts failed: ${sharedPath}, ${fallbackPaths.join(", ")}`
-      );
     }
   }
 
-  // If specific directory requested, try that first
-  if (requestedDir) {
-    return createSafeDirectory(requestedDir, "harvest-manual");
+  // Final fallback should always work
+  const tempPath = buildTempPath(sessionId);
+  return createSafeDirectory(tempPath, "harvest-manual");
+}
+
+/**
+ * Handle client-accessible directory creation with fallbacks
+ */
+async function handleClientAccessibleDirectory(
+  sessionId?: string
+): Promise<string> {
+  const sharedBaseDir =
+    process.env.HARVEST_SHARED_DIR || join(homedir(), ".harvest", "shared");
+  const sessionPart = sessionId ? `/${sessionId}` : `/session-${Date.now()}`;
+  const primaryPath = `${sharedBaseDir}${sessionPart}`;
+
+  // Try primary path
+  try {
+    const result = await tryCreateClientAccessibleDirectory(
+      primaryPath,
+      sessionId
+    );
+    if (result) {
+      return result;
+    }
+  } catch (error) {
+    logger.error(
+      `Failed to create client-accessible directory: ${primaryPath}`,
+      {
+        error: error instanceof Error ? error.message : "Unknown error",
+      }
+    );
   }
 
-  // Try default directory if provided
-  if (defaultDir) {
-    const datePart = new Date().toISOString().split("T")[0];
-    const sessionPart = sessionId ? `/${sessionId}` : "";
-    const fullDefaultPath = `${defaultDir}/${datePart}${sessionPart}`;
+  // Try fallback paths
+  const fallbackPaths = buildClientAccessibleFallbacks(sessionId);
+  const result = await tryFallbackPaths(fallbackPaths, primaryPath);
 
+  if (result) {
+    return result;
+  }
+
+  // All attempts failed
+  throw new Error(
+    `Cannot create client-accessible directory. All attempts failed: ${primaryPath}, ${fallbackPaths.map((p) => p.path).join(", ")}`
+  );
+}
+
+/**
+ * Try to create a client-accessible directory and verify it
+ */
+async function tryCreateClientAccessibleDirectory(
+  path: string,
+  sessionId?: string
+): Promise<string | null> {
+  const result = await createSafeDirectory(path, "harvest-shared");
+
+  if (result.includes(".harvest") || result.includes("harvest-shared")) {
+    logger.info(
+      { sharedPath: result, sessionId },
+      "Created client-accessible directory"
+    );
+    return result;
+  }
+
+  throw new Error("Created directory is not client-accessible");
+}
+
+/**
+ * Build list of client-accessible fallback paths
+ */
+function buildClientAccessibleFallbacks(
+  sessionId?: string
+): Array<{ path: string; label: string }> {
+  const sessionPart = sessionId || `session-${Date.now()}`;
+  return [
+    { path: join(homedir(), ".harvest", "temp", sessionPart), label: "temp" },
+    {
+      path: join(homedir(), ".harvest", "artifacts", sessionPart),
+      label: "artifacts",
+    },
+  ];
+}
+
+/**
+ * Try fallback paths for client-accessible directories
+ */
+async function tryFallbackPaths(
+  fallbacks: Array<{ path: string; label: string }>,
+  originalPath: string
+): Promise<string | null> {
+  for (const { path, label } of fallbacks) {
     try {
-      return await createSafeDirectory(fullDefaultPath, "harvest-manual");
+      const result = await createSafeDirectory(path, "harvest-shared");
+      logger.warn(
+        { fallbackPath: result, originalPath },
+        `Using client-accessible ${label} fallback`
+      );
+      return result;
     } catch (error) {
-      logger.warn(`Default directory creation failed: ${fullDefaultPath}`, {
+      logger.warn(`Client-accessible ${label} fallback failed: ${path}`, {
         error: error instanceof Error ? error.message : "Unknown error",
       });
     }
   }
+  return null;
+}
 
-  // Final fallback to temp directory
+/**
+ * Build list of directory candidates to try
+ */
+function buildDirectoryCandidates(
+  requestedDir?: string,
+  defaultDir?: string,
+  sessionId?: string
+): Array<{ path: string; label: string }> {
+  const candidates: Array<{ path: string; label: string }> = [];
+
+  if (requestedDir) {
+    candidates.push({ path: requestedDir, label: "requested" });
+  }
+
+  if (defaultDir) {
+    const datePart = new Date().toISOString().split("T")[0];
+    const sessionPart = sessionId ? `/${sessionId}` : "";
+    candidates.push({
+      path: `${defaultDir}/${datePart}${sessionPart}`,
+      label: "default",
+    });
+  }
+
+  return candidates;
+}
+
+/**
+ * Build temp directory path
+ */
+function buildTempPath(sessionId?: string): string {
   const tempDir = join(tmpdir(), "harvest-manual-sessions");
   const datePart = new Date().toISOString().split("T")[0];
   const sessionPart = sessionId ? `/${sessionId}` : `/session-${Date.now()}`;
-  const finalPath = `${tempDir}/${datePart}${sessionPart}`;
-
-  return createSafeDirectory(finalPath, "harvest-manual");
+  return `${tempDir}/${datePart}${sessionPart}`;
 }
 
 /**
