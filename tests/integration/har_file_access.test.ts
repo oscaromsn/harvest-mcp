@@ -34,6 +34,7 @@ describe("HAR File Access", () => {
     it("should create HAR files in client-accessible locations", async () => {
       const config: SessionConfig = {
         timeout: 1, // 1 minute for quick test
+        url: "https://httpbin.org/get?test=har", // Navigate to a URL that generates network traffic
         browserOptions: {
           headless: true, // Use headless for CI/testing
         },
@@ -61,8 +62,8 @@ describe("HAR File Access", () => {
           outputDir.startsWith("/Users/") // For macOS
       ).toBe(true);
 
-      // Allow some time for initial page load
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+      // Allow time for page load and network requests to complete
+      await new Promise((resolve) => setTimeout(resolve, 3000));
 
       // Stop the session to generate artifacts
       const stopResult: SessionStopResult = await sessionManager.stopSession(
@@ -83,7 +84,12 @@ describe("HAR File Access", () => {
 
       if (harArtifact) {
         // Verify HAR file exists and is accessible
-        await expect(access(harArtifact.path)).resolves.not.toThrow();
+        try {
+          await access(harArtifact.path);
+          // If we reach here, the file exists and is accessible
+        } catch (error) {
+          throw new Error(`HAR file is not accessible: ${error}`);
+        }
 
         // Verify file has content
         const stats = await stat(harArtifact.path);
@@ -111,6 +117,7 @@ describe("HAR File Access", () => {
     it("should handle path translation correctly", async () => {
       const config: SessionConfig = {
         timeout: 1,
+        url: "https://httpbin.org/json", // Navigate to a URL that generates network traffic
         browserOptions: { headless: true },
         artifactConfig: {
           enabled: true,
@@ -127,8 +134,8 @@ describe("HAR File Access", () => {
       // Verify the output directory is client-accessible
       expect(sessionResult.outputDir).toContain(".harvest");
 
-      // Allow time for network activity
-      await new Promise((resolve) => setTimeout(resolve, 3000));
+      // Allow time for network activity to be captured
+      await new Promise((resolve) => setTimeout(resolve, 4000));
 
       const stopResult: SessionStopResult = await sessionManager.stopSession(
         testSessionId,
@@ -145,7 +152,12 @@ describe("HAR File Access", () => {
         expect(harArtifact.path).toContain(".harvest");
 
         // File should be accessible
-        await expect(access(harArtifact.path)).resolves.not.toThrow();
+        try {
+          await access(harArtifact.path);
+          // If we reach here, the file exists and is accessible
+        } catch (error) {
+          throw new Error(`HAR file is not accessible: ${error}`);
+        }
       }
 
       testSessionId = "";
@@ -154,6 +166,7 @@ describe("HAR File Access", () => {
     it("should survive session cleanup policies", async () => {
       const config: SessionConfig = {
         timeout: 1,
+        url: "https://httpbin.org/get?test=survival", // Navigate to a URL that generates network traffic
         browserOptions: { headless: true },
         artifactConfig: { enabled: true, saveHar: true },
       };
@@ -162,7 +175,8 @@ describe("HAR File Access", () => {
         await sessionManager.startSession(config);
       testSessionId = sessionResult.id;
 
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+      // Allow time for network requests to be captured
+      await new Promise((resolve) => setTimeout(resolve, 3000));
 
       const stopResult = await sessionManager.stopSession(testSessionId, {
         reason: "test_completion",
@@ -173,11 +187,21 @@ describe("HAR File Access", () => {
 
       if (harArtifact) {
         // File should exist immediately after session stop
-        await expect(access(harArtifact.path)).resolves.not.toThrow();
+        try {
+          await access(harArtifact.path);
+          // If we reach here, the file exists and is accessible
+        } catch (error) {
+          throw new Error(`HAR file is not accessible: ${error}`);
+        }
 
         // File should still exist after some time (testing extended cleanup timeout)
         await new Promise((resolve) => setTimeout(resolve, 1000));
-        await expect(access(harArtifact.path)).resolves.not.toThrow();
+        try {
+          await access(harArtifact.path);
+          // If we reach here, the file exists and is accessible
+        } catch (error) {
+          throw new Error(`HAR file is not accessible after delay: ${error}`);
+        }
 
         // Verify file content is still valid
         const harContent = await readFile(harArtifact.path, "utf-8");
@@ -193,6 +217,7 @@ describe("HAR File Access", () => {
     it("should handle fallback paths when primary path fails", async () => {
       const config: SessionConfig = {
         timeout: 1,
+        url: "https://httpbin.org/user-agent", // Navigate to a URL that generates network traffic
         browserOptions: { headless: true },
         artifactConfig: {
           enabled: true,
@@ -215,7 +240,8 @@ describe("HAR File Access", () => {
         "/invalid/path/that/should/fallback"
       );
 
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+      // Allow time for network requests to be captured
+      await new Promise((resolve) => setTimeout(resolve, 3000));
 
       const stopResult: SessionStopResult = await sessionManager.stopSession(
         testSessionId,
@@ -229,7 +255,12 @@ describe("HAR File Access", () => {
       const harArtifact = stopResult.artifacts.find((a) => a.type === "har");
       if (harArtifact) {
         // Should be accessible despite path issues
-        await expect(access(harArtifact.path)).resolves.not.toThrow();
+        try {
+          await access(harArtifact.path);
+          // If we reach here, the file exists and is accessible
+        } catch (error) {
+          throw new Error(`HAR file is not accessible: ${error}`);
+        }
       }
 
       testSessionId = "";
@@ -241,6 +272,7 @@ describe("HAR File Access", () => {
       // Test session that we'll force to fail
       const config: SessionConfig = {
         timeout: 1,
+        url: "https://httpbin.org/status/200", // Navigate to a URL that generates network traffic
         browserOptions: { headless: true },
         artifactConfig: { enabled: true, saveHar: true },
       };
@@ -248,6 +280,9 @@ describe("HAR File Access", () => {
       const sessionResult: BrowserSessionInfo =
         await sessionManager.startSession(config);
       testSessionId = sessionResult.id;
+
+      // Allow time for network activity before forcing stop
+      await new Promise((resolve) => setTimeout(resolve, 2000));
 
       // Force stop without proper cleanup
       try {
