@@ -31,7 +31,8 @@ export async function identifyEndUrl(
     // Pre-filter and sort URLs to increase chances of getting a good result
     const filteredUrls = filterApiUrls(harUrls);
     const sortedUrls = sortUrlsByRelevance(
-      filteredUrls.length > 0 ? filteredUrls : harUrls
+      filteredUrls.length > 0 ? filteredUrls : harUrls,
+      session.prompt
     );
 
     // If we only have one URL, return it without LLM call
@@ -77,7 +78,10 @@ export async function identifyEndUrl(
     }
 
     // Fallback strategy: if LLM fails, try to use the most likely URL
-    const sortedUrls = sortUrlsByRelevance(filterApiUrls(harUrls));
+    const sortedUrls = sortUrlsByRelevance(
+      filterApiUrls(harUrls),
+      session.prompt
+    );
     if (sortedUrls.length > 0 && sortedUrls[0]) {
       const fallbackUrl = sortedUrls[0].url;
       logger.warn({ fallbackUrl }, "LLM call failed, using fallback URL");
@@ -113,23 +117,132 @@ export function createFunctionDefinition(prompt: string): FunctionDefinition {
 }
 
 /**
- * Create the prompt for LLM analysis
+ * Create the prompt for LLM analysis with enhanced semantic action matching
  */
 function createPrompt(userPrompt: string, harUrls: URLInfo[]): string {
   const formattedUrls = formatURLsForPrompt(harUrls);
+  const actionAnalysis = analyzePromptAction(userPrompt);
 
   return `${formattedUrls}
 
 Task:
-Given the above list of URLs, request types, and response formats, find the URL responsible for the action below:
-${userPrompt}
+Find the URL that semantically matches the user's primary action described below:
+"${userPrompt}"
+
+Action Analysis:
+${actionAnalysis}
 
 Instructions:
-- Analyze each URL and determine which one is most likely responsible for the specified action
-- Consider the HTTP method (POST for actions, GET for data retrieval)
-- Prioritize API endpoints over static resources
-- Look for meaningful path segments that relate to the action
-- Return the exact URL as it appears in the list above`;
+- PRIORITIZE endpoints that semantically match the primary action described in the user prompt
+- Look for URL path segments that directly relate to the action (e.g., "pesquisa" for search, "login" for authentication)
+- Consider both English and non-English path segments (Portuguese, Spanish, etc.)
+- GET requests are appropriate for search/query/retrieval actions
+- POST requests are appropriate for create/update/submit actions
+- Focus on the PRIMARY workflow endpoint, not auxiliary actions (avoid "copy", "share", "export" unless specifically requested)
+- If the prompt mentions searching/querying/finding, prefer endpoints with search-related path segments
+- Return the exact URL as it appears in the list above that best matches the PRIMARY action intent`;
+}
+
+/**
+ * Analyze the user prompt to identify the primary action and provide guidance for URL selection
+ */
+function analyzePromptAction(prompt: string): string {
+  const promptLower = prompt.toLowerCase();
+  const analysis: string[] = [];
+
+  // Detect primary action type
+  if (
+    promptLower.includes("search") ||
+    promptLower.includes("pesquisa") ||
+    promptLower.includes("buscar") ||
+    promptLower.includes("find") ||
+    promptLower.includes("query") ||
+    promptLower.includes("consulta")
+  ) {
+    analysis.push(
+      "Primary action: SEARCH/QUERY - Look for endpoints with search-related paths like '/pesquisa', '/search', '/query'"
+    );
+  } else if (
+    promptLower.includes("login") ||
+    promptLower.includes("auth") ||
+    promptLower.includes("sign in") ||
+    promptLower.includes("entrar")
+  ) {
+    analysis.push(
+      "Primary action: AUTHENTICATION - Look for endpoints with auth-related paths like '/login', '/auth', '/signin'"
+    );
+  } else if (
+    promptLower.includes("create") ||
+    promptLower.includes("criar") ||
+    promptLower.includes("add") ||
+    promptLower.includes("novo") ||
+    promptLower.includes("submit") ||
+    promptLower.includes("enviar")
+  ) {
+    analysis.push(
+      "Primary action: CREATE/SUBMIT - Look for POST endpoints that create or submit data"
+    );
+  } else if (
+    promptLower.includes("update") ||
+    promptLower.includes("atualizar") ||
+    promptLower.includes("edit") ||
+    promptLower.includes("modify")
+  ) {
+    analysis.push(
+      "Primary action: UPDATE - Look for PUT/PATCH endpoints that modify existing data"
+    );
+  } else if (
+    promptLower.includes("delete") ||
+    promptLower.includes("deletar") ||
+    promptLower.includes("remove") ||
+    promptLower.includes("remover")
+  ) {
+    analysis.push(
+      "Primary action: DELETE - Look for DELETE endpoints that remove data"
+    );
+  } else {
+    analysis.push(
+      "Primary action: GENERAL - Analyze the prompt for the most important workflow step"
+    );
+  }
+
+  // Extract key domain terms
+  const domainTerms = [];
+  const keywordPatterns = [
+    "jurisprudencia",
+    "legal",
+    "tribunal",
+    "processo",
+    "decisao",
+    "acordao",
+    "document",
+    "file",
+    "data",
+    "user",
+    "account",
+    "profile",
+    "order",
+    "product",
+  ];
+
+  for (const term of keywordPatterns) {
+    if (promptLower.includes(term)) {
+      domainTerms.push(term);
+    }
+  }
+
+  if (domainTerms.length > 0) {
+    analysis.push(
+      `Domain context: ${domainTerms.join(", ")} - Look for URLs containing these domain-specific terms`
+    );
+  }
+
+  // Add specific guidance
+  analysis.push(
+    "IMPORTANT: Choose the endpoint that represents the MAIN action, not secondary operations like copying or exporting results"
+  );
+
+  return analysis.join("\n");
 }
 
 /**
@@ -202,17 +315,29 @@ export function filterApiUrls(harUrls: URLInfo[]): URLInfo[] {
 }
 
 /**
- * Sort URLs by relevance for action identification
+ * Sort URLs by relevance for action identification with prompt-aware keyword scoring
  */
-export function sortUrlsByRelevance(harUrls: URLInfo[]): URLInfo[] {
+export function sortUrlsByRelevance(
+  harUrls: URLInfo[],
+  prompt?: string
+): URLInfo[] {
   return [...harUrls].sort((a, b) => {
-    // Prioritize POST/PUT/DELETE over GET
+    // Calculate keyword relevance scores based on prompt
+    const aKeywordScore = calculateKeywordRelevance(a.url, prompt);
+    const bKeywordScore = calculateKeywordRelevance(b.url, prompt);
+
+    // Keyword relevance takes highest priority
+    if (aKeywordScore !== bKeywordScore) {
+      return bKeywordScore - aKeywordScore; // Higher score first
+    }
+
+    // Method priority (now more balanced for search endpoints)
     const methodPriority: Record<string, number> = {
       POST: 1,
       PUT: 2,
       PATCH: 3,
       DELETE: 4,
-      GET: 5,
+      GET: 3, // Elevated GET priority for search/query endpoints
       OPTIONS: 6,
       HEAD: 7,
     };
@@ -248,4 +373,132 @@ export function sortUrlsByRelevance(harUrls: URLInfo[]): URLInfo[] {
 
     return 0;
   });
+}
+
+/**
+ * Calculate keyword relevance score for URL based on user prompt
+ * Higher scores indicate better semantic match with the user's intent
+ */
+function calculateKeywordRelevance(url: string, prompt?: string): number {
+  if (!prompt) {
+    return 0;
+  }
+
+  let score = 0;
+  const urlLower = url.toLowerCase();
+  const promptLower = prompt.toLowerCase();
+
+  // Multi-language action keywords with weighted scores
+  const actionKeywords = {
+    // Search/Query actions (high weight for GET endpoints)
+    search: 10,
+    pesquisa: 10,
+    buscar: 10,
+    consulta: 10,
+    query: 10,
+    find: 10,
+    // CRUD operations
+    create: 8,
+    criar: 8,
+    novo: 8,
+    new: 8,
+    add: 8,
+    update: 8,
+    atualizar: 8,
+    modify: 8,
+    edit: 8,
+    delete: 8,
+    deletar: 8,
+    remove: 8,
+    remover: 8,
+    // Data retrieval
+    get: 6,
+    obter: 6,
+    fetch: 6,
+    retrieve: 6,
+    list: 6,
+    listar: 6,
+    // Document/content actions
+    copy: 7,
+    copiar: 7,
+    download: 7,
+    export: 7,
+    print: 7,
+    view: 5,
+    visualizar: 5,
+    show: 5,
+    display: 5,
+    // Authentication/session
+    login: 6,
+    auth: 6,
+    authenticate: 6,
+    session: 4,
+  };
+
+  // Application-specific keywords (moderate weight)
+  const domainKeywords = {
+    jurisprudencia: 8,
+    decision: 6,
+    document: 6,
+    documento: 6,
+    citation: 6,
+    citacao: 6,
+    legal: 5,
+    tribunal: 7,
+    processo: 6,
+    case: 6,
+    judgment: 6,
+    acordao: 7,
+  };
+
+  // Check for action keywords in both prompt and URL
+  for (const [keyword, weight] of Object.entries(actionKeywords)) {
+    if (promptLower.includes(keyword) && urlLower.includes(keyword)) {
+      score += weight * 2; // Bonus for matching in both prompt and URL
+    } else if (promptLower.includes(keyword)) {
+      // Look for semantic matches in URL path segments
+      const urlSegments = url.split("/").map((seg) => seg.toLowerCase());
+      if (
+        urlSegments.some(
+          (seg) => seg.includes(keyword) || keyword.includes(seg)
+        )
+      ) {
+        score += weight;
+      }
+    }
+  }
+
+  // Check for domain-specific keywords
+  for (const [keyword, weight] of Object.entries(domainKeywords)) {
+    if (promptLower.includes(keyword) && urlLower.includes(keyword)) {
+      score += weight;
+    }
+  }
+
+  // Bonus for exact path segment matches with prompt keywords
+  const urlPathSegments = url.split("/").filter((seg) => seg.length > 2);
+  const promptWords = promptLower
+    .split(/\s+/)
+    .filter((word) => word.length > 2);
+
+  for (const segment of urlPathSegments) {
+    for (const word of promptWords) {
+      if (
+        segment.toLowerCase() === word ||
+        segment.toLowerCase().includes(word)
+      ) {
+        score += 5;
+      }
+    }
+  }
+
+  // Penalty for auxiliary/secondary actions (lower priority)
+  const secondaryActions = ["copiar", "copy", "duplicate", "share", "export"];
+  for (const action of secondaryActions) {
+    if (urlLower.includes(action) && !promptLower.includes(action)) {
+      score -= 3; // Reduce priority for auxiliary actions not mentioned in prompt
+    }
+  }
+
+  return score;
 }
