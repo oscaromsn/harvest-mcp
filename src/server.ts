@@ -424,6 +424,26 @@ export class HarvestMCPServer {
     );
 
     this.server.tool(
+      "debug_set_master_node",
+      "Manually set the master node and action URL when automatic URL identification fails. This unblocks stuck analysis workflows by allowing manual specification of the target endpoint.",
+      {
+        sessionId: z
+          .string()
+          .uuid()
+          .describe("UUID of the session to configure."),
+        url: z
+          .string()
+          .url()
+          .describe(
+            "The target URL to use as the main action endpoint. Must exist in the HAR data."
+          ),
+      },
+      async (params): Promise<CallToolResult> => {
+        return await this.handleSetMasterNode(params);
+      }
+    );
+
+    this.server.tool(
       "debug_get_completion_blockers",
       "Get detailed information about what's preventing analysis completion or code generation. Provides actionable recommendations for resolving blockers.",
       {
@@ -1830,44 +1850,62 @@ export class HarvestMCPServer {
   }
 
   /**
-   * Handle analysis.is_complete tool
+   * Handle analysis.is_complete tool - Uses comprehensive completion analysis as single source of truth
    */
   public async handleIsComplete(args: unknown): Promise<CallToolResult> {
     try {
       const argsObj = args as { sessionId: string };
-      const session = this.sessionManager.getSession(argsObj.sessionId);
 
-      // Check completion status
-      const isComplete = session.dagManager.isComplete();
-      const nodeCount = session.dagManager.getNodeCount();
-      const unresolvedNodes = session.dagManager.getUnresolvedNodes();
-      const remainingToProcess = session.state.toBeProcessedNodes.length;
+      // Use the comprehensive completion analysis as the single source of truth
+      const analysis = this.sessionManager.analyzeCompletionState(
+        argsObj.sessionId
+      );
 
-      // Determine next steps
-      let nextStep = "";
-      let status = "";
+      // Determine status and next actions based on comprehensive analysis
+      let status: string;
+      let nextActions: string[];
 
-      if (isComplete && remainingToProcess === 0) {
-        status = "complete";
-        nextStep =
-          "Analysis is complete. Use codegen.generate_wrapper_script to generate integration code.";
-      } else if (remainingToProcess > 0) {
-        status = "processing";
-        nextStep = `Continue with analysis.process_next_node to process ${remainingToProcess} remaining nodes.`;
-      } else if (unresolvedNodes.length > 0) {
+      if (analysis.isComplete) {
+        status = "ready_for_code_generation";
+        nextActions = [
+          "Use 'codegen_generate_wrapper_script' to generate TypeScript code",
+          "Analysis is fully complete and ready for code generation",
+        ];
+      } else if (analysis.diagnostics.pendingInQueue > 0) {
+        status = "analysis_in_progress";
+        nextActions = [
+          "Continue with 'analysis_process_next_node' to process remaining nodes",
+          `${analysis.diagnostics.pendingInQueue} nodes remaining in processing queue`,
+        ];
+      } else if (analysis.diagnostics.unresolvedNodes > 0) {
         status = "needs_intervention";
-        nextStep =
-          "Some dynamic parts remain unresolved. Use debug tools for manual intervention.";
+        nextActions = [
+          "Use 'debug_get_unresolved_nodes' to see specific unresolved parts",
+          "Consider using 'debug_force_dependency' for manual intervention",
+          "Or use 'debug_set_master_node' if URL identification failed",
+        ];
+      } else if (
+        !analysis.diagnostics.hasMasterNode ||
+        !analysis.diagnostics.hasActionUrl
+      ) {
+        status = "analysis_not_started";
+        nextActions = [
+          "Use 'analysis_run_initial_analysis' to identify the target action URL",
+          "Or use 'debug_set_master_node' to manually specify the target URL",
+        ];
       } else {
-        status = "unknown";
-        nextStep = "Analysis state is unclear. Check session logs for details.";
+        status = "analysis_stalled";
+        nextActions = [
+          "Check session status with 'session_status'",
+          "Consider restarting analysis or manual intervention",
+        ];
       }
 
-      // Log the completion check
+      // Log the comprehensive completion check
       this.sessionManager.addLog(
         argsObj.sessionId,
         "info",
-        `Completion check: ${status} - ${unresolvedNodes.length} unresolved nodes, ${remainingToProcess} nodes to process`
+        `Comprehensive completion check: ${status} - ${analysis.blockers.length} blockers, ${analysis.diagnostics.unresolvedNodes} unresolved nodes`
       );
 
       return {
@@ -1875,21 +1913,24 @@ export class HarvestMCPServer {
           {
             type: "text",
             text: JSON.stringify({
-              isComplete,
+              isComplete: analysis.isComplete,
               status,
-              nodeCount,
-              unresolvedNodesCount: unresolvedNodes.length,
-              unresolvedNodes: unresolvedNodes.map((node) => ({
-                nodeId: node.nodeId,
-                unresolvedParts: node.unresolvedParts,
-                nodeType: session.dagManager.getNode(node.nodeId)?.nodeType,
-              })),
-              remainingToProcess,
-              nextStep,
-              message:
-                status === "complete"
-                  ? "Analysis workflow completed successfully"
-                  : `Analysis is ${status} - see nextStep for guidance`,
+              blockers: analysis.blockers,
+              recommendations: analysis.recommendations,
+              diagnostics: analysis.diagnostics,
+              nextActions,
+              summary: analysis.isComplete
+                ? "Analysis completed successfully - ready for code generation"
+                : `Analysis incomplete: ${analysis.blockers.length} blockers preventing completion`,
+              detailedStatus: {
+                masterNodeIdentified: analysis.diagnostics.hasMasterNode,
+                actionUrlFound: analysis.diagnostics.hasActionUrl,
+                dagComplete: analysis.diagnostics.dagComplete,
+                queueEmpty: analysis.diagnostics.queueEmpty,
+                totalNodes: analysis.diagnostics.totalNodes,
+                unresolvedNodes: analysis.diagnostics.unresolvedNodes,
+                pendingInQueue: analysis.diagnostics.pendingInQueue,
+              },
             }),
           },
         ],
@@ -2056,6 +2097,9 @@ export class HarvestMCPServer {
       session.state.masterNodeId = masterNodeId;
       session.state.toBeProcessedNodes.push(masterNodeId);
 
+      // Sync completion state after master node creation
+      this.sessionManager.syncCompletionState(argsObj.sessionId);
+
       this.sessionManager.addLog(
         argsObj.sessionId,
         "info",
@@ -2210,6 +2254,9 @@ export class HarvestMCPServer {
 
       // Set as master node
       session.state.masterNodeId = nodeId;
+
+      // Sync completion state after master node creation
+      this.sessionManager.syncCompletionState(args.sessionId);
 
       this.sessionManager.addLog(
         args.sessionId,
@@ -2989,6 +3036,9 @@ export class HarvestMCPServer {
         `Manually created dependency: ${argsObj.consumerNodeId} -> ${argsObj.providerNodeId} (provides: ${argsObj.providedPart})`
       );
 
+      // Sync completion state after forcing dependency
+      this.sessionManager.syncCompletionState(argsObj.sessionId);
+
       return {
         content: [
           {
@@ -3017,6 +3067,113 @@ export class HarvestMCPServer {
       throw new HarvestError(
         `Failed to force dependency: ${error instanceof Error ? error.message : "Unknown error"}`,
         "FORCE_DEPENDENCY_FAILED",
+        { originalError: error }
+      );
+    }
+  }
+
+  /**
+   * Handle debug_set_master_node tool call
+   */
+  public async handleSetMasterNode(args: unknown): Promise<CallToolResult> {
+    try {
+      const argsObj = args as {
+        sessionId: string;
+        url: string;
+      };
+
+      const session = this.sessionManager.getSession(argsObj.sessionId);
+
+      // Validate that the URL exists in the HAR data
+      const targetRequest = session.harData.requests.find(
+        (req) => req.url === argsObj.url
+      );
+
+      if (!targetRequest) {
+        throw new HarvestError(
+          `URL ${argsObj.url} not found in HAR data`,
+          "URL_NOT_FOUND_IN_HAR",
+          {
+            url: argsObj.url,
+            availableUrls: session.harData.requests.map((r) => r.url),
+          }
+        );
+      }
+
+      // Clear any existing master node state
+      if (session.state.masterNodeId) {
+        this.sessionManager.addLog(
+          argsObj.sessionId,
+          "info",
+          `Removing existing master node ${session.state.masterNodeId} to set new one`
+        );
+
+        // Remove from processing queue if present
+        session.state.toBeProcessedNodes =
+          session.state.toBeProcessedNodes.filter(
+            (nodeId) => nodeId !== session.state.masterNodeId
+          );
+      }
+
+      // Create the master node in DAG
+      const masterNodeId = session.dagManager.addNode(
+        "master_curl",
+        {
+          key: targetRequest,
+          value: targetRequest.response || null,
+        },
+        {
+          dynamicParts: ["None"], // Will be updated in next step
+          extractedParts: ["None"],
+        }
+      );
+
+      // Update session state atomically
+      session.state.actionUrl = argsObj.url;
+      session.state.masterNodeId = masterNodeId;
+
+      // Add to processing queue for dependency analysis
+      if (!session.state.toBeProcessedNodes.includes(masterNodeId)) {
+        session.state.toBeProcessedNodes.push(masterNodeId);
+      }
+
+      // Clear completion state to force re-analysis
+      session.state.isComplete = false;
+
+      this.sessionManager.addLog(
+        argsObj.sessionId,
+        "info",
+        `Manually set master node: ${masterNodeId} for URL: ${argsObj.url}`
+      );
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              success: true,
+              message: "Master node successfully set",
+              masterNodeId,
+              actionUrl: argsObj.url,
+              nodeCount: session.dagManager.getNodeCount(),
+              nextSteps: [
+                "Use 'analysis_process_next_node' to analyze dynamic parts",
+                "Continue with normal analysis workflow",
+                "Use 'analysis_is_complete' to check progress",
+              ],
+              recommendation:
+                "The analysis workflow is now unblocked and can proceed normally",
+            }),
+          },
+        ],
+      };
+    } catch (error) {
+      if (error instanceof HarvestError) {
+        throw error;
+      }
+      throw new HarvestError(
+        `Failed to set master node: ${error instanceof Error ? error.message : "Unknown error"}`,
+        "SET_MASTER_NODE_FAILED",
         { originalError: error }
       );
     }
