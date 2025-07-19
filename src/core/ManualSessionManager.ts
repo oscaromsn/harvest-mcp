@@ -73,11 +73,12 @@ export class ManualSessionManager {
     );
 
     try {
-      // Create safe output directory with proper fallbacks
+      // Create safe output directory with proper fallbacks and client accessibility
       const outputDir = await getSafeOutputDirectory(
         config.artifactConfig?.outputDir,
         this.defaultOutputDir,
-        sessionId
+        sessionId,
+        true // Enable client accessibility
       );
 
       // Create browser agent with manual-friendly defaults (no URL navigation yet)
@@ -98,8 +99,8 @@ export class ManualSessionManager {
 
       const agent = await this.agentFactory.createAgent(agentConfig);
 
-      // Create artifact collector instance for this session
-      const artifactCollector = new ArtifactCollector();
+      // Create artifact collector instance for this session with client accessibility
+      const artifactCollector = new ArtifactCollector(true);
 
       // Start network tracking for HAR collection if enabled
       if (config.artifactConfig?.enabled !== false) {

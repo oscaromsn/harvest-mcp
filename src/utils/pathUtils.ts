@@ -92,8 +92,34 @@ export async function createSafeDirectory(
 export async function getSafeOutputDirectory(
   requestedDir?: string,
   defaultDir?: string,
-  sessionId?: string
+  sessionId?: string,
+  clientAccessible = false
 ): Promise<string> {
+  // If client accessibility is required, use shared directory
+  if (clientAccessible) {
+    const sharedBaseDir =
+      process.env.HARVEST_SHARED_DIR || join(homedir(), ".harvest", "shared");
+    const sessionPart = sessionId ? `/${sessionId}` : `/session-${Date.now()}`;
+    const sharedPath = `${sharedBaseDir}${sessionPart}`;
+
+    try {
+      const result = await createSafeDirectory(sharedPath, "harvest-shared");
+      logger.info(
+        { sharedPath: result, sessionId },
+        "Created client-accessible directory"
+      );
+      return result;
+    } catch (error) {
+      logger.error(
+        `Failed to create client-accessible directory: ${sharedPath}`,
+        {
+          error: error instanceof Error ? error.message : "Unknown error",
+        }
+      );
+      // Continue to regular fallback logic
+    }
+  }
+
   // If specific directory requested, try that first
   if (requestedDir) {
     return createSafeDirectory(requestedDir, "harvest-manual");

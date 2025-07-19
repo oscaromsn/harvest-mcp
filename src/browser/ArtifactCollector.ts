@@ -8,6 +8,7 @@ import { access, mkdir, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { BrowserContext, Page, Request, Response } from "playwright";
 import { logBrowserError, logBrowserOperation } from "../utils/logger.js";
+import { pathTranslator } from "../utils/pathTranslator.js";
 import type { Artifact, ArtifactCollection } from "./types.js";
 
 export interface HarEntry {
@@ -89,9 +90,11 @@ export class ArtifactCollector {
     { intervalId: NodeJS.Timeout; artifacts: Artifact[] }
   >();
   private networkRequestCallback?: ((count: number) => void) | undefined;
+  private clientAccessible: boolean;
 
-  constructor() {
-    logBrowserOperation("artifact_collector_created");
+  constructor(clientAccessible = false) {
+    this.clientAccessible = clientAccessible;
+    logBrowserOperation("artifact_collector_created", { clientAccessible });
   }
 
   /**
@@ -340,11 +343,24 @@ export class ArtifactCollector {
         },
       };
 
-      // Ensure output directory exists
-      await mkdir(dirname(outputPath), { recursive: true });
+      // Ensure output directory exists with proper permissions
+      await mkdir(dirname(outputPath), { recursive: true, mode: 0o755 });
 
-      // Write HAR file
-      await writeFile(outputPath, JSON.stringify(harData, null, 2), "utf-8");
+      // Write HAR file with proper permissions
+      await writeFile(outputPath, JSON.stringify(harData, null, 2), {
+        encoding: "utf-8",
+        mode: 0o644,
+      });
+
+      // Register path for client access if needed
+      if (this.clientAccessible) {
+        const clientPath = pathTranslator.translateForClient(outputPath);
+        pathTranslator.registerPath(outputPath, clientPath);
+        logBrowserOperation("har_path_registered", {
+          serverPath: outputPath,
+          clientPath,
+        });
+      }
 
       const artifact: Artifact = {
         type: "har",
@@ -408,11 +424,24 @@ export class ArtifactCollector {
         })),
       };
 
-      // Ensure output directory exists
-      await mkdir(dirname(outputPath), { recursive: true });
+      // Ensure output directory exists with proper permissions
+      await mkdir(dirname(outputPath), { recursive: true, mode: 0o755 });
 
-      // Write cookie file
-      await writeFile(outputPath, JSON.stringify(cookieData, null, 2), "utf-8");
+      // Write cookie file with proper permissions
+      await writeFile(outputPath, JSON.stringify(cookieData, null, 2), {
+        encoding: "utf-8",
+        mode: 0o644,
+      });
+
+      // Register path for client access if needed
+      if (this.clientAccessible) {
+        const clientPath = pathTranslator.translateForClient(outputPath);
+        pathTranslator.registerPath(outputPath, clientPath);
+        logBrowserOperation("cookie_path_registered", {
+          serverPath: outputPath,
+          clientPath,
+        });
+      }
 
       const artifact: Artifact = {
         type: "cookies",
