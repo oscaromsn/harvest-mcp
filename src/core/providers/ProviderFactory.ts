@@ -32,7 +32,7 @@ const PROVIDER_REGISTRY: Record<string, ProviderRegistryEntry> = {
       return provider;
     },
     requiredEnvVar: "GOOGLE_API_KEY",
-    defaultModel: "gemini-1.5-pro",
+    defaultModel: "gemini-2.0-flash",
   },
 };
 
