@@ -127,10 +127,38 @@ export interface AuthenticationAnalysis {
  */
 export type ParameterClassification =
   | "dynamic" // Resolved from previous API response
-  | "sessionConstant" // Session-scoped constant (session tokens, CSRF)
+  | "sessionConstant" // Session-scoped constant that must be dynamically fetched during bootstrap
+  | "staticConstant" // Hardcoded application constant that remains the same across all sessions
   | "userInput" // User-provided parameter (search terms, IDs)
-  | "staticConstant" // Hardcoded application constant
   | "optional"; // Can be omitted without breaking functionality
+
+// ========== Bootstrap Parameter Types ==========
+
+/**
+ * Types of sources where bootstrap parameters can be found
+ */
+export type BootstrapSourceType =
+  | "initial-page-html"
+  | "initial-page-cookie"
+  | "dedicated-auth-request";
+
+/**
+ * Source information for session bootstrap parameters
+ */
+export interface BootstrapParameterSource {
+  type: BootstrapSourceType;
+  // The URL of the request that provides the bootstrap parameter.
+  sourceUrl: string;
+  // Details on how to extract the value.
+  extractionDetails: {
+    // e.g., for 'initial-page-html', this could be a regex or CSS selector.
+    pattern: string;
+    // e.g., for 'initial-page-cookie', this is the cookie name.
+    cookieName?: string;
+    // e.g., for 'dedicated-auth-request', this is the JSON path.
+    jsonPath?: string;
+  };
+}
 
 /**
  * Classified parameter with metadata for analysis
@@ -147,6 +175,8 @@ export interface ClassifiedParameter {
     consistencyScore: number; // 0-1, how consistent across requests
     parameterPattern: string; // regex pattern if detected
     domainContext?: string; // session, auth, pagination, etc.
+    bootstrapSource?: BootstrapParameterSource; // Source for session bootstrap parameters
+    requiresBootstrap?: boolean; // Whether this parameter requires bootstrap initialization
   };
 }
 
@@ -204,6 +234,11 @@ export interface SessionState {
     isAuthComplete: boolean;
     authBlockers: string[];
     authRecommendations: string[];
+  };
+  bootstrapAnalysis?: {
+    isNeeded: boolean;
+    bootstrapUrl?: string; // The main page URL that starts the session
+    parameters: Array<{ name: string; source: BootstrapParameterSource }>;
   };
 }
 
@@ -269,6 +304,7 @@ export interface CurlDAGNode {
   inputVariables?: Record<string, string>;
   authInfo?: RequestAuthenticationInfo;
   classifiedParameters?: ClassifiedParameter[];
+  bootstrapSource?: BootstrapParameterSource;
 }
 
 export interface CookieDAGNode {
@@ -279,6 +315,7 @@ export interface CookieDAGNode {
   extractedParts?: string[];
   inputVariables?: Record<string, string>;
   classifiedParameters?: ClassifiedParameter[];
+  bootstrapSource?: BootstrapParameterSource;
 }
 
 export interface NotFoundDAGNode {
@@ -289,6 +326,7 @@ export interface NotFoundDAGNode {
   extractedParts?: string[];
   inputVariables?: Record<string, string>;
   classifiedParameters?: ClassifiedParameter[];
+  bootstrapSource?: BootstrapParameterSource;
 }
 
 export interface MasterDAGNode {
@@ -300,6 +338,7 @@ export interface MasterDAGNode {
   inputVariables?: Record<string, string>;
   authInfo?: RequestAuthenticationInfo;
   classifiedParameters?: ClassifiedParameter[];
+  bootstrapSource?: BootstrapParameterSource;
 }
 
 export interface MasterCurlDAGNode {
@@ -311,6 +350,7 @@ export interface MasterCurlDAGNode {
   inputVariables?: Record<string, string>;
   authInfo?: RequestAuthenticationInfo;
   classifiedParameters?: ClassifiedParameter[];
+  bootstrapSource?: BootstrapParameterSource;
 }
 
 export type DAGNode =
