@@ -54,20 +54,43 @@ export async function identifyEndUrl(
     // Validate that the identified URL exists in the HAR data
     const urlExists = harUrls.some((urlInfo) => urlInfo.url === identifiedUrl);
     if (!urlExists) {
-      // Fallback: return the first API URL if identification failed
+      // Enhanced fallback: use the highest-scoring URL from heuristic analysis
       const fallbackUrl = sortedUrls[0]?.url;
-      if (fallbackUrl) {
+      if (fallbackUrl && sortedUrls[0]) {
         logger.warn(
-          { identifiedUrl, fallbackUrl },
-          "LLM identified non-existent URL, using fallback"
+          {
+            identifiedUrl,
+            fallbackUrl,
+            fallbackScore: calculateComprehensiveRelevanceScore(
+              sortedUrls[0],
+              session.prompt
+            ),
+            availableCount: harUrls.length,
+          },
+          "LLM identified non-existent URL, using highest-scoring heuristic candidate"
         );
         return fallbackUrl;
       }
 
+      // If even the fallback fails, provide detailed error information
+      const topCandidates = sortedUrls.slice(0, 3).map((url) => ({
+        url: url.url,
+        score: calculateComprehensiveRelevanceScore(url, session.prompt),
+        method: url.method,
+        paramCount: (url.url.split("?")[1] || "").split("&").filter((p) => p)
+          .length,
+      }));
+
       throw new HarvestError(
-        `Identified URL ${identifiedUrl} not found in HAR data`,
+        `URL identification failed: LLM returned non-existent URL "${identifiedUrl}". Available top candidates based on heuristic analysis: ${topCandidates.map((c) => `${c.url} (score: ${c.score.toFixed(1)})`).join(", ")}`,
         "URL_NOT_FOUND_IN_HAR",
-        { identifiedUrl, availableUrls: harUrls.map((u) => u.url) }
+        {
+          identifiedUrl,
+          availableUrls: harUrls.map((u) => u.url),
+          topCandidates,
+          suggestedAction:
+            "Use debug_set_master_node with one of the top candidates, or re-run analysis with autoFix=true",
+        }
       );
     }
 
@@ -77,21 +100,63 @@ export async function identifyEndUrl(
       throw error;
     }
 
-    // Fallback strategy: if LLM fails, try to use the most likely URL
-    const sortedUrls = sortUrlsByRelevance(
+    // Enhanced fallback strategy: if LLM fails, try to use the most likely URL with detailed logging
+    const fallbackUrls = sortUrlsByRelevance(
       filterApiUrls(harUrls),
       session.prompt
     );
-    if (sortedUrls.length > 0 && sortedUrls[0]) {
-      const fallbackUrl = sortedUrls[0].url;
-      logger.warn({ fallbackUrl }, "LLM call failed, using fallback URL");
+
+    if (fallbackUrls.length > 0 && fallbackUrls[0]) {
+      const fallbackUrl = fallbackUrls[0].url;
+      const fallbackScore = calculateComprehensiveRelevanceScore(
+        fallbackUrls[0],
+        session.prompt
+      );
+
+      // Provide detailed fallback information for debugging
+      const fallbackContext = {
+        chosenUrl: fallbackUrl,
+        score: fallbackScore,
+        reasoning: getUrlReasoningText(fallbackUrls[0], session.prompt),
+        alternativesCount: fallbackUrls.length - 1,
+        topAlternatives: fallbackUrls.slice(1, 4).map((url) => ({
+          url: url.url,
+          score: calculateComprehensiveRelevanceScore(url, session.prompt),
+        })),
+      };
+
+      logger.warn(
+        {
+          fallbackUrl,
+          fallbackContext,
+          originalError:
+            error instanceof Error ? error.message : "Unknown error",
+        },
+        "LLM call failed, using highest-scoring heuristic fallback"
+      );
+
       return fallbackUrl;
     }
 
+    // Create detailed error with suggestions if no fallback is available
+    const availableUrls = harUrls.map((u) => u.url);
+    const errorContext = {
+      originalError: error,
+      availableUrls,
+      urlCount: harUrls.length,
+      hasApiUrls: harUrls.some((u) => u.url.toLowerCase().includes("/api/")),
+      suggestions: [
+        "Check if HAR file contains valid API endpoints",
+        "Verify that the HAR file was captured during the target workflow",
+        "Consider using debug_list_all_requests to inspect available URLs",
+        "Try manual URL selection with debug_set_master_node",
+      ],
+    };
+
     throw new HarvestError(
-      `URL identification failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+      `URL identification completely failed: ${error instanceof Error ? error.message : "Unknown error"}. No suitable fallback URLs found among ${harUrls.length} available URLs.`,
       "URL_IDENTIFICATION_FAILED",
-      { originalError: error }
+      errorContext
     );
   }
 }
@@ -117,11 +182,12 @@ export function createFunctionDefinition(prompt: string): FunctionDefinition {
 }
 
 /**
- * Create the prompt for LLM analysis with enhanced semantic action matching
+ * Create the prompt for LLM analysis with enhanced semantic action matching and heuristic guidance
  */
 function createPrompt(userPrompt: string, harUrls: URLInfo[]): string {
   const formattedUrls = formatURLsForPrompt(harUrls);
   const actionAnalysis = analyzePromptAction(userPrompt);
+  const heuristicRanking = getHeuristicRanking(harUrls, userPrompt);
 
   return `${formattedUrls}
 
@@ -132,15 +198,95 @@ Find the URL that semantically matches the user's primary action described below
 Action Analysis:
 ${actionAnalysis}
 
-Instructions:
+Heuristic Analysis Top Candidates:
+${heuristicRanking}
+
+Enhanced Instructions:
 - PRIORITIZE endpoints that semantically match the primary action described in the user prompt
 - Look for URL path segments that directly relate to the action (e.g., "pesquisa" for search, "login" for authentication)
 - Consider both English and non-English path segments (Portuguese, Spanish, etc.)
+- For search/query actions, prefer URLs with MORE query parameters, especially those with search terms, filters, and pagination
 - GET requests are appropriate for search/query/retrieval actions
 - POST requests are appropriate for create/update/submit actions
 - Focus on the PRIMARY workflow endpoint, not auxiliary actions (avoid "copy", "share", "export" unless specifically requested)
-- If the prompt mentions searching/querying/finding, prefer endpoints with search-related path segments
-- Return the exact URL as it appears in the list above that best matches the PRIMARY action intent`;
+- If multiple URLs contain similar path segments, choose the one with the most comprehensive parameter set
+- Pay attention to the heuristic ranking above - it considers parameter complexity and domain-specific patterns
+- Return the exact URL as it appears in the list above that best matches the PRIMARY action intent
+
+CRITICAL: If this is a search/query action, choose the URL with the most filtering and search parameters, not the simplest one.`;
+}
+
+/**
+ * Generate heuristic ranking summary for LLM guidance
+ */
+function getHeuristicRanking(harUrls: URLInfo[], prompt?: string): string {
+  const sortedUrls = sortUrlsByRelevance(harUrls, prompt);
+  const topCandidates = sortedUrls.slice(0, 5); // Show top 5
+
+  if (topCandidates.length === 0) {
+    return "No strong candidates identified by heuristic analysis.";
+  }
+
+  const rankings = topCandidates
+    .map((urlInfo, index) => {
+      const score = calculateComprehensiveRelevanceScore(urlInfo, prompt);
+      const paramCount = (urlInfo.url.split("?")[1] || "")
+        .split("&")
+        .filter((p) => p).length;
+
+      return `${index + 1}. ${urlInfo.url} 
+   - Score: ${score.toFixed(1)}
+   - Parameters: ${paramCount}
+   - Method: ${urlInfo.method}
+   - Reasoning: ${getUrlReasoningText(urlInfo, prompt)}`;
+    })
+    .join("\n\n");
+
+  return `Based on comprehensive scoring (keyword relevance, API patterns, parameter complexity):
+${rankings}
+
+The top-ranked URL typically represents the most complex and feature-rich endpoint, which is often the primary action URL for search/query operations.`;
+}
+
+/**
+ * Generate reasoning text for why a URL was ranked highly
+ */
+function getUrlReasoningText(urlInfo: URLInfo, prompt?: string): string {
+  const reasons: string[] = [];
+  const url = urlInfo.url.toLowerCase();
+  const promptLower = prompt?.toLowerCase() || "";
+
+  // Check for API patterns
+  if (url.includes("/api/")) {
+    reasons.push("REST API endpoint");
+  }
+  if (url.includes("/pesquisa")) {
+    reasons.push("Portuguese search endpoint");
+  }
+  if (url.includes("/search")) {
+    reasons.push("Search endpoint");
+  }
+
+  // Check for parameter richness
+  const paramCount = (urlInfo.url.split("?")[1] || "")
+    .split("&")
+    .filter((p) => p).length;
+  if (paramCount > 5) {
+    reasons.push(`Rich parameter set (${paramCount} params)`);
+  }
+
+  // Check for domain-specific terms
+  if (promptLower.includes("search") || promptLower.includes("pesquisa")) {
+    if (url.includes("pesquisa") || url.includes("search")) {
+      reasons.push("Matches search intent");
+    }
+  }
+
+  if (urlInfo.responseType.toLowerCase().includes("json")) {
+    reasons.push("JSON response (API)");
+  }
+
+  return reasons.length > 0 ? reasons.join(", ") : "Standard endpoint";
 }
 
 /**
@@ -411,7 +557,7 @@ export function calculateApiPatternScore(url: string): number {
 }
 
 /**
- * Calculate parameter complexity score
+ * Calculate parameter complexity score with enhanced detection
  */
 export function calculateParameterComplexityScore(url: string): number {
   const urlParts = url.split("?");
@@ -425,19 +571,91 @@ export function calculateParameterComplexityScore(url: string): number {
   // More parameters generally indicate a main action endpoint
   let score = Math.min(parameters.length * 2, 20); // Cap at 20 points
 
-  // Boost score for parameters that suggest main functionality
-  const importantParams = [
-    "query",
-    "search",
-    "term",
-    "pesquisa",
-    "buscar",
-    "consulta",
-  ];
+  // Enhanced parameter scoring with domain-specific patterns
+  const parameterPatterns = {
+    // High-value parameters for search/query endpoints
+    search: {
+      patterns: [
+        "text",
+        "texto",
+        "query",
+        "search",
+        "term",
+        "consulta",
+        "pesquisa",
+        "buscar",
+      ],
+      boost: 8,
+    },
+    // Pagination parameters
+    pagination: {
+      patterns: ["page", "size", "limit", "offset", "per_page"],
+      boost: 3,
+    },
+    // Date filtering parameters
+    dateFilter: {
+      patterns: [
+        "date",
+        "inicio",
+        "fim",
+        "start",
+        "end",
+        "from",
+        "to",
+        "dataInicio",
+        "dataFim",
+      ],
+      boost: 4,
+    },
+    // Legal domain specific
+    legal: {
+      patterns: [
+        "tribunal",
+        "tribunais",
+        "relator",
+        "acordao",
+        "decisao",
+        "processo",
+        "colecao",
+      ],
+      boost: 6,
+    },
+    // Filter parameters
+    filter: {
+      patterns: ["filter", "filtro", "category", "type", "categoria"],
+      boost: 3,
+    },
+  };
+
   for (const param of parameters) {
     const paramName = param.split("=")[0]?.toLowerCase() || "";
-    if (importantParams.some((important) => paramName.includes(important))) {
-      score += 5;
+    const paramValue = param.split("=")[1] || "";
+
+    // Check against enhanced pattern library
+    for (const [, config] of Object.entries(parameterPatterns)) {
+      if (config.patterns.some((pattern) => paramName.includes(pattern))) {
+        score += config.boost;
+
+        // Extra boost for non-empty values
+        if (
+          paramValue &&
+          paramValue !== "0" &&
+          paramValue !== "" &&
+          paramValue !== "false"
+        ) {
+          score += 2;
+        }
+      }
+    }
+
+    // Boost for URL-encoded values (indicates user input)
+    if (paramValue.includes("%")) {
+      score += 3;
+    }
+
+    // Boost for complex values
+    if (paramValue.length > 10) {
+      score += 1;
     }
   }
 
