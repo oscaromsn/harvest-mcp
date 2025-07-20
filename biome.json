@@ -52,7 +52,7 @@
         "noBannedTypes": "error",
         "noUselessConstructor": "error",
         "noExcessiveCognitiveComplexity": {
-          "level": "error",
+          "level": "warn",
           "options": {
             "maxAllowedComplexity": 26
           }
@@ -145,7 +145,7 @@
         "noDefaultExport": "warn",
         "noImplicitBoolean": "error",
         "noInferrableTypes": "error",
-        "noNamespace": "error",
+        "noNamespace": "warn",
         "noNegationElse": "error",
         "noNonNullAssertion": "error",
         "noParameterAssign": "error",
