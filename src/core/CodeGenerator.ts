@@ -133,6 +133,15 @@ export function generateWrapperScript(session: HarvestSession): string {
 
   // Note: Empty DAGs are allowed for testing purposes and edge cases
 
+  // Check for session-awareness (bootstrap parameters) to determine generation strategy
+  const sessionInfo = analyzeSessionRequirements(session);
+
+  if (sessionInfo.requiresSessionManagement) {
+    // Generate stateful class-based client for session-aware APIs
+    return generateSessionAwareClient(session, sessionInfo);
+  }
+
+  // Continue with traditional stateless function generation
   const parts: string[] = [];
 
   // 1. File header with metadata
@@ -1692,4 +1701,379 @@ function generateAuthenticationSetup(
   }
 
   lines.push("");
+}
+
+// ========== Session-Aware Code Generation ==========
+
+/**
+ * Analyze session requirements to determine if session management is needed
+ */
+function analyzeSessionRequirements(session: HarvestSession): {
+  requiresSessionManagement: boolean;
+  bootstrapParameters: Array<{
+    name: string;
+    value: string;
+    bootstrapSource: import("../types/index.js").BootstrapParameterSource;
+  }>;
+  sessionConstantsCount: number;
+  bootstrapUrl?: string;
+} {
+  const bootstrapParameters: Array<{
+    name: string;
+    value: string;
+    bootstrapSource: import("../types/index.js").BootstrapParameterSource;
+  }> = [];
+
+  let sessionConstantsCount = 0;
+  let bootstrapUrl: string | undefined;
+
+  // Iterate through all nodes to find session constants with bootstrap sources
+  const allNodes = session.dagManager.getAllNodes();
+
+  for (const [, node] of allNodes) {
+    if (node.classifiedParameters) {
+      for (const param of node.classifiedParameters) {
+        if (param.classification === "sessionConstant") {
+          sessionConstantsCount++;
+
+          if (param.metadata.bootstrapSource) {
+            bootstrapParameters.push({
+              name: param.name,
+              value: param.value,
+              bootstrapSource: param.metadata.bootstrapSource,
+            });
+
+            // Set bootstrap URL from the first bootstrap source found
+            if (!bootstrapUrl) {
+              bootstrapUrl = param.metadata.bootstrapSource.sourceUrl;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  const requiresSessionManagement = bootstrapParameters.length > 0;
+
+  const result: {
+    requiresSessionManagement: boolean;
+    bootstrapParameters: Array<{
+      name: string;
+      value: string;
+      bootstrapSource: import("../types/index.js").BootstrapParameterSource;
+    }>;
+    sessionConstantsCount: number;
+    bootstrapUrl?: string;
+  } = {
+    requiresSessionManagement,
+    bootstrapParameters,
+    sessionConstantsCount,
+  };
+
+  if (bootstrapUrl) {
+    result.bootstrapUrl = bootstrapUrl;
+  }
+
+  return result;
+}
+
+/**
+ * Generate session-aware client class for APIs that require bootstrap parameters
+ */
+function generateSessionAwareClient(
+  session: HarvestSession,
+  sessionInfo: ReturnType<typeof analyzeSessionRequirements>
+): string {
+  const parts: string[] = [];
+
+  // 1. File header with session-aware metadata
+  parts.push(generateSessionAwareHeader(session, sessionInfo));
+  parts.push("");
+
+  // 2. Imports and types
+  parts.push(generateSessionAwareImports(session));
+  parts.push("");
+
+  // 3. Session configuration interface
+  parts.push(generateSessionConfigInterface(sessionInfo));
+  parts.push("");
+
+  // 4. Main API client class
+  parts.push(generateAPIClientClass(session, sessionInfo));
+  parts.push("");
+
+  // 5. Export statement
+  parts.push(generateExportStatement(session));
+
+  return parts.join("\n");
+}
+
+/**
+ * Generate header for session-aware clients
+ */
+function generateSessionAwareHeader(
+  session: HarvestSession,
+  sessionInfo: ReturnType<typeof analyzeSessionRequirements>
+): string {
+  const parts: string[] = [];
+
+  parts.push("/**");
+  parts.push(" * Generated API Client with Session Management");
+  parts.push(` * Source: ${session.prompt}`);
+  parts.push(` * Generated: ${new Date().toISOString()}`);
+  parts.push(" * ");
+  parts.push(" * This client manages session state automatically by:");
+  parts.push(
+    ` * - Initializing sessions from ${sessionInfo.bootstrapUrl || "main page"}`
+  );
+  parts.push(
+    ` * - Extracting session parameters: ${sessionInfo.bootstrapParameters.map((p) => p.name).join(", ")}`
+  );
+  parts.push(" * - Managing session lifecycle across API calls");
+  parts.push(" * ");
+  parts.push(" * Usage:");
+  parts.push(" *   const client = new APIClient();");
+  parts.push(" *   await client.initialize();");
+  parts.push(" *   const result = await client.performAction(params);");
+  parts.push(" */");
+
+  return parts.join("\n");
+}
+
+/**
+ * Generate imports for session-aware clients
+ */
+function generateSessionAwareImports(_session: HarvestSession): string {
+  const parts: string[] = [];
+
+  parts.push("// HTTP client for making requests");
+  parts.push(
+    "// You can replace this with axios, node-fetch, or your preferred HTTP library"
+  );
+  parts.push("");
+
+  return parts.join("\n");
+}
+
+/**
+ * Generate session configuration interface
+ */
+function generateSessionConfigInterface(
+  sessionInfo: ReturnType<typeof analyzeSessionRequirements>
+): string {
+  const parts: string[] = [];
+
+  parts.push("/**");
+  parts.push(" * Session configuration containing dynamic parameters");
+  parts.push(" */");
+  parts.push("interface SessionConfig {");
+
+  for (const param of sessionInfo.bootstrapParameters) {
+    parts.push(
+      `  ${param.name}: string; // From ${param.bootstrapSource.type}`
+    );
+  }
+
+  parts.push("}");
+
+  return parts.join("\n");
+}
+
+/**
+ * Generate the main API client class
+ */
+function generateAPIClientClass(
+  session: HarvestSession,
+  sessionInfo: ReturnType<typeof analyzeSessionRequirements>
+): string {
+  const parts: string[] = [];
+
+  // Class definition
+  parts.push("export class APIClient {");
+  parts.push("  private session: SessionConfig | null = null;");
+  parts.push("");
+
+  // Initialize session method
+  parts.push("  /**");
+  parts.push("   * Initialize session by fetching bootstrap parameters");
+  parts.push("   */");
+  parts.push("  async initializeSession(): Promise<void> {");
+  parts.push(
+    `    const response = await fetch('${sessionInfo.bootstrapUrl}');`
+  );
+  parts.push("    ");
+
+  // Generate extraction logic based on bootstrap sources
+  for (const param of sessionInfo.bootstrapParameters) {
+    const source = param.bootstrapSource;
+
+    if (source.type === "initial-page-html") {
+      parts.push("    // Extract from HTML content");
+      parts.push("    const htmlContent = await response.text();");
+      parts.push(
+        `    const ${param.name}Match = htmlContent.match(/${source.extractionDetails.pattern}/i);`
+      );
+      parts.push(`    if (!${param.name}Match || !${param.name}Match[1]) {`);
+      parts.push(
+        `      throw new Error('Failed to extract ${param.name} from page');`
+      );
+      parts.push("    }");
+      parts.push(`    const ${param.name} = ${param.name}Match[1];`);
+      parts.push("");
+    } else if (source.type === "initial-page-cookie") {
+      parts.push("    // Extract from Set-Cookie headers");
+      parts.push(
+        "    const cookies = response.headers.get('set-cookie') || '';"
+      );
+      parts.push(
+        `    const ${param.name}Match = cookies.match(/${source.extractionDetails.pattern}/);`
+      );
+      parts.push(`    if (!${param.name}Match || !${param.name}Match[1]) {`);
+      parts.push(
+        `      throw new Error('Failed to extract ${param.name} from cookies');`
+      );
+      parts.push("    }");
+      parts.push(`    const ${param.name} = ${param.name}Match[1];`);
+      parts.push("");
+    }
+  }
+
+  // Store session
+  parts.push("    this.session = {");
+  for (const param of sessionInfo.bootstrapParameters) {
+    parts.push(`      ${param.name},`);
+  }
+  parts.push("    };");
+  parts.push("  }");
+  parts.push("");
+
+  // Ensure session helper
+  parts.push("  /**");
+  parts.push("   * Ensure session is initialized");
+  parts.push("   */");
+  parts.push("  private async ensureSession(): Promise<void> {");
+  parts.push("    if (!this.session) {");
+  parts.push("      await this.initializeSession();");
+  parts.push("    }");
+  parts.push("  }");
+  parts.push("");
+
+  // Generate API methods
+  parts.push(...generateSessionAwareAPIMethods(session, sessionInfo));
+
+  parts.push("}");
+
+  return parts.join("\n");
+}
+
+/**
+ * Generate API methods that use session state
+ */
+function generateSessionAwareAPIMethods(
+  session: HarvestSession,
+  sessionInfo: ReturnType<typeof analyzeSessionRequirements>
+): string[] {
+  const parts: string[] = [];
+
+  // Get the main action node
+  const masterNodeId = session.state.masterNodeId;
+  if (!masterNodeId) {
+    parts.push("  // No master node identified");
+    return parts;
+  }
+
+  const masterNode = session.dagManager.getNode(masterNodeId);
+  if (
+    !masterNode ||
+    (masterNode.nodeType !== "master" && masterNode.nodeType !== "master_curl")
+  ) {
+    parts.push("  // Master node not found or invalid");
+    return parts;
+  }
+
+  const request = masterNode.content.key as RequestModel;
+
+  parts.push("  /**");
+  parts.push("   * Perform the main API action with session management");
+  parts.push("   */");
+  parts.push("  async performAction(params: any = {}): Promise<any> {");
+  parts.push("    await this.ensureSession();");
+  parts.push("");
+  parts.push("    // Build URL with session parameters");
+  parts.push(`    const baseUrl = '${getBaseUrl(request.url)}';`);
+  parts.push("    const searchParams = new URLSearchParams();");
+  parts.push("");
+
+  // Add session parameters
+  for (const param of sessionInfo.bootstrapParameters) {
+    parts.push(
+      `    searchParams.set('${param.name}', this.session!.${param.name});`
+    );
+  }
+
+  // Add other parameters from the original request
+  if (request.queryParams) {
+    for (const [key, value] of Object.entries(request.queryParams)) {
+      // Skip session constants as they're already added above
+      const isSessionConstant = sessionInfo.bootstrapParameters.some(
+        (p) => p.name === key
+      );
+      if (!isSessionConstant) {
+        parts.push(`    searchParams.set('${key}', '${value}');`);
+      }
+    }
+  }
+
+  parts.push("");
+  parts.push("    // Make the request");
+  parts.push(
+    "    const response = await fetch(\`\${baseUrl}?\${searchParams.toString()}\`, {"
+  );
+  parts.push(`      method: '${request.method}',`);
+  parts.push("      headers: {");
+
+  // Add headers
+  for (const [key, value] of Object.entries(request.headers)) {
+    if (key.toLowerCase() !== "cookie") {
+      // Skip cookie header as it may contain session info
+      parts.push(`        '${key}': '${value}',`);
+    }
+  }
+
+  parts.push("      },");
+
+  // Add body if it's a POST request
+  if (request.method.toUpperCase() === "POST" && request.body) {
+    parts.push(
+      `      body: JSON.stringify(params.body || ${JSON.stringify(request.body)}),`
+    );
+  }
+
+  parts.push("    });");
+  parts.push("");
+  parts.push("    if (!response.ok) {");
+  parts.push(
+    "      throw new Error(\`API request failed: \${response.status} \${response.statusText}\`);"
+  );
+  parts.push("    }");
+  parts.push("");
+  parts.push("    return await response.json();");
+  parts.push("  }");
+
+  return parts;
+}
+
+/**
+ * Extract base URL from full URL
+ */
+function getBaseUrl(fullUrl: string): string {
+  const url = new URL(fullUrl);
+  return `${url.protocol}//${url.host}${url.pathname}`;
+}
+
+/**
+ * Generate export statement
+ */
+function generateExportStatement(_session: HarvestSession): string {
+  return "// Export the client for use\nexport default APIClient;";
 }
