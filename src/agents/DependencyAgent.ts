@@ -207,23 +207,21 @@ export function findRequestDependencies(
         continue;
       }
 
-      // Check if the part exists in the response text OR response headers
+      // Enhanced search with JSON-aware parsing and Set-Cookie analysis
       const responseText = request.response?.text || "";
       const responseHeaders = request.response?.headers || {};
-      const responseHeadersText = Object.entries(responseHeaders)
-        .map(([name, value]) => `${name}: ${value}`)
-        .join("\n");
       const curlString = request.toString();
 
-      // Check conditions:
-      // 1. Part is in response text/headers but not in request
-      // 2. URL-decoded part is in request
-      const foundInResponseText = responseText
-        .toLowerCase()
-        .includes(part.toLowerCase());
-      const foundInResponseHeaders = responseHeadersText
-        .toLowerCase()
-        .includes(part.toLowerCase());
+      // JSON-aware search in response
+      const foundInResponseText = searchInResponseText(responseText, part);
+
+      // Enhanced header search including Set-Cookie analysis
+      const foundInResponseHeaders = searchInResponseHeaders(
+        responseHeaders,
+        part
+      );
+
+      // Standard request search
       const foundInRequest = curlString
         .toLowerCase()
         .includes(part.toLowerCase());
@@ -476,4 +474,121 @@ export function validateDynamicParts(dynamicParts: string[]): {
   }
 
   return { valid, invalid, reasons };
+}
+
+/**
+ * Enhanced search in response text with JSON awareness
+ */
+function searchInResponseText(
+  responseText: string,
+  searchValue: string
+): boolean {
+  // First try simple string search
+  if (responseText.toLowerCase().includes(searchValue.toLowerCase())) {
+    return true;
+  }
+
+  // Try JSON-aware search for better accuracy
+  try {
+    const jsonObj = JSON.parse(responseText);
+    return deepSearchJsonValue(jsonObj, searchValue);
+  } catch {
+    // If not valid JSON, fall back to string search (already done above)
+    return false;
+  }
+}
+
+/**
+ * Recursively search for a value in a JSON object
+ */
+function deepSearchJsonValue(obj: unknown, searchValue: string): boolean {
+  if (obj === null || obj === undefined) {
+    return false;
+  }
+
+  // Direct string comparison for primitive values
+  if (typeof obj === "string") {
+    return (
+      obj.toLowerCase().includes(searchValue.toLowerCase()) ||
+      obj === searchValue
+    );
+  }
+
+  if (typeof obj === "number" || typeof obj === "boolean") {
+    return obj.toString() === searchValue;
+  }
+
+  // Recursive search for arrays
+  if (Array.isArray(obj)) {
+    return obj.some((item) => deepSearchJsonValue(item, searchValue));
+  }
+
+  // Recursive search for objects
+  if (typeof obj === "object") {
+    return Object.values(obj).some((value) =>
+      deepSearchJsonValue(value, searchValue)
+    );
+  }
+
+  return false;
+}
+
+/**
+ * Enhanced search in response headers with Set-Cookie analysis
+ */
+function searchInResponseHeaders(
+  responseHeaders: Record<string, string>,
+  searchValue: string
+): boolean {
+  // Standard header search
+  const responseHeadersText = Object.entries(responseHeaders)
+    .map(([name, value]) => `${name}: ${value}`)
+    .join("\n");
+
+  if (responseHeadersText.toLowerCase().includes(searchValue.toLowerCase())) {
+    return true;
+  }
+
+  // Special handling for Set-Cookie headers
+  const setCookieHeaders = Object.entries(responseHeaders)
+    .filter(([name]) => name.toLowerCase() === "set-cookie")
+    .map(([, value]) => value);
+
+  for (const cookieHeader of setCookieHeaders) {
+    if (searchInCookieHeader(cookieHeader, searchValue)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Search within a Set-Cookie header value
+ */
+function searchInCookieHeader(
+  cookieHeader: string,
+  searchValue: string
+): boolean {
+  // Parse cookie components: name=value; attribute=value; ...
+  const parts = cookieHeader.split(";").map((part) => part.trim());
+
+  for (const part of parts) {
+    const [name, value] = part.split("=").map((p) => p.trim());
+
+    // Check cookie name and value
+    if (
+      name?.toLowerCase().includes(searchValue.toLowerCase()) ||
+      value?.toLowerCase().includes(searchValue.toLowerCase())
+    ) {
+      return true;
+    }
+
+    // Check for exact value match (useful for tokens)
+    if (name === searchValue || value === searchValue) {
+      return true;
+    }
+  }
+
+  return false;
 }
