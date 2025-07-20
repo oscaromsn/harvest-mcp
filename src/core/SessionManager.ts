@@ -3,6 +3,7 @@ import { analyzeAuthentication } from "../agents/AuthenticationAgent.js";
 import {
   type AuthenticationAnalysis,
   type CookieData,
+  type DAGNode,
   type HarvestSession,
   type LogEntry,
   type SessionInfo,
@@ -15,6 +16,13 @@ import { createComponentLogger } from "../utils/logger.js";
 import { parseCookieFile } from "./CookieParser.js";
 import { DAGManager } from "./DAGManager.js";
 import { parseHARFile } from "./HARParser.js";
+
+// Extended DAGManager interface to include our new methods
+interface ExtendedDAGManager extends DAGManager {
+  areAllNodesParameterClassified(): boolean;
+  getNodesNeedingClassification(): string[];
+  getTrulyDynamicParts(node: DAGNode): string[];
+}
 
 const logger = createComponentLogger("session-manager");
 
@@ -510,10 +518,10 @@ export class SessionManager {
       const queueEmpty = session.state.toBeProcessedNodes.length === 0;
       const totalNodes = session.dagManager.getNodeCount();
       const allNodesClassified = (
-        session.dagManager as any
+        session.dagManager as ExtendedDAGManager
       ).areAllNodesParameterClassified();
       const nodesNeedingClassification = (
-        session.dagManager as any
+        session.dagManager as ExtendedDAGManager
       ).getNodesNeedingClassification();
 
       // Analyze authentication readiness
@@ -894,7 +902,7 @@ export class SessionManager {
         ) {
           // Ensure the node's dynamic parts are filtered based on current classifications
           const trulyDynamicParts = (
-            session.dagManager as any
+            session.dagManager as ExtendedDAGManager
           ).getTrulyDynamicParts(node);
 
           // If the filtered dynamic parts differ from stored dynamic parts, log the difference

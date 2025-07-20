@@ -761,7 +761,7 @@ function inferResponseTypes(session: HarvestSession): InferredResponseType[] {
 /**
  * Extract response data from a request model
  */
-function extractResponseData(request: RequestModel): any {
+function extractResponseData(request: RequestModel): unknown {
   // Try to extract response data from various possible sources
   if (request.response?.json) {
     return request.response.json;
@@ -817,7 +817,7 @@ function generateResponseInterfaceName(url: string): string {
  * Infer TypeScript field types from response data
  */
 function inferFieldsFromData(
-  data: any
+  data: unknown
 ): Array<{ name: string; type: string; optional: boolean }> {
   const fields: Array<{ name: string; type: string; optional: boolean }> = [];
 
@@ -825,7 +825,7 @@ function inferFieldsFromData(
     return fields;
   }
 
-  for (const [key, value] of Object.entries(data)) {
+  for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
     if (key.startsWith("_") || key.length > 50) {
       // Skip internal fields and overly long keys
       continue;
@@ -852,7 +852,7 @@ function inferFieldsFromData(
 /**
  * Infer TypeScript type from a JavaScript value
  */
-function inferTypeScriptType(value: any): string {
+function inferTypeScriptType(value: unknown): string {
   if (value === null || value === undefined) {
     return "any";
   }
