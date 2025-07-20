@@ -1,5 +1,125 @@
 import { z } from "zod";
 
+// ========== Authentication Types ==========
+
+/**
+ * Supported authentication types
+ */
+export type AuthenticationType =
+  | "bearer_token"
+  | "api_key"
+  | "basic_auth"
+  | "session_cookie"
+  | "oauth"
+  | "custom_header"
+  | "url_parameter"
+  | "none";
+
+/**
+ * Authentication requirement levels
+ */
+export type AuthenticationRequirement = "required" | "optional" | "none";
+
+/**
+ * Token lifecycle information
+ */
+export interface TokenLifecycle {
+  isStatic: boolean;
+  expiresIn?: number;
+  refreshEndpoint?: string;
+  refreshMethod?: string;
+  generationEndpoint?: string;
+  generationMethod?: string;
+  expirationPattern?: string;
+}
+
+/**
+ * Authentication endpoint information
+ */
+export interface AuthenticationEndpoint {
+  url: string;
+  method: string;
+  purpose: "login" | "refresh" | "logout" | "validate";
+  request?: RequestModel;
+  responseContainsToken?: boolean;
+}
+
+/**
+ * Individual request authentication analysis
+ */
+export interface RequestAuthenticationInfo {
+  requestId: string;
+  url: string;
+  method: string;
+  authenticationType: AuthenticationType;
+  requirement: AuthenticationRequirement;
+  tokens: TokenInfo[];
+  authHeaders: Record<string, string>;
+  authCookies: Record<string, string>;
+  authParams: Record<string, string>;
+  isAuthFailure: boolean;
+  authErrorDetails?: {
+    status: number;
+    statusText: string;
+    wwwAuthenticate?: string;
+    errorMessage?: string;
+  };
+}
+
+/**
+ * Token information extracted from requests
+ */
+export interface TokenInfo {
+  type: "bearer" | "api_key" | "session" | "csrf" | "custom";
+  location: "header" | "cookie" | "url_param" | "body";
+  name: string;
+  value: string;
+  isExpired?: boolean;
+  expiresAt?: Date;
+  scope?: string[];
+}
+
+/**
+ * Comprehensive authentication analysis result
+ */
+export interface AuthenticationAnalysis {
+  // Overall authentication summary
+  hasAuthentication: boolean;
+  primaryAuthType: AuthenticationType;
+  authTypes: AuthenticationType[];
+
+  // Request-level analysis
+  authenticatedRequests: RequestAuthenticationInfo[];
+  unauthenticatedRequests: RequestAuthenticationInfo[];
+  failedAuthRequests: RequestAuthenticationInfo[];
+
+  // Token analysis
+  tokens: TokenInfo[];
+  tokenLifecycle: TokenLifecycle;
+
+  // Authentication flow
+  authEndpoints: AuthenticationEndpoint[];
+  authFlow: {
+    hasLoginFlow: boolean;
+    hasRefreshFlow: boolean;
+    hasLogoutFlow: boolean;
+    flowComplexity: "simple" | "moderate" | "complex";
+  };
+
+  // Security concerns
+  securityIssues: string[];
+  recommendations: string[];
+
+  // Code generation readiness
+  codeGeneration: {
+    isReady: boolean;
+    requiredSetup: string[];
+    supportedPatterns: string[];
+    hardcodedTokens: string[];
+    dynamicTokens: string[];
+  };
+}
+
 // ========== Core Session Types ==========
 
 export interface HarvestSession {
@@ -23,6 +143,12 @@ export interface SessionState {
   isComplete: boolean;
   logs: LogEntry[];
   generatedCode?: string;
+  authAnalysis?: AuthenticationAnalysis;
+  authReadiness?: {
+    isAuthComplete: boolean;
+    authBlockers: string[];
+    authRecommendations: string[];
+  };
 }
 
 export interface LogEntry {
@@ -39,6 +165,9 @@ export interface SessionInfo {
   lastActivity: Date;
   isComplete: boolean;
   nodeCount: number;
+  hasAuthentication?: boolean;
+  authTypes?: AuthenticationType[];
+  authReadiness?: boolean;
 }
 
 // ========== DAG Types ==========
@@ -54,6 +183,15 @@ export type NodeType =
 export interface RequestNodeContent {
   key: RequestModel;
   value?: ResponseData | null;
+}
+
+/**
+ * Authentication-specific node content for auth flows
+ */
+export interface AuthNodeContent {
+  key: string;
+  value: TokenInfo | AuthenticationEndpoint;
+  authType: AuthenticationType;
 }
 
 export interface CookieNodeContent {
@@ -73,6 +211,7 @@ export interface CurlDAGNode {
   dynamicParts?: string[];
   extractedParts?: string[];
   inputVariables?: Record<string, string>;
+  authInfo?: RequestAuthenticationInfo;
 }
 
 export interface CookieDAGNode {
@@ -100,6 +239,7 @@ export interface MasterDAGNode {
   dynamicParts?: string[];
   extractedParts?: string[];
   inputVariables?: Record<string, string>;
+  authInfo?: RequestAuthenticationInfo;
 }
 
 export interface MasterCurlDAGNode {
@@ -109,6 +249,7 @@ export interface MasterCurlDAGNode {
   dynamicParts?: string[];
   extractedParts?: string[];
   inputVariables?: Record<string, string>;
+  authInfo?: RequestAuthenticationInfo;
 }
 
 export type DAGNode =
@@ -338,8 +479,22 @@ export interface ParsedHARData {
       apiRequests: number;
       postRequests: number;
       responsesWithContent: number;
+      authRequests: number;
+      tokenRequests: number;
+      authErrors: number;
+    };
+    authAnalysis: {
+      hasAuthHeaders: boolean;
+      hasCookies: boolean;
+      hasTokens: boolean;
+      authErrors: number;
+      tokenPatterns: string[];
+      authTypes: string[];
+      issues: string[];
+      recommendations: string[];
     };
   };
+  authAnalysis?: AuthenticationAnalysis;
 }
 
 export interface URLInfo {
