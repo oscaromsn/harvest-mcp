@@ -521,20 +521,38 @@ export class SessionManager {
         authErrors: authReadinessAnalysis.errorCount,
       };
 
-      // Condition 1: Master node must be identified
-      if (!hasMasterNode) {
+      // Condition 1: Master node must be identified and exist in DAG
+      if (hasMasterNode && session.state.masterNodeId) {
+        // Verify master node actually exists in DAG
+        const masterNode = session.dagManager.getNode(
+          session.state.masterNodeId
+        );
+        if (!masterNode) {
+          blockers.push("Master node ID is set but node does not exist in DAG");
+          recommendations.push(
+            "Re-run 'analysis_run_initial_analysis' to properly create master node"
+          );
+        }
+      } else {
         blockers.push("Master node has not been identified");
         recommendations.push(
           "Run 'analysis_run_initial_analysis' to identify the target action URL"
         );
       }
 
-      // Condition 2: Action URL must be identified
-      if (!hasActionUrl) {
-        blockers.push("Target action URL has not been identified");
-        recommendations.push(
-          "Ensure initial analysis successfully identifies the main workflow URL"
+      // Condition 2: Action URL must be identified (but avoid duplication with master node check)
+      if (!hasActionUrl && hasMasterNode && session.state.masterNodeId) {
+        // Only add this blocker if master node exists but action URL is missing
+        // This prevents contradictory status when initial analysis succeeded
+        const masterNode = session.dagManager.getNode(
+          session.state.masterNodeId
         );
+        if (masterNode) {
+          blockers.push("Target action URL has not been identified");
+          recommendations.push(
+            "Ensure initial analysis successfully identifies the main workflow URL"
+          );
+        }
       }
 
       // Condition 3: DAG must be fully resolved
