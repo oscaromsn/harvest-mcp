@@ -1,244 +1,222 @@
-import { getLLMClient } from "../core/LLMClient.js";
+import { getLLMClient, type LLMClient } from "../core/LLMClient.js";
 import type { FunctionDefinition } from "../core/providers/types.js";
-import {
-  type ClassifiedParameter,
-  HarvestError,
-  type ParameterClassification,
-  type RequestModel,
+import type {
+  ClassifiedParameter,
+  HarvestSession,
+  ParameterClassification,
+  RequestModel,
 } from "../types/index.js";
+import { HarvestError } from "../types/index.js";
 import { createComponentLogger } from "../utils/logger.js";
 
 const logger = createComponentLogger("parameter-classification-agent");
 
 /**
- * LLM Response for parameter classification
+ * Domain-specific parameter patterns for enhanced classification
  */
-interface ParameterClassificationResponse {
-  classifications: Array<{
-    parameter: string;
-    classification: ParameterClassification;
-    confidence: number;
-    reasoning: string;
-  }>;
-}
+const DOMAIN_PATTERN_LIBRARY = {
+  // Session and authentication patterns
+  session: {
+    patterns: [
+      /^(session|sess|sid)[-_]?id$/i,
+      /^[a-f0-9]{8,32}$/i, // Hex session IDs
+      /^session[-_]?[a-z0-9]+$/i,
+      /^[a-z0-9]{16,}$/i, // Long alphanumeric sessions
+    ],
+    keywords: ["session", "sess", "sid", "sessionid"],
+    weight: 15,
+  },
 
-/**
- * Heuristic analysis result
- */
-export interface HeuristicAnalysis {
-  parameter: string;
-  classification: ParameterClassification;
-  confidence: number;
-  reasoning: string;
-  metadata: {
-    occurrenceCount: number;
-    totalRequests: number;
-    consistencyScore: number;
-    parameterPattern: string;
-    domainContext?: string;
-  };
-}
+  // API tokens and keys
+  apiKey: {
+    patterns: [
+      /^(api[-_]?key|token|auth[-_]?token)$/i,
+      /^[A-Z0-9]{20,}$/i, // Uppercase alphanumeric tokens
+      /^[a-zA-Z0-9+/]{20,}={0,2}$/i, // Base64-like tokens
+      /^pk_[a-zA-Z0-9]+$/i, // Stripe-style public keys
+      /^sk_[a-zA-Z0-9]+$/i, // Stripe-style secret keys
+    ],
+    keywords: ["token", "key", "auth", "bearer", "juristkn"],
+    weight: 20,
+  },
 
-/**
- * Pattern recognition library for common parameter types
- */
-const PARAMETER_PATTERNS = {
-  sessionTokens: {
-    namePatterns: [
-      /sessionId/i,
-      /session_id/i,
-      /sess/i,
-      /tkn$/i,
-      /token$/i,
-      /juristkn/i,
-      /auth_token/i,
-      /access_token/i,
+  // CSRF and security tokens
+  csrf: {
+    patterns: [
+      /^(csrf|xsrf)[-_]?token$/i,
+      /^[a-f0-9]{16,}$/i, // Hex CSRF tokens
     ],
-    valuePatterns: [
-      /^[a-zA-Z0-9_-]{8,}$/,
-      /^_[a-z0-9]{6,}$/,
-      /^[a-f0-9]{16,}$/,
+    keywords: ["csrf", "xsrf", "security"],
+    weight: 18,
+  },
+
+  // Search and query parameters
+  search: {
+    patterns: [
+      /^(text|query|search|term|keyword|q)$/i,
+      /^(texto|consulta|pesquisa|buscar)$/i, // Portuguese
+      /^.*[Ss]earch.*$/,
     ],
-    defaultClassification: "sessionConstant" as const,
-    context: "session",
-  },
-  csrfTokens: {
-    namePatterns: [/csrf/i, /xsrf/i, /authenticity/i, /nonce/i, /_token$/i],
-    valuePatterns: [/^[a-f0-9]{32,}$/, /^[A-Za-z0-9+/]{20,}={0,2}$/],
-    defaultClassification: "sessionConstant" as const,
-    context: "auth",
-  },
-  userInput: {
-    namePatterns: [
-      /query/i,
-      /search/i,
-      /term/i,
-      /keyword/i,
-      /filter/i,
-      /pesquisa/i,
-      /buscar/i,
-      /consulta/i,
+    keywords: [
+      "search",
+      "query",
+      "text",
+      "term",
+      "texto",
+      "pesquisa",
+      "consulta",
     ],
-    valuePatterns: [],
-    contextHints: ["varies_by_request", "user_provided"],
-    defaultClassification: "userInput" as const,
-    context: "user",
+    weight: 12,
   },
+
+  // Pagination parameters
   pagination: {
-    namePatterns: [
-      /page/i,
-      /offset/i,
-      /limit/i,
-      /size/i,
-      /count/i,
-      /start/i,
-      /end/i,
-      /from/i,
-      /to/i,
+    patterns: [
+      /^(page|offset|limit|size|per[-_]?page)$/i,
+      /^\d+$/i, // Pure numeric values
     ],
-    valuePatterns: [],
-    defaultClassification: "userInput" as const,
-    context: "pagination",
+    keywords: ["page", "size", "limit", "offset", "per_page"],
+    weight: 10,
   },
-  staticConstants: {
-    namePatterns: [
-      /version/i,
-      /api_version/i,
-      /format/i,
-      /type/i,
-      /language/i,
-      /locale/i,
-      /timezone/i,
+
+  // Date and time parameters
+  dateTime: {
+    patterns: [
+      /^(date|time|start|end|from|to)[-_]?(inicio|fim|final)?$/i,
+      /^\d{4}-\d{2}-\d{2}$/i, // ISO date format
+      /^\d{10,13}$/i, // Unix timestamps
     ],
-    valuePatterns: [],
-    defaultClassification: "staticConstant" as const,
-    context: "config",
+    keywords: [
+      "date",
+      "time",
+      "start",
+      "end",
+      "from",
+      "to",
+      "inicio",
+      "fim",
+      "final",
+    ],
+    weight: 8,
+  },
+
+  // Geographic coordinates
+  location: {
+    patterns: [
+      /^(lat|lng|latitude|longitude)$/i,
+      /^[+-]?\d+\.?\d*$/i, // Decimal coordinates
+    ],
+    keywords: ["lat", "lng", "latitude", "longitude"],
+    weight: 15,
+  },
+
+  // Legal domain specific (for jurisprudence systems)
+  legal: {
+    patterns: [
+      /^(tribunal|acordao|decisao|processo|relator)[-_]?.*$/i,
+      /^(case|court|judge|decision)[-_]?.*$/i,
+    ],
+    keywords: [
+      "tribunal",
+      "acordao",
+      "decisao",
+      "processo",
+      "relator",
+      "legal",
+      "jurisprudencia",
+    ],
+    weight: 12,
+  },
+
+  // Filter parameters
+  filter: {
+    patterns: [/^(filter|filtro)[-_]?.*$/i, /^.*[-_]?(filter|filtro)$/i],
+    keywords: ["filter", "filtro", "category", "type"],
+    weight: 8,
   },
 };
 
 /**
- * Classify parameters using both heuristic analysis and LLM refinement
+ * LLM response schema for parameter classification
+ */
+interface ParameterClassificationResponse {
+  classified_parameters: Array<{
+    parameter_name: string;
+    parameter_value: string;
+    classification: ParameterClassification;
+    confidence: number;
+    reasoning: string;
+    domain_context?: string;
+  }>;
+}
+
+/**
+ * Classify parameters in a request using hybrid approach
  */
 export async function classifyParameters(
-  dynamicParts: string[],
-  allRequests: RequestModel[],
-  sessionId: string
+  request: RequestModel,
+  session: HarvestSession,
+  llmClient?: LLMClient
 ): Promise<ClassifiedParameter[]> {
-  if (dynamicParts.length === 0) {
-    return [];
-  }
-
   try {
-    logger.info(
-      `Classifying ${dynamicParts.length} parameters for session ${sessionId}`
+    const client = llmClient || getLLMClient();
+
+    // Extract all parameters from the request
+    const allParameters = extractAllParameters(request);
+
+    if (allParameters.length === 0) {
+      logger.debug("No parameters found in request", { url: request.url });
+      return [];
+    }
+
+    // Phase 1: Heuristic analysis
+    const heuristicResults = analyzeParametersHeuristically(
+      allParameters,
+      request,
+      session
     );
 
-    const classifications: ClassifiedParameter[] = [];
-
-    // Phase 0: Domain detection for enhanced patterns
-    const detectedDomain = detectDomain(allRequests);
-    logger.info(`Detected domain: ${detectedDomain}`);
-
-    // Phase 1: Heuristic analysis for all parameters
-    let heuristicResults = dynamicParts.map((param) =>
-      analyzeParameterHeuristically(param, allRequests)
+    // Phase 2: Consistency analysis across session
+    const consistencyResults = analyzeParameterConsistency(
+      allParameters,
+      session
     );
 
-    // Apply domain-specific patterns if domain detected
-    if (detectedDomain !== "unknown") {
-      const domainClassifications = applyDomainPatterns(
-        dynamicParts,
-        detectedDomain,
-        allRequests
+    // Merge heuristic and consistency results
+    const preliminaryResults = mergeAnalysisResults(
+      heuristicResults,
+      consistencyResults
+    );
+
+    // Phase 3: LLM refinement for uncertain cases
+    const uncertainParameters = preliminaryResults.filter(
+      (p) => p.confidence < 0.8
+    );
+
+    let llmResults: ClassifiedParameter[] = [];
+    if (uncertainParameters.length > 0) {
+      llmResults = await refineClassificationWithLLM(
+        uncertainParameters,
+        request,
+        session,
+        client
       );
-
-      // Merge domain patterns with heuristic results (domain patterns take precedence)
-      heuristicResults = heuristicResults.map((heuristic) => {
-        const domainMatch = domainClassifications.find(
-          (dc) => dc.value === heuristic.parameter
-        );
-        if (domainMatch && domainMatch.confidence > heuristic.confidence) {
-          return {
-            ...heuristic,
-            classification: domainMatch.classification,
-            confidence: domainMatch.confidence,
-            reasoning:
-              domainMatch.metadata.domainContext || heuristic.reasoning,
-          };
-        }
-        return heuristic;
-      });
     }
 
-    // Phase 2: Identify which parameters need LLM refinement (low confidence)
-    const needsLLMRefinement = heuristicResults.filter(
-      (result) => result.confidence < 0.8
-    );
-    const highConfidenceResults = heuristicResults.filter(
-      (result) => result.confidence >= 0.8
+    // Combine all results
+    const finalResults = combineClassificationResults(
+      preliminaryResults,
+      llmResults
     );
 
-    // Phase 3: LLM refinement for ambiguous cases with graceful fallback
-    let llmRefinedResults: HeuristicAnalysis[] = [];
-    if (needsLLMRefinement.length > 0) {
-      try {
-        logger.info(
-          `Sending ${needsLLMRefinement.length} parameters to LLM for refinement`
-        );
-        llmRefinedResults = await refineWithLLM(
-          needsLLMRefinement,
-          allRequests
-        );
-      } catch (llmError) {
-        logger.warn(
-          { error: llmError },
-          "LLM refinement failed, using graceful fallback"
-        );
+    logger.info("Parameter classification complete", {
+      totalParameters: allParameters.length,
+      heuristicClassified: heuristicResults.length,
+      llmRefined: llmResults.length,
+      finalClassified: finalResults.length,
+    });
 
-        // Graceful fallback: use enhanced heuristics
-        const fallbackParams = needsLLMRefinement.map((r) => r.parameter);
-        const fallbackResults = gracefulClassificationFallback(
-          fallbackParams,
-          allRequests
-        );
-
-        llmRefinedResults = fallbackResults.map((fb) => ({
-          parameter: fb.value,
-          classification: fb.classification,
-          confidence: fb.confidence,
-          reasoning: fb.metadata.domainContext || "Fallback classification",
-          metadata: fb.metadata,
-        }));
-      }
-    }
-
-    // Phase 4: Combine all results
-    const allResults = [...highConfidenceResults, ...llmRefinedResults];
-
-    // Phase 5: Convert to ClassifiedParameter format
-    for (const result of allResults) {
-      classifications.push({
-        name: extractParameterName(result.parameter),
-        value: result.parameter,
-        classification: result.classification,
-        confidence: result.confidence,
-        source: result.confidence >= 0.8 ? "heuristic" : "llm",
-        metadata: result.metadata,
-      });
-    }
-
-    logger.info(
-      `Classified ${classifications.length} parameters:`,
-      classifications.reduce(
-        (acc, c) => {
-          acc[c.classification] = (acc[c.classification] || 0) + 1;
-          return acc;
-        },
-        {} as Record<string, number>
-      )
-    );
-
-    return classifications;
+    return finalResults;
   } catch (error) {
     if (error instanceof HarvestError) {
       throw error;
@@ -247,160 +225,402 @@ export async function classifyParameters(
     throw new HarvestError(
       `Parameter classification failed: ${error instanceof Error ? error.message : "Unknown error"}`,
       "PARAMETER_CLASSIFICATION_FAILED",
-      { originalError: error, sessionId, parameterCount: dynamicParts.length }
+      { originalError: error, requestUrl: request.url }
     );
   }
 }
 
 /**
- * Analyze a parameter using heuristic rules
+ * Extract all parameters from a request (URL params, body params, headers)
  */
-export function analyzeParameterHeuristically(
-  parameter: string,
-  allRequests: RequestModel[]
-): HeuristicAnalysis {
-  // Count occurrences across all requests
-  const occurrenceCount = countParameterOccurrences(parameter, allRequests);
-  const totalRequests = allRequests.length;
-  const consistencyScore =
-    totalRequests > 0 ? occurrenceCount / totalRequests : 0;
+function extractAllParameters(request: RequestModel): Array<{
+  name: string;
+  value: string;
+  location: "url" | "body" | "header";
+}> {
+  const parameters: Array<{
+    name: string;
+    value: string;
+    location: "url" | "body" | "header";
+  }> = [];
 
-  // Extract parameter name (handle both "name=value" and "value" formats)
-  const paramName = extractParameterName(parameter);
-
-  // Initialize analysis result
-  let classification: ParameterClassification = "dynamic";
-  let confidence = 0.3; // Default low confidence
-  let reasoning = "No specific pattern detected";
-  let domainContext: string | undefined;
-
-  // Pattern matching analysis
-  for (const [patternType, config] of Object.entries(PARAMETER_PATTERNS)) {
-    const nameMatches = config.namePatterns?.some((pattern) =>
-      pattern.test(paramName)
-    );
-    const valueMatches = config.valuePatterns?.some((pattern: RegExp) =>
-      pattern.test(parameter)
-    );
-
-    if (nameMatches || valueMatches) {
-      classification = config.defaultClassification;
-      domainContext = config.context;
-
-      // Calculate confidence based on pattern strength and consistency
-      if (nameMatches && valueMatches) {
-        confidence = 0.95; // Both name and value match
-        reasoning = `Strong pattern match: name matches ${patternType} pattern and value format is consistent`;
-      } else if (nameMatches) {
-        confidence = 0.85; // Name matches
-        reasoning = `Parameter name matches ${patternType} pattern`;
-      } else if (valueMatches) {
-        confidence = 0.75; // Value format matches
-        reasoning = `Parameter value matches ${patternType} format`;
-      }
-
-      // Boost confidence for high consistency
-      if (consistencyScore > 0.9) {
-        confidence = Math.min(confidence + 0.1, 1.0);
-        reasoning += ` (high consistency: ${Math.round(consistencyScore * 100)}%)`;
-      }
-
-      break; // Use first matching pattern
+  // Extract URL parameters
+  if (request.queryParams) {
+    for (const [name, value] of Object.entries(request.queryParams)) {
+      parameters.push({ name, value, location: "url" });
     }
   }
 
-  // Special analysis for session constants based on consistency
-  if (classification === "dynamic" && consistencyScore > 0.9) {
-    classification = "sessionConstant";
-    confidence = 0.85;
-    reasoning = `High consistency (${Math.round(consistencyScore * 100)}%) suggests session-scoped constant`;
-    domainContext = "session";
+  // Extract body parameters (if JSON)
+  if (request.body && typeof request.body === "object") {
+    for (const [name, value] of Object.entries(request.body)) {
+      if (typeof value === "string" || typeof value === "number") {
+        parameters.push({ name, value: String(value), location: "body" });
+      }
+    }
   }
 
-  // Special analysis for values that appear to be user input (low consistency)
-  if (classification === "dynamic" && consistencyScore < 0.3) {
-    classification = "userInput";
-    confidence = 0.7;
-    reasoning = `Low consistency (${Math.round(consistencyScore * 100)}%) suggests user input`;
-    domainContext = "user";
+  // Extract relevant headers (skip standard browser headers)
+  const relevantHeaders = [
+    "authorization",
+    "x-api-key",
+    "x-auth-token",
+    "cookie",
+  ];
+  for (const [name, value] of Object.entries(request.headers)) {
+    if (relevantHeaders.some((header) => name.toLowerCase().includes(header))) {
+      parameters.push({ name, value, location: "header" });
+    }
   }
 
+  return parameters;
+}
+
+/**
+ * Analyze parameters using heuristic patterns
+ */
+function analyzeParametersHeuristically(
+  parameters: Array<{ name: string; value: string; location: string }>,
+  _request: RequestModel,
+  _session: HarvestSession
+): ClassifiedParameter[] {
+  const results: ClassifiedParameter[] = [];
+
+  for (const param of parameters) {
+    const analysis = classifyParameterHeuristically(
+      param.name,
+      param.value,
+      param.location
+    );
+
+    results.push({
+      name: param.name,
+      value: param.value,
+      classification: analysis.classification,
+      confidence: analysis.confidence,
+      source: "heuristic",
+      metadata: {
+        occurrenceCount: 1, // Will be updated in consistency analysis
+        totalRequests: 1,
+        consistencyScore: 1.0,
+        parameterPattern: analysis.pattern,
+        domainContext: analysis.domainContext || "unknown",
+      },
+    });
+  }
+
+  return results;
+}
+
+/**
+ * Classify a single parameter using heuristic patterns
+ */
+function classifyParameterHeuristically(
+  name: string,
+  value: string,
+  location: string
+): {
+  classification: ParameterClassification;
+  confidence: number;
+  pattern: string;
+  domainContext?: string;
+} {
+  const nameLower = name.toLowerCase();
+  const valueStr = String(value);
+
+  // Check against domain patterns
+  for (const [domain, config] of Object.entries(DOMAIN_PATTERN_LIBRARY)) {
+    // Check name patterns
+    for (const pattern of config.patterns) {
+      if (pattern.test(nameLower) || pattern.test(valueStr)) {
+        return classifyByDomain(domain, config.weight);
+      }
+    }
+
+    // Check keywords
+    for (const keyword of config.keywords) {
+      if (nameLower.includes(keyword)) {
+        return classifyByDomain(domain, config.weight);
+      }
+    }
+  }
+
+  // Static analysis based on location and common patterns
+  if (location === "header") {
+    if (
+      nameLower.includes("auth") ||
+      nameLower.includes("token") ||
+      nameLower.includes("key")
+    ) {
+      return {
+        classification: "sessionConstant",
+        confidence: 0.8,
+        pattern: "auth_header",
+        domainContext: "authentication",
+      };
+    }
+  }
+
+  if (location === "url") {
+    // Common pagination parameters
+    if (["page", "size", "limit", "offset"].includes(nameLower)) {
+      return {
+        classification: "userInput",
+        confidence: 0.9,
+        pattern: "pagination",
+        domainContext: "pagination",
+      };
+    }
+
+    // Search-like parameters
+    if (["q", "query", "search", "text", "texto", "term"].includes(nameLower)) {
+      return {
+        classification: "userInput",
+        confidence: 0.95,
+        pattern: "search_query",
+        domainContext: "search",
+      };
+    }
+
+    // Static coordinates or configuration
+    if (
+      (nameLower === "latitude" && valueStr === "0") ||
+      (nameLower === "longitude" && valueStr === "0")
+    ) {
+      return {
+        classification: "staticConstant",
+        confidence: 0.9,
+        pattern: "static_coordinate",
+        domainContext: "location",
+      };
+    }
+  }
+
+  // Value-based analysis for unknown parameter names
+  if (isSessionLikeValue(valueStr)) {
+    return {
+      classification: "sessionConstant",
+      confidence: 0.7,
+      pattern: "session_value",
+      domainContext: "session",
+    };
+  }
+
+  if (isDateLikeValue(valueStr)) {
+    return {
+      classification: "userInput",
+      confidence: 0.8,
+      pattern: "date_value",
+      domainContext: "datetime",
+    };
+  }
+
+  // Default classification for unknown parameters
   return {
-    parameter,
-    classification,
-    confidence,
-    reasoning,
-    metadata: {
-      occurrenceCount,
-      totalRequests,
-      consistencyScore,
-      parameterPattern: generateParameterPattern(parameter),
-      ...(domainContext && { domainContext }),
-    },
+    classification: "userInput",
+    confidence: 0.4,
+    pattern: "unknown",
+    domainContext: "unknown",
   };
 }
 
 /**
- * Refine parameter classification using LLM for ambiguous cases
+ * Map domain to classification
  */
-async function refineWithLLM(
-  ambiguousResults: HeuristicAnalysis[],
-  allRequests: RequestModel[]
-): Promise<HeuristicAnalysis[]> {
-  const llmClient = getLLMClient();
-  const functionDef = createClassificationFunctionDefinition();
-  const prompt = createClassificationPrompt(ambiguousResults, allRequests);
+function classifyByDomain(
+  domain: string,
+  weight: number
+): {
+  classification: ParameterClassification;
+  confidence: number;
+  pattern: string;
+  domainContext: string;
+} {
+  const confidence = Math.min(weight / 20, 0.95); // Convert weight to confidence
 
-  const response =
-    await llmClient.callFunction<ParameterClassificationResponse>(
-      prompt,
-      functionDef,
-      "classify_parameters"
-    );
+  switch (domain) {
+    case "session":
+    case "apiKey":
+    case "csrf":
+      return {
+        classification: "sessionConstant",
+        confidence,
+        pattern: domain,
+        domainContext: domain,
+      };
 
-  // Merge LLM results with heuristic analysis
-  const refinedResults: HeuristicAnalysis[] = [];
+    case "search":
+    case "pagination":
+    case "dateTime":
+    case "legal":
+    case "filter":
+      return {
+        classification: "userInput",
+        confidence,
+        pattern: domain,
+        domainContext: domain,
+      };
 
-  for (const result of ambiguousResults) {
-    const llmClassification = response.classifications.find(
-      (c) => c.parameter === result.parameter
-    );
+    case "location":
+      // Special case: static coordinates are often constants
+      return {
+        classification: "staticConstant",
+        confidence,
+        pattern: domain,
+        domainContext: domain,
+      };
 
-    if (llmClassification) {
-      refinedResults.push({
-        ...result,
-        classification: llmClassification.classification,
-        confidence: Math.max(llmClassification.confidence, 0.5), // Minimum confidence for LLM
-        reasoning: `LLM analysis: ${llmClassification.reasoning}`,
-      });
-    } else {
-      // Fallback if LLM doesn't classify this parameter
-      refinedResults.push(result);
-    }
+    default:
+      return {
+        classification: "userInput",
+        confidence: 0.5,
+        pattern: domain,
+        domainContext: domain,
+      };
   }
-
-  return refinedResults;
 }
 
 /**
- * Create the OpenAI function definition for parameter classification
+ * Check if a value looks like a session identifier
  */
-function createClassificationFunctionDefinition(): FunctionDefinition {
+function isSessionLikeValue(value: string): boolean {
+  const sessionPatterns = [
+    /^[a-f0-9]{8,32}$/i, // Hex values
+    /^[a-zA-Z0-9]{16,}$/i, // Long alphanumeric
+    /^sess_[a-zA-Z0-9]+$/i, // Session prefixed
+  ];
+
+  return sessionPatterns.some((pattern) => pattern.test(value));
+}
+
+/**
+ * Check if a value looks like a date/time
+ */
+function isDateLikeValue(value: string): boolean {
+  const datePatterns = [
+    /^\d{4}-\d{2}-\d{2}$/i, // ISO date
+    /^\d{10,13}$/i, // Unix timestamp
+    /^\d{2}\/\d{2}\/\d{4}$/i, // US date format
+  ];
+
+  return datePatterns.some((pattern) => pattern.test(value));
+}
+
+/**
+ * Analyze parameter consistency across all requests in the session
+ */
+function analyzeParameterConsistency(
+  parameters: Array<{ name: string; value: string; location: string }>,
+  _session: HarvestSession
+): Map<
+  string,
+  { occurrenceCount: number; totalRequests: number; consistencyScore: number }
+> {
+  const consistencyMap = new Map<
+    string,
+    { occurrenceCount: number; totalRequests: number; consistencyScore: number }
+  >();
+
+  // For now, return basic consistency data
+  // In a full implementation, this would analyze all requests in the session
+  for (const param of parameters) {
+    consistencyMap.set(param.name, {
+      occurrenceCount: 1,
+      totalRequests: 1,
+      consistencyScore: 1.0,
+    });
+  }
+
+  return consistencyMap;
+}
+
+/**
+ * Merge heuristic and consistency analysis results
+ */
+function mergeAnalysisResults(
+  heuristicResults: ClassifiedParameter[],
+  consistencyResults: Map<
+    string,
+    { occurrenceCount: number; totalRequests: number; consistencyScore: number }
+  >
+): ClassifiedParameter[] {
+  return heuristicResults.map((result) => {
+    const consistency = consistencyResults.get(result.name);
+    if (consistency) {
+      result.metadata.occurrenceCount = consistency.occurrenceCount;
+      result.metadata.totalRequests = consistency.totalRequests;
+      result.metadata.consistencyScore = consistency.consistencyScore;
+
+      // Adjust confidence based on consistency
+      if (consistency.consistencyScore < 0.5) {
+        result.confidence *= 0.8; // Reduce confidence for inconsistent parameters
+      }
+    }
+    return result;
+  });
+}
+
+/**
+ * Refine classification using LLM for uncertain parameters
+ */
+async function refineClassificationWithLLM(
+  uncertainParameters: ClassifiedParameter[],
+  request: RequestModel,
+  session: HarvestSession,
+  client: LLMClient
+): Promise<ClassifiedParameter[]> {
+  if (uncertainParameters.length === 0) {
+    return [];
+  }
+
+  const functionDef = createLLMFunctionDefinition();
+  const prompt = createLLMPrompt(uncertainParameters, request, session);
+
+  const response = await client.callFunction<ParameterClassificationResponse>(
+    prompt,
+    functionDef,
+    "classify_parameters"
+  );
+
+  return (response.classified_parameters || []).map((param) => ({
+    name: param.parameter_name,
+    value: param.parameter_value,
+    classification: param.classification,
+    confidence: Math.min(param.confidence, 0.95),
+    source: "llm" as const,
+    metadata: {
+      occurrenceCount: 1,
+      totalRequests: 1,
+      consistencyScore: 1.0,
+      parameterPattern: `llm_${param.classification}`,
+      domainContext: param.domain_context || "llm_analysis",
+    },
+  }));
+}
+
+/**
+ * Create LLM function definition for parameter classification
+ */
+function createLLMFunctionDefinition(): FunctionDefinition {
   return {
     name: "classify_parameters",
     description:
-      "Classify parameters based on their usage patterns and characteristics",
+      "Classify HTTP request parameters into appropriate categories for code generation",
     parameters: {
       type: "object",
       properties: {
-        classifications: {
+        classified_parameters: {
           type: "array",
           items: {
             type: "object",
             properties: {
-              parameter: {
+              parameter_name: {
                 type: "string",
-                description: "The parameter value to classify",
+                description: "The parameter name",
+              },
+              parameter_value: {
+                type: "string",
+                description: "The parameter value",
               },
               classification: {
                 type: "string",
@@ -411,407 +631,149 @@ function createClassificationFunctionDefinition(): FunctionDefinition {
                   "staticConstant",
                   "optional",
                 ],
-                description: "The classification type for this parameter",
+                description: "Classification type",
               },
               confidence: {
                 type: "number",
-                description: "Confidence score for this classification (0-1)",
+                description: "Confidence in classification (0-1)",
               },
               reasoning: {
                 type: "string",
-                description: "Brief explanation for this classification",
+                description: "Brief explanation of classification reasoning",
+              },
+              domain_context: {
+                type: "string",
+                description: "Domain context (auth, pagination, search, etc.)",
               },
             },
+            // Note: required field is removed as it's not supported in this schema format
           },
         },
       },
-      required: ["classifications"],
+      required: ["classified_parameters"],
     },
   };
 }
 
 /**
- * Create the prompt for LLM parameter classification
+ * Create LLM prompt for parameter classification
  */
-function createClassificationPrompt(
-  ambiguousResults: HeuristicAnalysis[],
-  allRequests: RequestModel[]
+function createLLMPrompt(
+  uncertainParameters: ClassifiedParameter[],
+  request: RequestModel,
+  session: HarvestSession
 ): string {
-  const parameterAnalysis = ambiguousResults
-    .map((result) => {
-      return `Parameter: "${result.parameter}"
-  - Occurs in ${result.metadata.occurrenceCount}/${result.metadata.totalRequests} requests (${Math.round(result.metadata.consistencyScore * 100)}% consistency)
-  - Heuristic suggestion: ${result.classification} (confidence: ${result.confidence})
-  - Reasoning: ${result.reasoning}`;
-    })
-    .join("\n\n");
+  const parameterList = uncertainParameters
+    .map(
+      (p) =>
+        `- ${p.name}: "${p.value}" (current: ${p.classification}, confidence: ${p.confidence})`
+    )
+    .join("\n");
 
-  return `Analyze these parameters and classify them based on their usage patterns:
+  return `Request: ${request.method} ${request.url}
+User Prompt: ${session.prompt}
 
-${parameterAnalysis}
-
-Request Context:
-- Total requests analyzed: ${allRequests.length}
-- API appears to be: ${inferAPIType(allRequests)}
+Parameters to classify:
+${parameterList}
 
 Classification Guidelines:
-- **dynamic**: Value must be resolved from a previous API response
-- **sessionConstant**: Session-scoped constant (session tokens, CSRF tokens, user IDs)
-- **userInput**: User-provided parameter that varies per request (search terms, filters)
-- **staticConstant**: Hardcoded application constant (API version, format)
-- **optional**: Can be omitted without breaking functionality
+- dynamic: Value must be resolved from a previous API response (e.g., extracted IDs, tokens from login)
+- sessionConstant: Session-scoped constant that doesn't change during the session (e.g., sessionId, CSRF tokens, API keys)
+- userInput: User-provided parameter that should be configurable (e.g., search terms, page numbers, dates)
+- staticConstant: Hardcoded application constant (e.g., latitude=0, longitude=0, fixed API versions)
+- optional: Parameter can be omitted without breaking functionality
 
-Focus on:
-1. Consistency patterns (high consistency = likely sessionConstant)
-2. Parameter names and value formats
-3. Whether the value would logically come from user input vs system generation
-4. Common web application patterns (session management, search, pagination)
+Context:
+- This is a ${getDomainContext(request.url)} application
+- Focus on generating practical, usable API client code
+- Session constants should be handled automatically
+- User inputs should be exposed as function parameters
+- Static constants can be hardcoded
 
-For each parameter, provide your classification with confidence and reasoning.`;
+Classify each parameter with high confidence and provide clear reasoning.`;
 }
 
 /**
- * Helper functions
+ * Get domain context from URL for better classification
  */
-
-function countParameterOccurrences(
-  parameter: string,
-  requests: RequestModel[]
-): number {
-  let count = 0;
-  for (const request of requests) {
-    // Check in URL query parameters
-    if (request.url.includes(parameter)) {
-      count++;
-    }
-
-    // Check in request body
-    if (
-      request.body &&
-      typeof request.body === "string" &&
-      request.body.includes(parameter)
-    ) {
-      count++;
-    }
-
-    // Check in headers
-    for (const headerValue of Object.values(request.headers)) {
-      if (headerValue.includes(parameter)) {
-        count++;
-      }
-    }
-  }
-  return count;
-}
-
-function extractParameterName(parameter: string): string {
-  // Handle "name=value" format
-  if (parameter.includes("=")) {
-    return parameter.split("=")[0] || parameter;
-  }
-
-  // Handle URL encoded parameters
-  if (parameter.includes("%")) {
-    try {
-      return decodeURIComponent(parameter);
-    } catch {
-      return parameter;
-    }
-  }
-
-  return parameter;
-}
-
-function generateParameterPattern(parameter: string): string {
-  // Generate a simple regex pattern for the parameter value
-  const alphanumeric = /^[a-zA-Z0-9]+$/.test(parameter);
-  const hasSpecialChars = /[_-]/.test(parameter);
-
-  if (alphanumeric && !hasSpecialChars) {
-    return `^[a-zA-Z0-9]{${parameter.length}}$`;
-  }
-  if (hasSpecialChars) {
-    return `^[a-zA-Z0-9_-]{${Math.max(parameter.length - 2, 1)},${parameter.length + 2}}$`;
-  }
-  return `^.{${Math.max(parameter.length - 2, 1)},${parameter.length + 2}}$`;
-}
-
-function inferAPIType(requests: RequestModel[]): string {
-  const urls = requests.map((r) => r.url.toLowerCase());
+function getDomainContext(url: string): string {
+  const urlLower = url.toLowerCase();
 
   if (
-    urls.some((url) => url.includes("jurisprudencia") || url.includes("legal"))
+    urlLower.includes("jurisprudencia") ||
+    urlLower.includes("legal") ||
+    urlLower.includes("tribunal")
   ) {
-    return "Legal/Jurisprudence API";
+    return "legal/jurisprudence";
   }
-  if (urls.some((url) => url.includes("search") || url.includes("pesquisa"))) {
-    return "Search API";
+  if (
+    urlLower.includes("ecommerce") ||
+    urlLower.includes("shop") ||
+    urlLower.includes("cart")
+  ) {
+    return "e-commerce";
   }
-  if (urls.some((url) => url.includes("/api/"))) {
+  if (urlLower.includes("api")) {
     return "REST API";
   }
-  return "Web Application API";
+
+  return "web application";
 }
 
 /**
- * Manual parameter classification override
+ * Combine heuristic and LLM classification results
  */
-export function overrideParameterClassification(
-  parameters: ClassifiedParameter[],
-  parameterValue: string,
-  newClassification: ParameterClassification,
-  reasoning?: string
+function combineClassificationResults(
+  preliminaryResults: ClassifiedParameter[],
+  llmResults: ClassifiedParameter[]
 ): ClassifiedParameter[] {
-  return parameters.map((param) => {
-    if (param.value === parameterValue) {
-      return {
-        ...param,
-        classification: newClassification,
-        confidence: 1.0,
-        source: "manual",
-        metadata: {
-          ...param.metadata,
-          domainContext: reasoning || `Manually set to ${newClassification}`,
-        },
-      };
+  const combined = [...preliminaryResults];
+
+  // Replace preliminary results with LLM results where available
+  for (const llmResult of llmResults) {
+    const index = combined.findIndex((p) => p.name === llmResult.name);
+    if (index >= 0) {
+      combined[index] = llmResult;
     }
-    return param;
-  });
+  }
+
+  return combined;
 }
 
 /**
- * Pattern library for common parameter types across different domains
+ * Validate classified parameters and provide diagnostic information
  */
-export const DOMAIN_PATTERN_LIBRARY = {
-  legal: {
-    patterns: {
-      sessionTokens: [
-        /sessionId/i,
-        /session_id/i,
-        /juristkn/i,
-        /tribunalToken/i,
-        /authToken/i,
-      ],
-      userInputs: [
-        /termo/i, // Portuguese: term
-        /pesquisa/i, // Portuguese: search
-        /consulta/i, // Portuguese: query
-        /filtro/i, // Portuguese: filter
-        /processo/i, // Portuguese: process
-        /numero/i, // Portuguese: number
-        /data/i, // Portuguese: date
-      ],
-      staticConstants: [
-        /versao/i, // Portuguese: version
-        /formato/i, // Portuguese: format
-        /tribunal/i, // Portuguese: court
-        /instancia/i, // Portuguese: instance
-      ],
-    },
-    classification: "legal" as const,
-  },
-  ecommerce: {
-    patterns: {
-      sessionTokens: [/cartId/i, /sessionId/i, /userToken/i, /checkoutId/i],
-      userInputs: [
-        /search/i,
-        /query/i,
-        /filter/i,
-        /category/i,
-        /price/i,
-        /quantity/i,
-      ],
-      staticConstants: [/apiVersion/i, /currency/i, /locale/i, /store/i],
-    },
-    classification: "ecommerce" as const,
-  },
-  api: {
-    patterns: {
-      sessionTokens: [
-        /accessToken/i,
-        /refreshToken/i,
-        /sessionKey/i,
-        /apiKey/i,
-      ],
-      userInputs: [/id/i, /limit/i, /offset/i, /page/i, /size/i],
-      staticConstants: [/version/i, /format/i, /endpoint/i],
-    },
-    classification: "api" as const,
-  },
-} as const;
-
-/**
- * Apply domain-specific patterns for better classification
- */
-export function applyDomainPatterns(
-  parameters: string[],
-  domain: keyof typeof DOMAIN_PATTERN_LIBRARY,
-  allRequests: RequestModel[]
-): ClassifiedParameter[] {
-  const domainPatterns = DOMAIN_PATTERN_LIBRARY[domain];
-  const classifications: ClassifiedParameter[] = [];
+export function validateClassifiedParameters(
+  parameters: ClassifiedParameter[]
+): {
+  valid: ClassifiedParameter[];
+  invalid: ClassifiedParameter[];
+  warnings: string[];
+} {
+  const valid: ClassifiedParameter[] = [];
+  const invalid: ClassifiedParameter[] = [];
+  const warnings: string[] = [];
 
   for (const param of parameters) {
-    let classification: ParameterClassification = "dynamic";
-    let confidence = 0.5;
-    let reasoning = "No domain pattern match";
-
-    // Check session tokens
-    for (const pattern of domainPatterns.patterns.sessionTokens) {
-      if (pattern.test(param)) {
-        classification = "sessionConstant";
-        confidence = 0.9;
-        reasoning = `Matches ${domain} session token pattern`;
-        break;
-      }
+    if (!param.name || !param.value || !param.classification) {
+      invalid.push(param);
+      continue;
     }
 
-    // Check user inputs
-    if (classification === "dynamic") {
-      for (const pattern of domainPatterns.patterns.userInputs) {
-        if (pattern.test(param)) {
-          classification = "userInput";
-          confidence = 0.85;
-          reasoning = `Matches ${domain} user input pattern`;
-          break;
-        }
-      }
+    if (param.confidence < 0.3) {
+      warnings.push(
+        `Low confidence classification for parameter "${param.name}": ${param.confidence}`
+      );
     }
 
-    // Check static constants
-    if (classification === "dynamic") {
-      for (const pattern of domainPatterns.patterns.staticConstants) {
-        if (pattern.test(param)) {
-          classification = "staticConstant";
-          confidence = 0.8;
-          reasoning = `Matches ${domain} static constant pattern`;
-          break;
-        }
-      }
+    if (param.classification === "dynamic" && param.confidence < 0.7) {
+      warnings.push(
+        `Uncertain dynamic classification for "${param.name}" - may cause workflow issues`
+      );
     }
 
-    classifications.push({
-      name: extractParameterName(param),
-      value: param,
-      classification,
-      confidence,
-      source: "heuristic",
-      metadata: {
-        occurrenceCount: countParameterOccurrences(param, allRequests),
-        totalRequests: allRequests.length,
-        consistencyScore: 1.0,
-        parameterPattern: generateParameterPattern(param),
-        domainContext: `${domain}: ${reasoning}`,
-      },
-    });
+    valid.push(param);
   }
 
-  return classifications;
-}
-
-/**
- * Detect domain based on URL patterns and request characteristics
- */
-export function detectDomain(
-  requests: RequestModel[]
-): keyof typeof DOMAIN_PATTERN_LIBRARY | "unknown" {
-  const urls = requests.map((r) => r.url.toLowerCase()).join(" ");
-
-  // Legal domain detection
-  if (
-    urls.includes("jurisprudencia") ||
-    urls.includes("tribunal") ||
-    urls.includes("jus.br") ||
-    urls.includes("legal") ||
-    urls.includes("processo")
-  ) {
-    return "legal";
-  }
-
-  // E-commerce domain detection
-  if (
-    urls.includes("shop") ||
-    urls.includes("cart") ||
-    urls.includes("checkout") ||
-    urls.includes("product") ||
-    urls.includes("order")
-  ) {
-    return "ecommerce";
-  }
-
-  // API domain detection
-  if (
-    urls.includes("/api/") ||
-    urls.includes("/v1/") ||
-    urls.includes("/v2/") ||
-    urls.includes("graphql")
-  ) {
-    return "api";
-  }
-
-  return "unknown";
-}
-
-/**
- * Graceful fallback when parameter classification fails
- */
-export function gracefulClassificationFallback(
-  parameters: string[],
-  allRequests: RequestModel[]
-): ClassifiedParameter[] {
-  return parameters.map((param) => {
-    // Simple heuristics as fallback
-    let classification: ParameterClassification = "dynamic";
-    let confidence = 0.3;
-    let reasoning = "Fallback classification";
-
-    // Very high consistency suggests session constant
-    const occurrences = countParameterOccurrences(param, allRequests);
-    const consistency =
-      allRequests.length > 0 ? occurrences / allRequests.length : 0;
-
-    if (consistency > 0.95) {
-      classification = "sessionConstant";
-      confidence = 0.7;
-      reasoning = "High consistency suggests session constant";
-    } else if (consistency < 0.2) {
-      classification = "userInput";
-      confidence = 0.6;
-      reasoning = "Low consistency suggests user input";
-    }
-
-    // Simple name patterns
-    if (
-      param.toLowerCase().includes("token") ||
-      param.toLowerCase().includes("session")
-    ) {
-      classification = "sessionConstant";
-      confidence = 0.8;
-      reasoning = "Contains token/session keyword";
-    }
-
-    if (
-      param.toLowerCase().includes("search") ||
-      param.toLowerCase().includes("query")
-    ) {
-      classification = "userInput";
-      confidence = 0.75;
-      reasoning = "Contains search/query keyword";
-    }
-
-    return {
-      name: extractParameterName(param),
-      value: param,
-      classification,
-      confidence,
-      source: "heuristic",
-      metadata: {
-        occurrenceCount: occurrences,
-        totalRequests: allRequests.length,
-        consistencyScore: consistency,
-        parameterPattern: generateParameterPattern(param),
-        domainContext: `Fallback: ${reasoning}`,
-      },
-    };
-  });
+  return { valid, invalid, warnings };
 }
