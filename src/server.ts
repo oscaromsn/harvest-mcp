@@ -4,6 +4,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import { AuthenticationAgent } from "./agents/AuthenticationAgent.js";
 import {
   findDependencies,
   isJavaScriptOrHtml,
@@ -11,6 +12,7 @@ import {
 import { identifyDynamicParts } from "./agents/DynamicPartsAgent.js";
 import { identifyInputVariables } from "./agents/InputVariablesAgent.js";
 import { identifyEndUrl } from "./agents/URLIdentificationAgent.js";
+import { AuthenticationAnalyzer } from "./core/AuthenticationAnalyzer.js";
 import { generateWrapperScript } from "./core/CodeGenerator.js";
 import { CompletedSessionManager } from "./core/CompletedSessionManager.js";
 import { parseHARFile } from "./core/HARParser.js";
@@ -734,6 +736,57 @@ export class HarvestMCPServer {
       },
       async (params): Promise<CallToolResult> => {
         return await this.handleSystemCleanup(params);
+      }
+    );
+
+    // Authentication Analysis Tools
+    this.server.tool(
+      "auth_analyze_session",
+      "Analyze authentication patterns in an existing session using AI-powered authentication detection. Provides detailed authentication requirements, token analysis, and code generation readiness assessment.",
+      {
+        sessionId: z
+          .string()
+          .uuid()
+          .describe(
+            "UUID of the session to analyze for authentication patterns. The session must contain HAR data with HTTP requests."
+          ),
+        forceReanalysis: z
+          .boolean()
+          .default(false)
+          .describe(
+            "Force re-analysis even if authentication analysis already exists for this session."
+          ),
+      },
+      async (params): Promise<CallToolResult> => {
+        return await this.handleAuthAnalyzeSession(params);
+      }
+    );
+
+    this.server.tool(
+      "auth_test_endpoint",
+      "Test authentication requirements for a specific endpoint by analyzing individual requests. Useful for understanding authentication failures and token requirements.",
+      {
+        sessionId: z
+          .string()
+          .uuid()
+          .describe(
+            "UUID of the session containing the endpoint to test. Must have been initialized with session_start."
+          ),
+        requestUrl: z
+          .string()
+          .url()
+          .describe(
+            "The specific URL endpoint to analyze for authentication requirements. Must exist in the session's HAR data."
+          ),
+        requestMethod: z
+          .string()
+          .default("GET")
+          .describe(
+            "HTTP method of the request to analyze (GET, POST, PUT, DELETE, etc.). Defaults to GET."
+          ),
+      },
+      async (params): Promise<CallToolResult> => {
+        return await this.handleAuthTestEndpoint(params);
       }
     );
   }
@@ -5402,9 +5455,11 @@ ${recommendationsList}
           !req.url.includes("tracking")
       ).length;
 
-      const score = meaningfulRequests / Math.max(totalRequests, 1);
+      // Enhanced quality calculation including authentication analysis
+      const baseScore = meaningfulRequests / Math.max(totalRequests, 1);
+      let authQualityImpact = 0;
 
-      // Determine validation result
+      // Determine validation result with authentication awareness
       const validation = harData.validation || {
         quality: meaningfulRequests > 0 ? "good" : "empty",
         issues: [],
@@ -5412,13 +5467,104 @@ ${recommendationsList}
         stats: {
           totalRequests,
           meaningfulRequests,
-          score: Math.round(score * 100),
+          score: Math.round(baseScore * 100),
         },
       };
 
-      // Generate suggestions
-      const suggestions: string[] = [];
-      const issues: string[] = [];
+      // Analyze authentication quality and adjust score
+      const authAnalysis = validation.authAnalysis;
+      const authSuggestions: string[] = [];
+      const authIssues: string[] = [];
+
+      if (authAnalysis) {
+        // Downgrade quality if there are authentication errors
+        if (authAnalysis.authErrors > 0) {
+          authQualityImpact = -0.3; // Significant quality reduction
+          validation.quality = "poor";
+          authIssues.push(
+            `Found ${authAnalysis.authErrors} authentication failures (401/403 responses)`
+          );
+          authSuggestions.push(
+            "Fix authentication failures before using generated code"
+          );
+          authSuggestions.push(
+            "Verify authentication tokens are valid and not expired"
+          );
+        }
+
+        // Quality reduction if authentication tokens detected but may be expired
+        if (authAnalysis.hasTokens && authAnalysis.authErrors === 0) {
+          authQualityImpact = -0.1; // Minor quality reduction for potential token issues
+          authSuggestions.push(
+            "Authentication tokens detected - ensure they are current and valid"
+          );
+          authSuggestions.push(
+            "Generated code will require authentication configuration"
+          );
+        }
+
+        // Add authentication type information
+        if (authAnalysis.authTypes.length > 0) {
+          authSuggestions.push(
+            `Authentication types detected: ${authAnalysis.authTypes.join(", ")}`
+          );
+        }
+
+        // Warn about tokens in URLs (security concern)
+        if (
+          authAnalysis.tokenPatterns.some((pattern) => pattern.includes("url"))
+        ) {
+          authIssues.push(
+            "Authentication tokens found in URL parameters (security risk)"
+          );
+          authSuggestions.push(
+            "Consider moving authentication tokens to headers for better security"
+          );
+        }
+
+        // No authentication detected - may be public API
+        if (
+          !authAnalysis.hasAuthHeaders &&
+          !authAnalysis.hasCookies &&
+          !authAnalysis.hasTokens
+        ) {
+          authSuggestions.push(
+            "No authentication mechanisms detected - API may be public"
+          );
+        }
+      } else {
+        // No authentication analysis performed
+        authSuggestions.push(
+          "Authentication analysis not performed - run session analysis to check auth requirements"
+        );
+      }
+
+      // Apply authentication impact to final score
+      const finalScore = Math.max(
+        0,
+        Math.min(100, Math.round((baseScore + authQualityImpact) * 100))
+      );
+      // Update the score in stats
+      (validation.stats as typeof validation.stats & { score: number }).score =
+        finalScore;
+
+      // Re-evaluate quality based on final score and authentication factors
+      if (validation.quality !== "empty") {
+        if (finalScore < 50 || authAnalysis?.authErrors > 0) {
+          validation.quality = "poor";
+        } else if (
+          finalScore >= 80 &&
+          (!authAnalysis || authAnalysis.authErrors === 0)
+        ) {
+          validation.quality = "excellent";
+        } else {
+          validation.quality = "good";
+        }
+      }
+
+      // Generate suggestions including authentication-specific ones
+      const suggestions: string[] = [...authSuggestions];
+      const issues: string[] = [...authIssues];
 
       if (validation.quality === "empty") {
         issues.push("No meaningful requests found in HAR file");
@@ -5494,23 +5640,47 @@ ${recommendationsList}
               harPath: argsObj.harPath,
               validation: {
                 quality: validation.quality,
-                score: Math.round(score * 100),
-                isReady: validation.quality !== "empty",
+                score: finalScore,
+                isReady:
+                  validation.quality !== "empty" &&
+                  authAnalysis?.authErrors === 0,
                 issues,
                 suggestions,
+                authAnalysis: authAnalysis
+                  ? {
+                      hasAuthentication:
+                        authAnalysis.hasAuthHeaders ||
+                        authAnalysis.hasCookies ||
+                        authAnalysis.hasTokens,
+                      authTypes: authAnalysis.authTypes,
+                      authErrors: authAnalysis.authErrors,
+                      tokenCount: authAnalysis.tokenPatterns.length,
+                      securityConcerns: authAnalysis.issues.length,
+                    }
+                  : undefined,
               },
               metrics: {
                 totalRequests,
                 meaningfulRequests,
                 totalUrls,
-                requestScore: Math.round(score * 100),
+                requestScore: finalScore,
               },
               ...(argsObj.detailed && { detailed: detailedAnalysis }),
               recommendations: [
-                validation.quality === "good"
-                  ? "✅ HAR file looks good for analysis"
-                  : "⚠️ HAR file may need improvements",
+                validation.quality === "excellent"
+                  ? "✅ HAR file is excellent for analysis"
+                  : validation.quality === "good"
+                    ? "✅ HAR file looks good for analysis"
+                    : validation.quality === "poor"
+                      ? "⚠️ HAR file has issues that may affect code generation"
+                      : "❌ HAR file needs significant improvements",
                 ...suggestions,
+                ...(authAnalysis?.authErrors > 0
+                  ? [
+                      "🔐 Authentication issues detected - generated code may fail at runtime",
+                      "🔧 Fix authentication problems before proceeding with code generation",
+                    ]
+                  : []),
               ],
             }),
           },
@@ -5722,6 +5892,249 @@ ${recommendationsList}
       throw new HarvestError(
         `Failed to perform system cleanup: ${error instanceof Error ? error.message : "Unknown error"}`,
         "SYSTEM_CLEANUP_FAILED",
+        { originalError: error }
+      );
+    }
+  }
+
+  /**
+   * Handle auth_analyze_session tool call
+   */
+  public async handleAuthAnalyzeSession(
+    args: unknown
+  ): Promise<CallToolResult> {
+    try {
+      const argsObj = args as { sessionId: string; forceReanalysis: boolean };
+      const session = this.sessionManager.getSession(argsObj.sessionId);
+
+      // Check if analysis already exists and we're not forcing re-analysis
+      if (session.state.authAnalysis && !argsObj.forceReanalysis) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                success: true,
+                sessionId: argsObj.sessionId,
+                cached: true,
+                authAnalysis: session.state.authAnalysis,
+                message:
+                  "Authentication analysis retrieved from cache. Use forceReanalysis=true to re-run the analysis.",
+                timestamp: new Date().toISOString(),
+              }),
+            },
+          ],
+        };
+      }
+
+      serverLogger.info(
+        `Running authentication analysis for session ${argsObj.sessionId}`
+      );
+
+      // Run comprehensive authentication analysis
+      const authAnalysis = await AuthenticationAnalyzer.analyzeHARData(
+        session.harData
+      );
+
+      // Store the analysis in the session
+      session.state.authAnalysis = authAnalysis;
+
+      // Run authentication readiness check
+      await this.sessionManager.runAuthenticationAnalysis(argsObj.sessionId);
+
+      // Get the authentication readiness from session state
+      const authReadiness = session.state.authReadiness || {
+        isAuthComplete: false,
+        authBlockers: ["Authentication analysis not available"],
+        authRecommendations: ["Run authentication analysis first"],
+      };
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              success: true,
+              sessionId: argsObj.sessionId,
+              cached: false,
+              authAnalysis: {
+                hasAuthentication: authAnalysis.hasAuthentication,
+                primaryAuthType: authAnalysis.primaryAuthType,
+                authTypes: authAnalysis.authTypes,
+                tokenCount: authAnalysis.tokens.length,
+                authenticatedRequests:
+                  authAnalysis.authenticatedRequests.length,
+                failedAuthRequests: authAnalysis.failedAuthRequests.length,
+                authEndpoints: authAnalysis.authEndpoints.length,
+                flowComplexity: authAnalysis.authFlow.flowComplexity,
+                securityIssues: authAnalysis.securityIssues,
+                recommendations: authAnalysis.recommendations,
+                codeGeneration: authAnalysis.codeGeneration,
+              },
+              authReadiness: {
+                isAuthComplete: authReadiness.isAuthComplete,
+                authBlockers: authReadiness.authBlockers,
+                authRecommendations: authReadiness.authRecommendations,
+              },
+              summary: {
+                analysisLevel: authAnalysis.hasAuthentication
+                  ? "authenticated"
+                  : "public",
+                readinessStatus: authReadiness.isAuthComplete
+                  ? "ready"
+                  : "needs_attention",
+                nextSteps: authReadiness.isAuthComplete
+                  ? ["Proceed with code generation"]
+                  : authReadiness.authBlockers,
+              },
+              message: authAnalysis.hasAuthentication
+                ? `Authentication analysis complete: ${authAnalysis.primaryAuthType} detected with ${authAnalysis.tokens.length} tokens`
+                : "No authentication patterns detected - API appears to be public",
+              timestamp: new Date().toISOString(),
+            }),
+          },
+        ],
+      };
+    } catch (error) {
+      throw new HarvestError(
+        `Authentication analysis failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+        "AUTH_ANALYSIS_FAILED",
+        { originalError: error }
+      );
+    }
+  }
+
+  /**
+   * Handle auth_test_endpoint tool call
+   */
+  public async handleAuthTestEndpoint(args: unknown): Promise<CallToolResult> {
+    try {
+      const argsObj = args as {
+        sessionId: string;
+        requestUrl: string;
+        requestMethod: string;
+      };
+      const session = this.sessionManager.getSession(argsObj.sessionId);
+
+      // Find the specific request in the HAR data
+      const targetRequest = session.harData.requests.find(
+        (req) =>
+          req.url === argsObj.requestUrl &&
+          req.method.toUpperCase() === argsObj.requestMethod.toUpperCase()
+      );
+
+      if (!targetRequest) {
+        throw new HarvestError(
+          `Request not found: ${argsObj.requestMethod} ${argsObj.requestUrl}`,
+          "REQUEST_NOT_FOUND",
+          {
+            requestUrl: argsObj.requestUrl,
+            requestMethod: argsObj.requestMethod,
+          }
+        );
+      }
+
+      serverLogger.info(
+        `Testing authentication for endpoint: ${argsObj.requestMethod} ${argsObj.requestUrl}`
+      );
+
+      // Analyze individual request authentication
+      const requestAuthInfo = await AuthenticationAgent.analyzeRequest(
+        targetRequest,
+        `test-${Date.now()}`
+      );
+
+      // Check if request has authentication failures
+      const hasAuthFailure = requestAuthInfo.isAuthFailure;
+      const responseStatus = targetRequest.response?.status;
+
+      // Generate recommendations based on analysis
+      const recommendations: string[] = [];
+      if (hasAuthFailure) {
+        recommendations.push(
+          "This endpoint requires authentication to succeed"
+        );
+        recommendations.push(
+          "Verify authentication tokens are valid and not expired"
+        );
+        if (requestAuthInfo.authErrorDetails?.wwwAuthenticate) {
+          recommendations.push(
+            `Authentication challenge: ${requestAuthInfo.authErrorDetails.wwwAuthenticate}`
+          );
+        }
+      }
+
+      if (requestAuthInfo.tokens.length > 0) {
+        recommendations.push(
+          `Found ${requestAuthInfo.tokens.length} authentication tokens in request`
+        );
+        recommendations.push(
+          "Ensure these tokens are dynamically obtained in generated code"
+        );
+      }
+
+      if (requestAuthInfo.authenticationType === "none" && !hasAuthFailure) {
+        recommendations.push("This endpoint appears to be publicly accessible");
+      }
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              success: true,
+              sessionId: argsObj.sessionId,
+              endpoint: {
+                url: argsObj.requestUrl,
+                method: argsObj.requestMethod,
+                responseStatus: responseStatus,
+              },
+              authAnalysis: {
+                authenticationType: requestAuthInfo.authenticationType,
+                requirement: requestAuthInfo.requirement,
+                hasAuthFailure: requestAuthInfo.isAuthFailure,
+                tokensFound: requestAuthInfo.tokens.length,
+                tokens: requestAuthInfo.tokens.map((token) => ({
+                  type: token.type,
+                  location: token.location,
+                  name: token.name,
+                  valuePreview: `${token.value.substring(0, 20)}...`,
+                })),
+                authHeaders: Object.keys(requestAuthInfo.authHeaders),
+                authCookies: Object.keys(requestAuthInfo.authCookies),
+                authParams: Object.keys(requestAuthInfo.authParams),
+              },
+              errorDetails: requestAuthInfo.authErrorDetails,
+              recommendations,
+              summary: {
+                status: hasAuthFailure
+                  ? "authentication_required"
+                  : requestAuthInfo.authenticationType !== "none"
+                    ? "authenticated"
+                    : "public",
+                severity: hasAuthFailure
+                  ? "error"
+                  : requestAuthInfo.tokens.length > 0
+                    ? "warning"
+                    : "info",
+                message: hasAuthFailure
+                  ? `Authentication failure (${responseStatus}) - endpoint requires valid authentication`
+                  : requestAuthInfo.authenticationType !== "none"
+                    ? `Endpoint uses ${requestAuthInfo.authenticationType} authentication`
+                    : "Endpoint appears to be publicly accessible",
+              },
+              timestamp: new Date().toISOString(),
+            }),
+          },
+        ],
+      };
+    } catch (error) {
+      if (error instanceof HarvestError) {
+        throw error; // Re-throw HarvestError with original context
+      }
+      throw new HarvestError(
+        `Endpoint authentication test failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+        "AUTH_TEST_FAILED",
         { originalError: error }
       );
     }

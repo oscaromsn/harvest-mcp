@@ -346,6 +346,9 @@ export async function executeWorkflow() {
           unresolvedNodes: 0,
           pendingInQueue: 0,
           hasActionUrl: true,
+          authAnalysisComplete: true,
+          authReadiness: true,
+          authErrors: 0,
         },
       };
 
