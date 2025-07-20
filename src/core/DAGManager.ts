@@ -5,6 +5,7 @@ import { createComponentLogger } from "../utils/logger.js";
 const logger = createComponentLogger("dag-manager");
 
 import type {
+  BootstrapParameterSource,
   CookieDAGNode,
   CookieNodeContent,
   CurlDAGNode,
@@ -409,6 +410,7 @@ export class DAGManager {
   /**
    * Get parameters that are truly dynamic (need resolution from previous responses)
    * Filters out sessionConstants, userInputs, staticConstants, and optional parameters
+   * For sessionConstants, they are only resolved if they have a bootstrap source
    */
   getTrulyDynamicParts(node: DAGNode): string[] {
     if (!node.dynamicParts || !node.classifiedParameters) {
@@ -420,9 +422,23 @@ export class DAGManager {
         (cp) => cp.value === part || cp.name === part
       );
 
-      // Only consider parameters classified as "dynamic" as truly unresolved
-      // sessionConstants, userInputs, etc. don't block completion
-      return !classification || classification.classification === "dynamic";
+      if (!classification) {
+        // If no classification, consider it unresolved
+        return true;
+      }
+
+      // Dynamic parameters always need resolution
+      if (classification.classification === "dynamic") {
+        return true;
+      }
+
+      // Session constants need bootstrap source to be considered resolved
+      if (classification.classification === "sessionConstant") {
+        return !classification.metadata.bootstrapSource;
+      }
+
+      // User inputs, static constants, and optional parameters don't block completion
+      return false;
     });
   }
 
@@ -461,6 +477,65 @@ export class DAGManager {
     }
 
     return result;
+  }
+
+  /**
+   * Get bootstrap parameters for a node (for session initialization)
+   */
+  getNodeBootstrapParameters(nodeId: string): Array<{
+    name: string;
+    value: string;
+    bootstrapSource: BootstrapParameterSource;
+    requiresBootstrap: boolean;
+  }> {
+    const node = this.getNode(nodeId);
+    const result: Array<{
+      name: string;
+      value: string;
+      bootstrapSource: BootstrapParameterSource;
+      requiresBootstrap: boolean;
+    }> = [];
+
+    if (!node?.classifiedParameters) {
+      return result;
+    }
+
+    for (const param of node.classifiedParameters) {
+      if (
+        param.classification === "sessionConstant" &&
+        param.metadata.bootstrapSource
+      ) {
+        result.push({
+          name: param.name,
+          value: param.value,
+          bootstrapSource: param.metadata.bootstrapSource,
+          requiresBootstrap: param.metadata.requiresBootstrap || false,
+        });
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Check if all session constants have bootstrap sources resolved
+   */
+  hasAllBootstrapSourcesResolved(nodeId: string): boolean {
+    const node = this.getNode(nodeId);
+
+    if (!node?.classifiedParameters) {
+      return true; // No parameters means nothing to resolve
+    }
+
+    const sessionConstants = node.classifiedParameters.filter(
+      (param) => param.classification === "sessionConstant"
+    );
+
+    if (sessionConstants.length === 0) {
+      return true; // No session constants means nothing to resolve
+    }
+
+    return sessionConstants.every((param) => param.metadata.bootstrapSource);
   }
 
   /**
