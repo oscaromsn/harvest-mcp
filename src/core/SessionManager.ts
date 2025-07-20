@@ -46,6 +46,9 @@ export interface CompletionAnalysis {
     authErrors: number;
     allNodesClassified: boolean;
     nodesNeedingClassification: number;
+    bootstrapAnalysisComplete: boolean;
+    sessionConstantsCount: number;
+    unresolvedSessionConstants: number;
   };
 }
 
@@ -528,6 +531,9 @@ export class SessionManager {
       const authReadinessAnalysis =
         this.analyzeAuthenticationReadiness(session);
 
+      // Analyze bootstrap readiness
+      const bootstrapAnalysis = this.analyzeBootstrapReadiness(session);
+
       const diagnostics = {
         hasMasterNode,
         dagComplete,
@@ -541,6 +547,9 @@ export class SessionManager {
         authErrors: authReadinessAnalysis.errorCount,
         allNodesClassified,
         nodesNeedingClassification: nodesNeedingClassification.length,
+        bootstrapAnalysisComplete: bootstrapAnalysis.isComplete,
+        sessionConstantsCount: bootstrapAnalysis.sessionConstantsCount,
+        unresolvedSessionConstants: bootstrapAnalysis.unresolvedCount,
       };
 
       // Condition 1: Master node must be identified and exist in DAG
@@ -642,6 +651,22 @@ export class SessionManager {
         }
       }
 
+      // Condition 8: Session constants must have bootstrap sources resolved
+      if (
+        !bootstrapAnalysis.isComplete &&
+        bootstrapAnalysis.sessionConstantsCount > 0
+      ) {
+        blockers.push(
+          `${bootstrapAnalysis.unresolvedCount} session constants need bootstrap source resolution`
+        );
+        recommendations.push(
+          "Continue processing with 'analysis_process_next_node' to resolve bootstrap sources"
+        );
+        recommendations.push(
+          "Session constants require initialization from the main page load"
+        );
+      }
+
       const isComplete = blockers.length === 0;
 
       // Update session state if it has changed
@@ -695,6 +720,9 @@ export class SessionManager {
           authErrors: 0,
           allNodesClassified: false,
           nodesNeedingClassification: 0,
+          bootstrapAnalysisComplete: false,
+          sessionConstantsCount: 0,
+          unresolvedSessionConstants: 0,
         },
       };
     }
@@ -812,6 +840,48 @@ export class SessionManager {
     }
 
     return analysis;
+  }
+
+  /**
+   * Analyze bootstrap readiness for session constants
+   */
+  private analyzeBootstrapReadiness(session: HarvestSession): {
+    isComplete: boolean;
+    sessionConstantsCount: number;
+    unresolvedCount: number;
+    resolvedCount: number;
+  } {
+    let sessionConstantsCount = 0;
+    let resolvedCount = 0;
+    let unresolvedCount = 0;
+
+    // Iterate through all nodes to find session constants
+    const allNodes = session.dagManager.getAllNodes();
+
+    for (const [, node] of allNodes) {
+      if (node.classifiedParameters) {
+        for (const param of node.classifiedParameters) {
+          if (param.classification === "sessionConstant") {
+            sessionConstantsCount++;
+
+            if (param.metadata.bootstrapSource) {
+              resolvedCount++;
+            } else {
+              unresolvedCount++;
+            }
+          }
+        }
+      }
+    }
+
+    const isComplete = sessionConstantsCount === 0 || unresolvedCount === 0;
+
+    return {
+      isComplete,
+      sessionConstantsCount,
+      unresolvedCount,
+      resolvedCount,
+    };
   }
 
   /**
