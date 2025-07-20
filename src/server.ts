@@ -612,7 +612,7 @@ export class HarvestMCPServer {
     // Manual Session Tools
     this.server.tool(
       "session_start_manual",
-      "Start a manual browser session for interactive exploration with automatic artifact collection",
+      "Start a manual browser session for USER-CONTROLLED interactive exploration. The USER decides when the session is complete - agents must wait for explicit user indication before stopping.",
       ManualSessionStartSchema.shape,
       async (params): Promise<CallToolResult> => {
         return await this.handleStartManualSession(params);
@@ -621,7 +621,7 @@ export class HarvestMCPServer {
 
     this.server.tool(
       "session_stop_manual",
-      "Stop a manual browser session and collect all artifacts (HAR files, cookies, screenshots). Generates files ready for analysis.",
+      "Stop a manual browser session ONLY when the user explicitly indicates they have finished their work. Do NOT call this automatically or based on assumptions - wait for clear user completion signal.",
       {
         sessionId: z
           .string()
@@ -658,7 +658,7 @@ export class HarvestMCPServer {
 
     this.server.tool(
       "session_health_check_manual",
-      "Check the health status of a manual browser session. Detects if the browser is still responsive.",
+      "Check the health status of a manual browser session. Wait for user to explicitly indicate completion before considering stopping the session. Browser health does NOT mean the user is finished.",
       {
         sessionId: z
           .string()
@@ -696,7 +696,7 @@ export class HarvestMCPServer {
           .string()
           .uuid("Manual session ID must be a valid UUID")
           .describe(
-            "UUID of the completed manual session to convert. Use session_stop_manual first to collect artifacts."
+            "UUID of the completed manual session to convert. Ensure user has explicitly finished their work and ended the session."
           ),
         prompt: z
           .string()
@@ -4225,6 +4225,33 @@ ${recommendationsList}
         throw error; // Re-throw HarvestError with original context
       }
 
+      // Check if this is a SessionStillActiveError from activity detection
+      if (error instanceof SessionStillActiveError) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                success: false,
+                type: "SESSION_STILL_ACTIVE",
+                sessionId: error.sessionId,
+                message: error.message,
+                activity: error.activity,
+                recommendations: error.recommendations,
+                guidance: {
+                  instruction:
+                    "DO NOT attempt to stop this session while user is actively using it",
+                  reasoning:
+                    "User is currently interacting with the browser - stopping now would interrupt their work",
+                  action:
+                    "Wait for the user to finish their current activity before trying again",
+                },
+              }),
+            },
+          ],
+        };
+      }
+
       throw new HarvestError(
         `Failed to stop manual session: ${error instanceof Error ? error.message : "Unknown error"}`,
         "MANUAL_SESSION_STOP_FAILED",
@@ -4319,9 +4346,15 @@ ${recommendationsList}
               sessionId: argsObj.sessionId,
               health: healthCheck,
               message: healthCheck.isHealthy
-                ? "Session is healthy"
+                ? "Session is healthy - user may still be working"
                 : `Session has ${healthCheck.issues.length} issue(s)`,
               recommendations: healthCheck.recommendations,
+              guidance: {
+                important:
+                  "Do NOT stop this session unless user explicitly indicates completion",
+                wait: "Browser health status does not indicate user completion",
+                action: "Continue monitoring until user says they are finished",
+              },
             }),
           },
         ],
@@ -4394,7 +4427,7 @@ ${recommendationsList}
       // If session is still active, it needs to be stopped first
       if (sessionStatus) {
         throw new HarvestError(
-          "Manual session is still active and must be stopped before conversion. Use session_stop_manual first.",
+          "Manual session is still active. Wait for user to explicitly indicate completion before stopping the session.",
           "MANUAL_SESSION_STILL_ACTIVE"
         );
       }
@@ -4886,8 +4919,8 @@ ${recommendationsList}
                 "📋 Steps to follow:",
                 "1. Interact with the website normally",
                 "2. Complete the workflow you described",
-                "3. The session will auto-stop, or use session_stop_manual",
-                "4. Use workflow_analyze_har with the generated HAR file",
+                "3. Tell the agent when you are finished with your work",
+                "4. Agent will then stop session and analyze captured data",
                 "",
                 "💡 Tips:",
                 "- Submit forms and click buttons to generate meaningful requests",
@@ -4896,8 +4929,8 @@ ${recommendationsList}
               ],
               nextSteps: [
                 "Complete your workflow in the browser",
-                `Session will auto-stop after ${argsObj.duration} minutes`,
-                "Use workflow_analyze_har to process the captured data",
+                "Explicitly tell the agent when you are finished",
+                `Session will auto-stop after ${argsObj.duration} minutes if not stopped manually`,
               ],
             }),
           },
