@@ -203,6 +203,45 @@ export class DAGManager {
   }
 
   /**
+   * Check if all nodes have been properly classified for parameter analysis
+   * This ensures completion state only reports true when parameter classification is complete
+   */
+  areAllNodesParameterClassified(): boolean {
+    for (const nodeId of this.graph.nodes()) {
+      const node = this.graph.node(nodeId);
+      if (node?.dynamicParts && node.dynamicParts.length > 0) {
+        // If node has dynamic parts but no classification, it's not ready
+        if (
+          !node.classifiedParameters ||
+          node.classifiedParameters.length === 0
+        ) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Get nodes that still need parameter classification
+   */
+  getNodesNeedingClassification(): string[] {
+    const needsClassification: string[] = [];
+    for (const nodeId of this.graph.nodes()) {
+      const node = this.graph.node(nodeId);
+      if (node?.dynamicParts && node.dynamicParts.length > 0) {
+        if (
+          !node.classifiedParameters ||
+          node.classifiedParameters.length === 0
+        ) {
+          needsClassification.push(nodeId);
+        }
+      }
+    }
+    return needsClassification;
+  }
+
+  /**
    * Perform topological sort of the graph
    * Throws error if cycles are detected
    */
@@ -371,7 +410,7 @@ export class DAGManager {
    * Get parameters that are truly dynamic (need resolution from previous responses)
    * Filters out sessionConstants, userInputs, staticConstants, and optional parameters
    */
-  private getTrulyDynamicParts(node: DAGNode): string[] {
+  getTrulyDynamicParts(node: DAGNode): string[] {
     if (!node.dynamicParts || !node.classifiedParameters) {
       return node.dynamicParts || [];
     }

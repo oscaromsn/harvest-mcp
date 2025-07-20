@@ -36,6 +36,8 @@ export interface CompletionAnalysis {
     authAnalysisComplete: boolean;
     authReadiness: boolean;
     authErrors: number;
+    allNodesClassified: boolean;
+    nodesNeedingClassification: number;
   };
 }
 
@@ -475,13 +477,13 @@ export class SessionManager {
         canRepopulate: unresolvedNodeCount > 0,
         recommendations,
       };
-    } catch (error) {
+    } catch (_error) {
       return {
         queueLength: 0,
         unresolvedNodeCount: 0,
         canRepopulate: false,
         recommendations: [
-          `Error getting queue status: ${error instanceof Error ? error.message : "Unknown error"}`,
+          `Error getting queue status: ${_error instanceof Error ? _error.message : "Unknown error"}`,
         ],
       };
     }
@@ -497,6 +499,9 @@ export class SessionManager {
       const blockers: string[] = [];
       const recommendations: string[] = [];
 
+      // Ensure DAG state is refreshed before analysis to reflect latest parameter classifications
+      this.refreshDAGStateForParameterClassifications(sessionId);
+
       // Gather diagnostic information
       const dagComplete = session.dagManager.isComplete();
       const unresolvedNodes = session.dagManager.getUnresolvedNodes();
@@ -504,6 +509,12 @@ export class SessionManager {
       const hasActionUrl = !!session.state.actionUrl;
       const queueEmpty = session.state.toBeProcessedNodes.length === 0;
       const totalNodes = session.dagManager.getNodeCount();
+      const allNodesClassified = (
+        session.dagManager as any
+      ).areAllNodesParameterClassified();
+      const nodesNeedingClassification = (
+        session.dagManager as any
+      ).getNodesNeedingClassification();
 
       // Analyze authentication readiness
       const authReadinessAnalysis =
@@ -520,6 +531,8 @@ export class SessionManager {
         authAnalysisComplete: authReadinessAnalysis.analysisComplete,
         authReadiness: authReadinessAnalysis.isReady,
         authErrors: authReadinessAnalysis.errorCount,
+        allNodesClassified,
+        nodesNeedingClassification: nodesNeedingClassification.length,
       };
 
       // Condition 1: Master node must be identified and exist in DAG
@@ -556,7 +569,21 @@ export class SessionManager {
         }
       }
 
-      // Condition 3: DAG must be fully resolved
+      // Condition 3: All nodes with dynamic parts must have parameter classification
+      if (!allNodesClassified) {
+        blockers.push(
+          `${nodesNeedingClassification.length} nodes still need parameter classification`
+        );
+        recommendations.push(
+          "Continue processing with 'analysis_process_next_node' to classify parameters"
+        );
+        recommendations.push(
+          "Node IDs needing classification: " +
+            nodesNeedingClassification.join(", ")
+        );
+      }
+
+      // Condition 4: DAG must be fully resolved (after parameter classification)
       if (!dagComplete) {
         blockers.push(
           `${unresolvedNodes.length} nodes still have unresolved dynamic parts`
@@ -569,7 +596,7 @@ export class SessionManager {
         );
       }
 
-      // Condition 4: Processing queue must be empty
+      // Condition 5: Processing queue must be empty
       if (!queueEmpty) {
         blockers.push(
           `${session.state.toBeProcessedNodes.length} nodes are still pending in the processing queue`
@@ -579,14 +606,14 @@ export class SessionManager {
         );
       }
 
-      // Condition 5: Must have at least one node (not an empty analysis)
+      // Condition 6: Must have at least one node (not an empty analysis)
       if (totalNodes === 0) {
         blockers.push("No nodes found in dependency graph");
         recommendations.push("Verify HAR file contains valid HTTP requests");
         recommendations.push("Re-run initial analysis if needed");
       }
 
-      // Condition 6: Authentication must be analyzed and ready for code generation
+      // Condition 7: Authentication must be analyzed and ready for code generation
       if (!authReadinessAnalysis.analysisComplete) {
         blockers.push("Authentication analysis has not been completed");
         recommendations.push(
@@ -634,11 +661,11 @@ export class SessionManager {
         recommendations,
         diagnostics,
       };
-    } catch (error) {
+    } catch (_error) {
       logger.error(
         {
           sessionId,
-          error: error instanceof Error ? error.message : "Unknown error",
+          error: _error instanceof Error ? _error.message : "Unknown error",
         },
         "Failed to analyze completion state"
       );
@@ -658,6 +685,8 @@ export class SessionManager {
           authAnalysisComplete: false,
           authReadiness: false,
           authErrors: 0,
+          allNodesClassified: false,
+          nodesNeedingClassification: 0,
         },
       };
     }
@@ -820,9 +849,9 @@ export class SessionManager {
         success: true,
         authAnalysis,
       };
-    } catch (error) {
+    } catch (_error) {
       const errorMessage =
-        error instanceof Error ? error.message : "Unknown error";
+        _error instanceof Error ? _error.message : "Unknown error";
       this.addLog(
         sessionId,
         "error",
@@ -841,9 +870,57 @@ export class SessionManager {
    * This maintains existing API while providing enhanced functionality
    */
   syncCompletionState(sessionId: string): void {
+    // Force refresh of DAG state before analysis to ensure parameter classifications are reflected
+    this.refreshDAGStateForParameterClassifications(sessionId);
     this.analyzeCompletionState(sessionId);
     // The state is already updated in analyzeCompletionState
     // This method now just provides the legacy interface
+  }
+
+  /**
+   * Refresh DAG state to ensure all parameter classifications are properly reflected
+   * This ensures completion state analysis is based on the most recent classification results
+   */
+  private refreshDAGStateForParameterClassifications(sessionId: string): void {
+    try {
+      const session = this.getSession(sessionId);
+
+      // Check all nodes to ensure their classification state is up to date
+      const allNodes = session.dagManager.getAllNodes();
+      for (const [nodeId, node] of allNodes) {
+        if (
+          node?.classifiedParameters &&
+          node.classifiedParameters.length > 0
+        ) {
+          // Ensure the node's dynamic parts are filtered based on current classifications
+          const trulyDynamicParts = (
+            session.dagManager as any
+          ).getTrulyDynamicParts(node);
+
+          // If the filtered dynamic parts differ from stored dynamic parts, log the difference
+          if (
+            node.dynamicParts &&
+            trulyDynamicParts.length !== node.dynamicParts.length
+          ) {
+            logger.debug(
+              "DAG node dynamic parts filtered by parameter classification",
+              {
+                sessionId,
+                nodeId,
+                originalDynamicParts: node.dynamicParts.length,
+                filteredDynamicParts: trulyDynamicParts.length,
+                classifiedParameters: node.classifiedParameters.length,
+              }
+            );
+          }
+        }
+      }
+    } catch (_error) {
+      logger.warn("Failed to refresh DAG state for parameter classifications", {
+        sessionId,
+        error: _error instanceof Error ? _error.message : "Unknown error",
+      });
+    }
   }
 
   /**
@@ -910,7 +987,7 @@ export class SessionManager {
         progressSummary,
         estimatedCompletion,
       };
-    } catch (error) {
+    } catch (_error) {
       return {
         currentState: "ERROR",
         nextActions: ["Check session exists and is properly initialized"],
@@ -992,7 +1069,7 @@ export class SessionManager {
         recoverActions,
         debugCommands,
       };
-    } catch (error) {
+    } catch (_error) {
       return {
         isStuck: true,
         commonIssues: ["Unable to analyze session state"],
