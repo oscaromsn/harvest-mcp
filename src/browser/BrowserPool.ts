@@ -372,7 +372,6 @@ export class BrowserPool {
     }
   }
 
-  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Complex cleanup logic is acceptable here for resource management
   private async performCleanup(): Promise<void> {
     const now = Date.now();
 

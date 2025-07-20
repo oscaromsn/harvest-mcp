@@ -351,6 +351,9 @@ export async function executeWorkflow() {
           authErrors: 0,
           allNodesClassified: true,
           nodesNeedingClassification: 0,
+          bootstrapAnalysisComplete: true,
+          sessionConstantsCount: 0,
+          unresolvedSessionConstants: 0,
         },
       };
 

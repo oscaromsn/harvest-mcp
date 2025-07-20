@@ -467,7 +467,6 @@ export class GeminiProvider implements ILLMProvider {
     }
   }
 
-  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Response parsing requires multiple format checks for compatibility
   private parseGeminiResponse(result: GeminiApiResult): CompletionResponse {
     const response = result.response;
 
