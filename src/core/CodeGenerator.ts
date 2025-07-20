@@ -147,15 +147,35 @@ export function generateWrapperScript(session: HarvestSession): string {
   const sortedNodeIds = session.dagManager.topologicalSort();
   const sortedNodeCount = sortedNodeIds.length;
 
+  // Create function name mapping for deduplication
+  const nodeFunctionNameMap = new Map<string, string>();
+
   if (sortedNodeCount === 0) {
     parts.push("// No requests found in the analysis");
     parts.push("");
   } else {
+    // Track generated function names to avoid duplicates
+    const generatedFunctionNames = new Set<string>();
+
     for (const nodeId of sortedNodeIds) {
       const node = session.dagManager.getNode(nodeId);
       if (node) {
+        // Generate base function name
         const functionName = generateNodeFunctionName(node, session);
-        const nodeCode = generateNodeCode(node, functionName, session);
+
+        // Ensure function name is unique by adding numeric suffix if needed
+        let counter = 1;
+        let uniqueFunctionName = functionName;
+        while (generatedFunctionNames.has(uniqueFunctionName)) {
+          uniqueFunctionName = `${functionName}${counter}`;
+          counter++;
+        }
+
+        // Add the unique function name to our tracking set and mapping
+        generatedFunctionNames.add(uniqueFunctionName);
+        nodeFunctionNameMap.set(nodeId, uniqueFunctionName);
+
+        const nodeCode = generateNodeCode(node, uniqueFunctionName, session);
         if (nodeCode.trim()) {
           parts.push(nodeCode);
           parts.push("");
@@ -165,7 +185,7 @@ export function generateWrapperScript(session: HarvestSession): string {
   }
 
   // 4. Main orchestration function and exports
-  parts.push(generateFooter(session));
+  parts.push(generateFooter(session, nodeFunctionNameMap));
 
   return parts.join("\n");
 }
@@ -948,17 +968,26 @@ export function generateImports(session?: HarvestSession): string {
 /**
  * Generate main function and exports
  */
-export function generateFooter(session: HarvestSession): string {
+export function generateFooter(
+  session: HarvestSession,
+  nodeFunctionNameMap?: Map<string, string>
+): string {
   const lines: string[] = [];
 
-  // Get all function names
+  // Get all function names, using provided mapping if available
   const sortedNodeIds = session.dagManager.topologicalSort();
   const functionNames: string[] = [];
 
   for (const nodeId of sortedNodeIds) {
     const node = session.dagManager.getNode(nodeId);
     if (node && (node.nodeType === "master_curl" || node.nodeType === "curl")) {
-      functionNames.push(generateNodeFunctionName(node, session));
+      if (nodeFunctionNameMap && nodeFunctionNameMap.has(nodeId)) {
+        // Use the deduplicated function name from the mapping
+        functionNames.push(nodeFunctionNameMap.get(nodeId)!);
+      } else {
+        // Fallback to original generation method
+        functionNames.push(generateNodeFunctionName(node, session));
+      }
     }
   }
 
@@ -978,10 +1007,13 @@ export function generateFooter(session: HarvestSession): string {
       functionNames.find((name) =>
         sortedNodeIds.some((nodeId) => {
           const node = session.dagManager.getNode(nodeId);
-          return (
-            node?.nodeType === "master_curl" &&
-            generateNodeFunctionName(node, session) === name
-          );
+          if (node?.nodeType === "master_curl") {
+            if (nodeFunctionNameMap && nodeFunctionNameMap.has(nodeId)) {
+              return nodeFunctionNameMap.get(nodeId) === name;
+            }
+            return generateNodeFunctionName(node, session) === name;
+          }
+          return false;
         })
       ) || functionNames[functionNames.length - 1];
 
