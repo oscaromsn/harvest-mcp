@@ -34,11 +34,12 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 .DS_Store
 
 # testing
-tests/fixtures/test-data/**
 html/**
 
-# docs
+# docs & dev artifacts
 **/todo.md
+tests/fixtures/test-data/**
+issues/**
 
 # others
 *.local.json
