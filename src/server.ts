@@ -2102,10 +2102,8 @@ export class HarvestMCPServer {
         }
       }
 
-      // Find the corresponding request in HAR data
-      const targetRequest = session.harData.requests.find(
-        (req) => req.url === actionUrl
-      );
+      // Find the corresponding request in HAR data using flexible URL matching
+      const targetRequest = this.findRequestByFlexibleUrl(session.harData.requests, actionUrl);
       if (!targetRequest) {
         return {
           content: [
@@ -2151,8 +2149,13 @@ export class HarvestMCPServer {
       session.state.masterNodeId = masterNodeId;
       session.state.toBeProcessedNodes.push(masterNodeId);
 
-      // Sync completion state after master node creation
-      this.sessionManager.syncCompletionState(argsObj.sessionId);
+      // Ensure atomic state validation after master node creation
+      const completionAnalysis = this.sessionManager.analyzeCompletionState(argsObj.sessionId);
+      this.sessionManager.addLog(
+        argsObj.sessionId,
+        "debug",
+        `Post-creation state analysis: ${completionAnalysis.isComplete ? "Complete" : `Blockers: ${completionAnalysis.blockers.join(", ")}`}`
+      );
 
       this.sessionManager.addLog(
         argsObj.sessionId,
@@ -2421,6 +2424,104 @@ export class HarvestMCPServer {
       }
     }
     return null;
+  }
+
+  /**
+   * Find a request by flexible URL matching (base path comparison with tie-breaking)
+   */
+  private findRequestByFlexibleUrl(
+    requests: RequestModel[],
+    targetUrl: string
+  ): RequestModel | null {
+    try {
+      const targetParsed = new URL(targetUrl);
+      
+      // First try exact match for backward compatibility
+      const exactMatch = requests.find(req => req.url === targetUrl);
+      if (exactMatch) {
+        return exactMatch;
+      }
+      
+      // Find candidates that match base path (protocol + hostname + pathname)
+      const candidates = requests.filter(req => {
+        try {
+          const reqParsed = new URL(req.url);
+          return reqParsed.protocol === targetParsed.protocol &&
+                 reqParsed.hostname === targetParsed.hostname &&
+                 reqParsed.pathname === targetParsed.pathname;
+        } catch {
+          return false; // Skip invalid URLs
+        }
+      });
+      
+      if (candidates.length === 0) {
+        return null;
+      }
+      
+      if (candidates.length === 1) {
+        const firstCandidate = candidates[0];
+        return firstCandidate || null;
+      }
+      
+      // Apply tie-breaking heuristics
+      return this.selectBestUrlCandidate(candidates, targetParsed);
+      
+    } catch {
+      // If URL parsing fails, fall back to exact string matching
+      return requests.find(req => req.url === targetUrl) || null;
+    }
+  }
+
+  /**
+   * Select the best candidate from multiple URL matches using heuristics
+   */
+  private selectBestUrlCandidate(candidates: RequestModel[], targetParsed: URL): RequestModel {
+    // Ensure we have candidates
+    if (candidates.length === 0) {
+      throw new Error("No candidates provided for URL selection");
+    }
+    
+    // Heuristic 1: Prefer request with most overlapping query parameter keys
+    const targetParams = new URLSearchParams(targetParsed.search);
+    const targetParamKeys = Array.from(targetParams.keys());
+
+    if (targetParamKeys.length > 0) {
+      let bestMatch = candidates[0] || candidates[candidates.length - 1]; // Safe due to length check
+      let maxOverlap = 0;
+
+      for (const candidate of candidates) {
+        try {
+          const candidateParsed = new URL(candidate.url);
+          const candidateParams = new URLSearchParams(candidateParsed.search);
+          const candidateParamKeys = Array.from(candidateParams.keys());
+
+          const overlap = targetParamKeys.filter((key) =>
+            candidateParamKeys.includes(key)
+          ).length;
+          if (overlap > maxOverlap) {
+            maxOverlap = overlap;
+            bestMatch = candidate;
+          }
+        } catch {
+          // Skip invalid URLs that cannot be parsed
+        }
+      }
+
+      if (maxOverlap > 0) {
+        return bestMatch;
+      }
+    }
+
+    // Heuristic 2: Prefer request with most query parameters (most complex interaction)
+    return candidates.reduce((best, current) => {
+      try {
+        const bestParams = new URL(best.url).searchParams;
+        const currentParams = new URL(current.url).searchParams;
+        return Array.from(currentParams.keys()).length > Array.from(bestParams.keys()).length ? current : best;
+      } catch {
+        return best;
+      }
+    });
   }
 
   /**
@@ -3187,10 +3288,8 @@ export class HarvestMCPServer {
 
       const session = this.sessionManager.getSession(argsObj.sessionId);
 
-      // Validate that the URL exists in the HAR data
-      const targetRequest = session.harData.requests.find(
-        (req) => req.url === argsObj.url
-      );
+      // Validate that the URL exists in the HAR data using flexible matching
+      const targetRequest = this.findRequestByFlexibleUrl(session.harData.requests, argsObj.url);
 
       if (!targetRequest) {
         throw new HarvestError(
