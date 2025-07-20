@@ -2027,7 +2027,7 @@ function generateSessionAwareAPIMethods(
   parts.push("");
   parts.push("    // Make the request");
   parts.push(
-    "    const response = await fetch(\`\${baseUrl}?\${searchParams.toString()}\`, {"
+    "    const response = await fetch(`${baseUrl}?${searchParams.toString()}`, {"
   );
   parts.push(`      method: '${request.method}',`);
   parts.push("      headers: {");
@@ -2053,7 +2053,7 @@ function generateSessionAwareAPIMethods(
   parts.push("");
   parts.push("    if (!response.ok) {");
   parts.push(
-    "      throw new Error(\`API request failed: \${response.status} \${response.statusText}\`);"
+    "      throw new Error(`API request failed: ${response.status} ${response.statusText}`);"
   );
   parts.push("    }");
   parts.push("");
