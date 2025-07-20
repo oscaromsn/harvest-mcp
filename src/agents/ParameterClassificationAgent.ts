@@ -169,17 +169,18 @@ export async function classifyParameters(
       return [];
     }
 
-    // Phase 1: Heuristic analysis
-    const heuristicResults = analyzeParametersHeuristically(
-      allParameters,
-      request,
-      session
-    );
-
-    // Phase 2: Consistency analysis across session
+    // Phase 1: Consistency analysis across session (run first to inform heuristics)
     const consistencyResults = analyzeParameterConsistency(
       allParameters,
       session
+    );
+
+    // Phase 2: Heuristic analysis with consistency metrics
+    const heuristicResults = analyzeParametersHeuristically(
+      allParameters,
+      request,
+      session,
+      consistencyResults
     );
 
     // Merge heuristic and consistency results
@@ -282,15 +283,30 @@ function extractAllParameters(request: RequestModel): Array<{
 function analyzeParametersHeuristically(
   parameters: Array<{ name: string; value: string; location: string }>,
   _request: RequestModel,
-  _session: HarvestSession
+  _session: HarvestSession,
+  consistencyResults?: Map<
+    string,
+    { occurrenceCount: number; totalRequests: number; consistencyScore: number }
+  >
 ): ClassifiedParameter[] {
   const results: ClassifiedParameter[] = [];
 
   for (const param of parameters) {
+    const consistency = consistencyResults?.get(param.name);
+    const consistencyMetrics = consistency
+      ? {
+          consistencyScore: consistency.consistencyScore,
+          occurrenceRate:
+            consistency.occurrenceCount /
+            Math.max(consistency.totalRequests, 1),
+        }
+      : undefined;
+
     const analysis = classifyParameterHeuristically(
       param.name,
       param.value,
-      param.location
+      param.location,
+      consistencyMetrics
     );
 
     results.push({
@@ -300,9 +316,9 @@ function analyzeParametersHeuristically(
       confidence: analysis.confidence,
       source: "heuristic",
       metadata: {
-        occurrenceCount: 1, // Will be updated in consistency analysis
-        totalRequests: 1,
-        consistencyScore: 1.0,
+        occurrenceCount: consistency?.occurrenceCount || 1,
+        totalRequests: consistency?.totalRequests || 1,
+        consistencyScore: consistency?.consistencyScore || 1.0,
         parameterPattern: analysis.pattern,
         domainContext: analysis.domainContext || "unknown",
       },
@@ -318,7 +334,8 @@ function analyzeParametersHeuristically(
 function classifyParameterHeuristically(
   name: string,
   value: string,
-  location: string
+  location: string,
+  consistencyMetrics?: { consistencyScore: number; occurrenceRate: number }
 ): {
   classification: ParameterClassification;
   confidence: number;
@@ -327,6 +344,49 @@ function classifyParameterHeuristically(
 } {
   const nameLower = name.toLowerCase();
   const valueStr = String(value);
+
+  // HIGH-PRIORITY RULE: Check consistency metrics first
+  if (
+    consistencyMetrics &&
+    consistencyMetrics.consistencyScore > 0.9 &&
+    consistencyMetrics.occurrenceRate > 0.5
+  ) {
+    // High confidence that this is a static or session constant
+    if (
+      nameLower.includes("session") ||
+      nameLower.includes("token") ||
+      nameLower.includes("juristkn")
+    ) {
+      return {
+        classification: "sessionConstant",
+        confidence: 0.95,
+        pattern: "high_consistency_session",
+        domainContext: "session",
+      };
+    }
+
+    if (
+      (nameLower === "latitude" && valueStr === "0") ||
+      (nameLower === "longitude" && valueStr === "0") ||
+      nameLower.includes("version") ||
+      nameLower.includes("format")
+    ) {
+      return {
+        classification: "staticConstant",
+        confidence: 0.95,
+        pattern: "high_consistency_static",
+        domainContext: "configuration",
+      };
+    }
+
+    // For other highly consistent parameters, prefer static or session constant over dynamic
+    return {
+      classification: "staticConstant",
+      confidence: 0.9,
+      pattern: "high_consistency_generic",
+      domainContext: "static",
+    };
+  }
 
   // Check against domain patterns
   for (const [domain, config] of Object.entries(DOMAIN_PATTERN_LIBRARY)) {
@@ -511,7 +571,7 @@ function isDateLikeValue(value: string): boolean {
  */
 function analyzeParameterConsistency(
   parameters: Array<{ name: string; value: string; location: string }>,
-  _session: HarvestSession
+  session: HarvestSession
 ): Map<
   string,
   { occurrenceCount: number; totalRequests: number; consistencyScore: number }
@@ -521,13 +581,79 @@ function analyzeParameterConsistency(
     { occurrenceCount: number; totalRequests: number; consistencyScore: number }
   >();
 
-  // For now, return basic consistency data
-  // In a full implementation, this would analyze all requests in the session
+  // Extract all parameters from all requests in the session
+  const allSessionParameters = new Map<string, Map<string, number>>();
+  const totalRequests = session.harData?.requests?.length || 0;
+
+  if (totalRequests === 0 || !session.harData?.requests) {
+    // Fallback to basic data if no session data available
+    for (const param of parameters) {
+      consistencyMap.set(param.name, {
+        occurrenceCount: 1,
+        totalRequests: 1,
+        consistencyScore: 1.0,
+      });
+    }
+    return consistencyMap;
+  }
+
+  // Analyze all requests in the session to build parameter frequency maps
+  for (const request of session.harData.requests) {
+    const requestParams = extractAllParameters(request);
+
+    for (const param of requestParams) {
+      if (!allSessionParameters.has(param.name)) {
+        allSessionParameters.set(param.name, new Map<string, number>());
+      }
+
+      const valueMap = allSessionParameters.get(param.name);
+      if (!valueMap) {
+        continue;
+      }
+      const currentCount = valueMap.get(param.value) || 0;
+      valueMap.set(param.value, currentCount + 1);
+    }
+  }
+
+  // Calculate consistency metrics for each parameter
   for (const param of parameters) {
+    const valueMap = allSessionParameters.get(param.name);
+
+    if (!valueMap) {
+      // Parameter not found in session analysis, assume single occurrence
+      consistencyMap.set(param.name, {
+        occurrenceCount: 1,
+        totalRequests: 1,
+        consistencyScore: 1.0,
+      });
+      continue;
+    }
+
+    // Calculate metrics based on value frequency
+    const paramValueCount = valueMap.get(param.value) || 0;
+    const totalOccurrences = Array.from(valueMap.values()).reduce(
+      (sum, count) => sum + count,
+      0
+    );
+    const uniqueValues = valueMap.size;
+
+    // Consistency score: 1.0 means always the same value, 0.0 means always different
+    const consistencyScore =
+      uniqueValues === 1 ? 1.0 : paramValueCount / totalOccurrences;
+
     consistencyMap.set(param.name, {
-      occurrenceCount: 1,
-      totalRequests: 1,
-      consistencyScore: 1.0,
+      occurrenceCount: paramValueCount,
+      totalRequests: totalOccurrences,
+      consistencyScore: consistencyScore,
+    });
+
+    logger.debug("Parameter consistency analysis", {
+      parameterName: param.name,
+      parameterValue: param.value,
+      occurrenceCount: paramValueCount,
+      totalOccurrences: totalOccurrences,
+      uniqueValues: uniqueValues,
+      consistencyScore: consistencyScore,
     });
   }
 
@@ -551,9 +677,63 @@ function mergeAnalysisResults(
       result.metadata.totalRequests = consistency.totalRequests;
       result.metadata.consistencyScore = consistency.consistencyScore;
 
-      // Adjust confidence based on consistency
+      // High-priority rule: If parameter is highly consistent and occurs frequently,
+      // it's likely a session constant or static constant
+      if (consistency.consistencyScore > 0.9 && consistency.totalRequests > 2) {
+        const nameLower = result.name.toLowerCase();
+
+        // Check if it's a session-related parameter
+        if (
+          nameLower.includes("session") ||
+          nameLower.includes("token") ||
+          nameLower.includes("juristkn") ||
+          nameLower.includes("csrf")
+        ) {
+          result.classification = "sessionConstant";
+          result.confidence = 0.95;
+          result.source = "consistency_analysis";
+          logger.info(
+            "Parameter reclassified as sessionConstant due to high consistency",
+            {
+              parameterName: result.name,
+              consistencyScore: consistency.consistencyScore,
+              totalRequests: consistency.totalRequests,
+            }
+          );
+        }
+        // Check if it's static coordinate or configuration parameter
+        else if (
+          (nameLower === "latitude" && result.value === "0") ||
+          (nameLower === "longitude" && result.value === "0") ||
+          nameLower.includes("version") ||
+          nameLower.includes("format")
+        ) {
+          result.classification = "staticConstant";
+          result.confidence = 0.95;
+          result.source = "consistency_analysis";
+          logger.info(
+            "Parameter reclassified as staticConstant due to high consistency",
+            {
+              parameterName: result.name,
+              parameterValue: result.value,
+              consistencyScore: consistency.consistencyScore,
+            }
+          );
+        }
+        // For other highly consistent parameters, boost confidence in existing classification
+        else if (
+          result.classification === "sessionConstant" ||
+          result.classification === "staticConstant"
+        ) {
+          result.confidence = Math.min(result.confidence + 0.2, 0.98);
+        }
+      }
+
+      // Adjust confidence based on consistency for other cases
       if (consistency.consistencyScore < 0.5) {
         result.confidence *= 0.8; // Reduce confidence for inconsistent parameters
+      } else if (consistency.consistencyScore > 0.8) {
+        result.confidence = Math.min(result.confidence * 1.1, 0.95); // Boost confidence for consistent parameters
       }
     }
     return result;

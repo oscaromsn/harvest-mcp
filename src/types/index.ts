@@ -140,7 +140,7 @@ export interface ClassifiedParameter {
   value: string;
   classification: ParameterClassification;
   confidence: number;
-  source: "heuristic" | "llm" | "manual";
+  source: "heuristic" | "llm" | "manual" | "consistency_analysis";
   metadata: {
     occurrenceCount: number;
     totalRequests: number;
