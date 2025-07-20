@@ -149,30 +149,15 @@ function analyzeRequestAuthentication(
   let requirement: AuthenticationRequirement = "none";
   let isAuthFailure = false;
 
-  // Check URL for no-auth patterns - CRITICAL: This addresses the main bug report issue
+  // Store URL patterns for later use (moved from early return to avoid premature classification)
   const urlLower = request.url.toLowerCase();
-  const isPublicEndpoint =
+  const hasPublicEndpointPattern =
     urlLower.includes("/no-auth/") ||
     urlLower.includes("/public/") ||
     urlLower.includes("/anonymous/") ||
     urlLower.includes("/guest/");
 
-  if (isPublicEndpoint) {
-    return {
-      requestId,
-      url: request.url,
-      method: request.method,
-      authenticationType: "none",
-      requirement: "none",
-      tokens: [],
-      authHeaders: {},
-      authCookies: {},
-      authParams: {},
-      isAuthFailure: false,
-    };
-  }
-
-  // Analyze headers for authentication
+  // Analyze headers for authentication first (prioritize actual artifacts over URL patterns)
   for (const [headerName, headerValue] of Object.entries(request.headers)) {
     const lowerName = headerName.toLowerCase();
 
@@ -267,6 +252,20 @@ function analyzeRequestAuthentication(
     urlLower.includes("forbidden")
   ) {
     isAuthFailure = true;
+  }
+
+  // Only use URL patterns as fallback if no authentication artifacts were found
+  // This fixes the issue where "/no-auth/" URLs with session parameters were misclassified
+  const hasAuthArtifacts =
+    Object.keys(authHeaders).length > 0 ||
+    Object.keys(authCookies).length > 0 ||
+    Object.keys(authParams).length > 0 ||
+    tokens.length > 0;
+
+  // If no auth artifacts found and URL suggests public endpoint, classify as none
+  if (!hasAuthArtifacts && hasPublicEndpointPattern) {
+    authenticationType = "none";
+    requirement = "none";
   }
 
   return {
@@ -704,11 +703,17 @@ export function quickAuthCheck(request: RequestModel): {
 } {
   const analysis = analyzeRequestAuthentication(request, "quick_check");
 
+  // Determine if truly public based on lack of authentication AND URL patterns
+  const hasUrlPublicPattern =
+    analysis.url.toLowerCase().includes("/no-auth/") ||
+    analysis.url.toLowerCase().includes("/public/");
+
+  const isPublic =
+    analysis.authenticationType === "none" && hasUrlPublicPattern;
+
   return {
     hasAuth: analysis.authenticationType !== "none",
     authType: analysis.authenticationType,
-    isPublic:
-      analysis.url.toLowerCase().includes("/no-auth/") ||
-      analysis.url.toLowerCase().includes("/public/"),
+    isPublic,
   };
 }
