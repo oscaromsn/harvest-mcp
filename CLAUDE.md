@@ -36,7 +36,7 @@ bun run build           # Lint, format, and build for production
 ```
 
 **IMPORTANT**: before assume a task as done your last command always is `bun validate:quick` and only all issues underlying causes are adressed. on every todo list you write run `validate:quick` is its last task.
-
+/
 ### Testing Single Files
 ```bash
 # Run a single test file
