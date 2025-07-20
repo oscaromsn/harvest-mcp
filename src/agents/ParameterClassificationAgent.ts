@@ -8,6 +8,7 @@ import type {
 } from "../types/index.js";
 import { HarvestError } from "../types/index.js";
 import { createComponentLogger } from "../utils/logger.js";
+import { findBootstrapDependencies } from "./DependencyAgent.js";
 
 const logger = createComponentLogger("parameter-classification-agent");
 
@@ -204,16 +205,23 @@ export async function classifyParameters(
       );
     }
 
-    // Combine all results
-    const finalResults = combineClassificationResults(
+    // Phase 4: Bootstrap source detection for session constants
+    const intermediateResults = combineClassificationResults(
       preliminaryResults,
       llmResults
+    );
+
+    const finalResults = await enrichWithBootstrapSources(
+      intermediateResults,
+      session
     );
 
     logger.info("Parameter classification complete", {
       totalParameters: allParameters.length,
       heuristicClassified: heuristicResults.length,
       llmRefined: llmResults.length,
+      bootstrapEnriched: finalResults.filter((p) => p.metadata.bootstrapSource)
+        .length,
       finalClassified: finalResults.length,
     });
 
@@ -918,6 +926,104 @@ function combineClassificationResults(
   }
 
   return combined;
+}
+
+/**
+ * Enrich session constant parameters with bootstrap source information
+ */
+async function enrichWithBootstrapSources(
+  classifiedParameters: ClassifiedParameter[],
+  session: HarvestSession
+): Promise<ClassifiedParameter[]> {
+  try {
+    // Find parameters classified as sessionConstant
+    const sessionConstants = classifiedParameters.filter(
+      (p) => p.classification === "sessionConstant"
+    );
+
+    if (sessionConstants.length === 0) {
+      logger.debug(
+        "No session constants found, skipping bootstrap source detection"
+      );
+      return classifiedParameters;
+    }
+
+    // Extract parameter values for bootstrap dependency analysis
+    const sessionConstantValues = sessionConstants.map((p) => p.value);
+
+    logger.debug("Analyzing bootstrap sources for session constants", {
+      parameterCount: sessionConstants.length,
+      values: sessionConstantValues,
+    });
+
+    // Find bootstrap sources using DependencyAgent
+    const bootstrapSources = await findBootstrapDependencies(
+      sessionConstantValues,
+      session.harData
+    );
+
+    // Enrich parameters with bootstrap source information
+    const enrichedParameters = classifiedParameters.map((param) => {
+      if (param.classification === "sessionConstant") {
+        const bootstrapSource = bootstrapSources.get(param.value);
+
+        if (bootstrapSource) {
+          logger.debug("Found bootstrap source for parameter", {
+            parameter: param.name,
+            value: param.value,
+            sourceType: bootstrapSource.type,
+            sourceUrl: bootstrapSource.sourceUrl,
+          });
+
+          return {
+            ...param,
+            confidence: Math.min(param.confidence + 0.1, 1.0), // Boost confidence
+            metadata: {
+              ...param.metadata,
+              bootstrapSource,
+              requiresBootstrap: true,
+              domainContext:
+                param.metadata.domainContext || "session_bootstrap",
+            },
+          };
+        }
+        logger.warn("No bootstrap source found for session constant", {
+          parameter: param.name,
+          value: param.value,
+        });
+
+        return {
+          ...param,
+          metadata: {
+            ...param.metadata,
+            requiresBootstrap: true,
+            domainContext: param.metadata.domainContext || "session_unresolved",
+          },
+        };
+      }
+
+      return param;
+    });
+
+    const enrichedCount = enrichedParameters.filter(
+      (p) => p.metadata.bootstrapSource
+    ).length;
+
+    logger.info("Bootstrap source enrichment complete", {
+      sessionConstants: sessionConstants.length,
+      bootstrapSourcesFound: bootstrapSources.size,
+      parametersEnriched: enrichedCount,
+    });
+
+    return enrichedParameters;
+  } catch (error) {
+    logger.error("Bootstrap source enrichment failed", {
+      error: error instanceof Error ? error.message : "Unknown error",
+    });
+
+    // Return original parameters if bootstrap enrichment fails
+    return classifiedParameters;
+  }
 }
 
 /**
