@@ -29,6 +29,7 @@ import {
   ManualSessionStartSchema,
   ManualSessionStopSchema,
   type RequestDependency,
+  type RequestModel,
   type SessionConfig,
   SessionIdSchema,
   type SessionStartResponse,
@@ -2356,19 +2357,68 @@ export class HarvestMCPServer {
     session: ReturnType<typeof this.sessionManager.getSession>
   ): CallToolResult | null {
     if (session.state.toBeProcessedNodes.length === 0) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({
-              status: "no_nodes_to_process",
-              message: "No nodes available for processing",
-              isComplete: session.dagManager.isComplete(),
-              totalNodes: session.dagManager.getNodeCount(),
-            }),
-          },
-        ],
-      };
+      // When queue is empty, check if DAG has unresolved nodes
+      const unresolvedNodes = session.dagManager.getUnresolvedNodes();
+      
+      if (unresolvedNodes.length > 0) {
+        // Analysis is blocked - queue is empty but nodes still need resolution
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                status: "blocked_on_dependencies",
+                message: "Analysis stalled: nodes have unresolved dependencies",
+                isComplete: false,
+                totalNodes: session.dagManager.getNodeCount(),
+                unresolvedNodes: unresolvedNodes.length,
+                blockedNodes: unresolvedNodes.map(node => {
+                  const dagNode = session.dagManager.getNode(node.nodeId);
+                  let curlCommand = "Not available";
+                  
+                  // Extract curl command for request-based nodes
+                  if (dagNode && 
+                      (dagNode.nodeType === "curl" || dagNode.nodeType === "master_curl" || dagNode.nodeType === "master") &&
+                      dagNode.content && "key" in dagNode.content) {
+                    try {
+                      curlCommand = dagNode.content.key.toCurlCommand();
+                    } catch {
+                      curlCommand = "Error generating curl command";
+                    }
+                  }
+                  
+                  return {
+                    nodeId: node.nodeId,
+                    unresolvedParts: node.unresolvedParts,
+                    curlCommand
+                  };
+                }),
+                recommendations: [
+                  "Use 'debug_get_unresolved_nodes' to see detailed blocking information",
+                  "Consider manual intervention if dependencies cannot be auto-resolved",
+                  "Check if unresolved parts are client-generated values that need placeholders"
+                ]
+              }),
+            },
+          ],
+        };
+      } else {
+        // Truly complete - queue is empty and no unresolved nodes
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                status: "analysis_complete",
+                message: "All nodes processed and resolved",
+                isComplete: true,
+                totalNodes: session.dagManager.getNodeCount(),
+                unresolvedNodes: 0
+              }),
+            },
+          ],
+        };
+      }
     }
     return null;
   }
@@ -4491,9 +4541,27 @@ ${recommendationsList}
           `Iteration ${iterations}: ${processData.error || "Processing failed"}`
         );
       } else {
-        steps.push(
-          `📦 Processed node ${iterations}: ${processData.message || "Node processed"}`
-        );
+        // Handle different status types from enhanced processNextNode
+        if (processData.status === "blocked_on_dependencies") {
+          // Analysis is stalled - break the loop and provide detailed information
+          steps.push(`🚫 Analysis stalled after ${iterations} iterations: ${processData.message}`);
+          if (processData.blockedNodes && processData.blockedNodes.length > 0) {
+            steps.push(`📋 Blocked nodes: ${processData.blockedNodes.length} nodes with unresolved dependencies`);
+            warnings.push(`Unresolved dependencies in ${processData.blockedNodes.length} nodes`);
+            warnings.push("Use debug tools to inspect blocked nodes and their dependencies");
+          }
+          break; // Exit the loop - we're stalled and need intervention
+        } else if (processData.status === "analysis_complete") {
+          // Analysis completed during processing
+          isComplete = true;
+          steps.push(`✅ Analysis completed during iteration ${iterations}`);
+          break;
+        } else {
+          // Regular processing or legacy status
+          steps.push(
+            `📦 Processed node ${iterations}: ${processData.message || "Node processed"}`
+          );
+        }
       }
     }
 
