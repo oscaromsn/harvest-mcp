@@ -593,7 +593,7 @@ function generateRequestExecution(
   lines.push("    if (response.status === 401 || response.status === 403) {");
   lines.push("      const authError = new AuthenticationError(");
   lines.push(
-    "        `Authentication failed: ${response.status} ${response.statusText}`,"
+    '        "Authentication failed: " + response.status + " " + response.statusText,'
   );
   lines.push("        response.status,");
   lines.push("        await response.text()");
@@ -612,7 +612,7 @@ function generateRequestExecution(
   lines.push("          if (authConfig.type === 'bearer' && newToken) {");
   lines.push("            authConfig.token = newToken;");
   lines.push(
-    '            options.headers["Authorization"] = `Bearer ${newToken}`;'
+    '            options.headers["Authorization"] = "Bearer " + newToken;'
   );
   lines.push(
     "            console.log('Token refreshed, retrying request...');"
@@ -635,7 +635,7 @@ function generateRequestExecution(
   lines.push("");
   lines.push("    if (!response.ok) {");
   lines.push(
-    "      throw new Error(`Request failed: ${response.status} ${response.statusText}`);"
+    '      throw new Error("Request failed: " + response.status + " " + response.statusText);'
   );
   lines.push("    }");
   lines.push("");
@@ -871,7 +871,7 @@ function generateAuthenticationSetup(
       );
       lines.push("    }");
       lines.push(
-        '    headers["Authorization"] = `Bearer ${authConfig.token}`;'
+        '    headers["Authorization"] = "Bearer " + authConfig.token;'
       );
       break;
 
@@ -899,9 +899,9 @@ function generateAuthenticationSetup(
       );
       lines.push("    }");
       lines.push(
-        "    const basicAuth = btoa(`${authConfig.username}:${authConfig.password}`);"
+        '    const basicAuth = btoa(authConfig.username + ":" + authConfig.password);'
       );
-      lines.push('    headers["Authorization"] = `Basic ${basicAuth}`;');
+      lines.push('    headers["Authorization"] = "Basic " + basicAuth;');
       break;
 
     case "session_cookie":
@@ -916,7 +916,7 @@ function generateAuthenticationSetup(
       lines.push(
         "    const cookiePairs = Object.entries(authConfig.sessionCookies)"
       );
-      lines.push("      .map(([name, value]) => `${name}=${value}`)");
+      lines.push('      .map(([name, value]) => name + "=" + value)');
       lines.push("      .join('; ');");
       lines.push("    headers['Cookie'] = cookiePairs;");
       break;
@@ -938,6 +938,6 @@ function generateAuthenticationSetup(
   lines.push("");
   lines.push("    // Add authentication validation logging");
   lines.push(
-    "    console.log(`Making request with ${authInfo.authType} authentication`);"
+    '    console.log("Making request with " + authInfo.authType + " authentication");'
   );
 }

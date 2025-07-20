@@ -710,51 +710,49 @@ export class SessionManager {
       }
 
       analysis.isReady = analysis.blockers.length === 0;
-    } else {
+    } else if (harValidation?.authAnalysis) {
       // Check if HAR validation detected authentication issues
-      if (harValidation?.authAnalysis) {
-        const harAuthAnalysis = harValidation.authAnalysis;
+      const harAuthAnalysis = harValidation.authAnalysis;
 
-        if (harAuthAnalysis.authErrors > 0) {
-          analysis.errorCount = harAuthAnalysis.authErrors;
-          analysis.blockers.push(
-            `Found ${harAuthAnalysis.authErrors} authentication errors in HAR data`
-          );
-          analysis.recommendations.push(
-            "Verify authentication tokens are valid and not expired"
-          );
-          analysis.recommendations.push(
-            "Re-capture HAR data with valid authentication"
-          );
-        }
-
-        if (
-          harAuthAnalysis.hasTokens &&
-          harAuthAnalysis.tokenPatterns.length > 0
-        ) {
-          analysis.warnings.push(
-            "Authentication tokens detected in requests - ensure they are handled dynamically"
-          );
-        }
-
-        if (
-          !harAuthAnalysis.hasAuthHeaders &&
-          !harAuthAnalysis.hasCookies &&
-          !harAuthAnalysis.hasTokens
-        ) {
-          analysis.warnings.push(
-            "No authentication mechanisms detected - API may be public or authentication was not captured"
-          );
-        }
-
-        analysis.analysisComplete = true;
-        analysis.isReady = analysis.blockers.length === 0;
-      } else {
-        analysis.blockers.push("Authentication analysis not performed");
+      if (harAuthAnalysis.authErrors > 0) {
+        analysis.errorCount = harAuthAnalysis.authErrors;
+        analysis.blockers.push(
+          `Found ${harAuthAnalysis.authErrors} authentication errors in HAR data`
+        );
         analysis.recommendations.push(
-          "Run authentication analysis to detect requirements"
+          "Verify authentication tokens are valid and not expired"
+        );
+        analysis.recommendations.push(
+          "Re-capture HAR data with valid authentication"
         );
       }
+
+      if (
+        harAuthAnalysis.hasTokens &&
+        harAuthAnalysis.tokenPatterns.length > 0
+      ) {
+        analysis.warnings.push(
+          "Authentication tokens detected in requests - ensure they are handled dynamically"
+        );
+      }
+
+      if (
+        !harAuthAnalysis.hasAuthHeaders &&
+        !harAuthAnalysis.hasCookies &&
+        !harAuthAnalysis.hasTokens
+      ) {
+        analysis.warnings.push(
+          "No authentication mechanisms detected - API may be public or authentication was not captured"
+        );
+      }
+
+      analysis.analysisComplete = true;
+      analysis.isReady = analysis.blockers.length === 0;
+    } else {
+      analysis.blockers.push("Authentication analysis not performed");
+      analysis.recommendations.push(
+        "Run authentication analysis to detect requirements"
+      );
     }
 
     return analysis;
