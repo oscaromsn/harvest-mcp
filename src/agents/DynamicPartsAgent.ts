@@ -65,8 +65,8 @@ export function createFunctionDefinition(): FunctionDefinition {
     name: "identify_dynamic_parts",
     description:
       "Given the above cURL command, identify which parts are dynamic and validated by the server " +
-      "for correctness (e.g., IDs, tokens, session variables). Exclude any parameters that represent " +
-      "arbitrary user input or general data that can be hardcoded (e.g., amounts, notes, messages).",
+      "for correctness (e.g., authentication tokens, session IDs, CSRF tokens, API keys). Include all " +
+      "authentication-related values but exclude arbitrary user input or general data that can be hardcoded.",
     parameters: {
       type: "object",
       properties: {
@@ -74,10 +74,11 @@ export function createFunctionDefinition(): FunctionDefinition {
           type: "array",
           items: { type: "string" },
           description:
-            "List of dynamic parts identified in the cURL command. Do not include duplicates. " +
-            "Only strictly include the dynamic values (not the keys or any not extra part in front and after the value) of parts that are unique to a user or session " +
-            "and, if incorrect, will cause the request to fail. " +
-            "Do not include the keys, only the values.",
+            "List of dynamic parts identified in the cURL command, with special focus on authentication tokens. " +
+            "Include: Bearer tokens, API keys, session cookies, CSRF tokens, authentication parameters. " +
+            "Only include the dynamic values (not the keys) of parts that are unique to a user or session " +
+            "and, if incorrect, will cause the request to fail due to authentication or authorization errors. " +
+            "Do not include duplicates. Do not include the keys, only the values.",
         },
       },
       required: ["dynamic_parts"],
@@ -99,11 +100,13 @@ Task:
 Use your best judgment to identify which parts of the cURL command are dynamic, specific to a user or session, and are checked by the server for validity. These include tokens, IDs, session variables, or any other values that are unique to a user or session and, if incorrect, will cause the request to fail.
 
 Important:
-    - IGNORE THE COOKIE HEADER
-    - Ignore common headers like user-agent, sec-ch-ua, accept-encoding, referer, etc.
+    - INCLUDE authentication tokens from Authorization headers, API key headers, and authentication cookies
+    - INCLUDE session identifiers, CSRF tokens, and authentication parameters
+    - Ignore common non-authentication headers like user-agent, sec-ch-ua, accept-encoding, referer, etc.
     - Exclude parameters that represent arbitrary user input or general data that can be hardcoded, such as amounts, notes, messages, actions, etc.
     - Only output the variable values and not the keys.
-    - Only include dynamic parts that are unique identifiers, tokens, or session variables.
+    - Focus on unique identifiers, authentication tokens, session variables, and security tokens.
+    - Pay special attention to Bearer tokens, API keys, session cookies, and URL-based authentication parameters.
 
 ${Object.keys(inputVariables).length > 0 ? `Input Variables Available: ${JSON.stringify(inputVariables)}` : ""}`;
 }

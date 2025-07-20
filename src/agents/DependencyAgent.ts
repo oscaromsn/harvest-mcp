@@ -207,16 +207,29 @@ export function findRequestDependencies(
         continue;
       }
 
-      // Check if the part exists in the response text
+      // Check if the part exists in the response text OR response headers
       const responseText = request.response?.text || "";
+      const responseHeaders = request.response?.headers || {};
+      const responseHeadersText = Object.entries(responseHeaders)
+        .map(([name, value]) => `${name}: ${value}`)
+        .join("\n");
       const curlString = request.toString();
 
       // Check conditions:
-      // 1. Part is in response text but not in request
+      // 1. Part is in response text/headers but not in request
       // 2. URL-decoded part is in request
+      const foundInResponseText = responseText
+        .toLowerCase()
+        .includes(part.toLowerCase());
+      const foundInResponseHeaders = responseHeadersText
+        .toLowerCase()
+        .includes(part.toLowerCase());
+      const foundInRequest = curlString
+        .toLowerCase()
+        .includes(part.toLowerCase());
+
       if (
-        (responseText.toLowerCase().includes(part.toLowerCase()) &&
-          !curlString.toLowerCase().includes(part.toLowerCase())) ||
+        ((foundInResponseText || foundInResponseHeaders) && !foundInRequest) ||
         (curlString.includes(decodeURIComponent(part)) &&
           !curlString.includes(part))
       ) {
