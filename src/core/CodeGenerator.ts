@@ -718,19 +718,25 @@ function inferResponseTypes(session: HarvestSession): InferredResponseType[] {
     const allNodes = session.dagManager.getAllNodes();
 
     for (const [, node] of allNodes) {
-      if (!node || !node.content.key) continue;
+      if (!node || !node.content.key) {
+        continue;
+      }
 
       const request = node.content.key as RequestModel;
 
       // Check if we have response data for this request
       const responseData = extractResponseData(request);
-      if (!responseData) continue;
+      if (!responseData) {
+        continue;
+      }
 
       // Generate a unique interface name based on the endpoint
       const interfaceName = generateResponseInterfaceName(request.url);
 
       // Avoid duplicates
-      if (seen.has(interfaceName)) continue;
+      if (seen.has(interfaceName)) {
+        continue;
+      }
       seen.add(interfaceName);
 
       // Infer fields from response data
@@ -835,7 +841,9 @@ function inferFieldsFromData(
     });
 
     // Limit to avoid overly complex interfaces
-    if (fields.length >= 20) break;
+    if (fields.length >= 20) {
+      break;
+    }
   }
 
   return fields;
@@ -981,9 +989,12 @@ export function generateFooter(
   for (const nodeId of sortedNodeIds) {
     const node = session.dagManager.getNode(nodeId);
     if (node && (node.nodeType === "master_curl" || node.nodeType === "curl")) {
-      if (nodeFunctionNameMap && nodeFunctionNameMap.has(nodeId)) {
+      if (nodeFunctionNameMap?.has(nodeId)) {
         // Use the deduplicated function name from the mapping
-        functionNames.push(nodeFunctionNameMap.get(nodeId)!);
+        const mappedName = nodeFunctionNameMap.get(nodeId);
+        if (mappedName) {
+          functionNames.push(mappedName);
+        }
       } else {
         // Fallback to original generation method
         functionNames.push(generateNodeFunctionName(node, session));
@@ -1008,7 +1019,7 @@ export function generateFooter(
         sortedNodeIds.some((nodeId) => {
           const node = session.dagManager.getNode(nodeId);
           if (node?.nodeType === "master_curl") {
-            if (nodeFunctionNameMap && nodeFunctionNameMap.has(nodeId)) {
+            if (nodeFunctionNameMap?.has(nodeId)) {
               return nodeFunctionNameMap.get(nodeId) === name;
             }
             return generateNodeFunctionName(node, session) === name;

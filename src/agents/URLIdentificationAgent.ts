@@ -520,7 +520,9 @@ function calculateComprehensiveRelevanceScore(
  * Calculate contextual score based on prompt-URL semantic matching
  */
 function calculateContextualScore(url: string, prompt?: string): number {
-  if (!prompt) return 0;
+  if (!prompt) {
+    return 0;
+  }
 
   const urlLower = url.toLowerCase();
   const promptLower = prompt.toLowerCase();
@@ -535,11 +537,21 @@ function calculateContextualScore(url: string, prompt?: string): number {
     promptLower.includes("acordao") ||
     promptLower.includes("judge")
   ) {
-    if (urlLower.includes("jurisprudencia")) score += 15;
-    if (urlLower.includes("pesquisa")) score += 20; // High boost for search in legal context
-    if (urlLower.includes("tribunal")) score += 10;
-    if (urlLower.includes("acordao")) score += 12;
-    if (urlLower.includes("decisao")) score += 12;
+    if (urlLower.includes("jurisprudencia")) {
+      score += 15;
+    }
+    if (urlLower.includes("pesquisa")) {
+      score += 20; // High boost for search in legal context
+    }
+    if (urlLower.includes("tribunal")) {
+      score += 10;
+    }
+    if (urlLower.includes("acordao")) {
+      score += 12;
+    }
+    if (urlLower.includes("decisao")) {
+      score += 12;
+    }
   }
 
   // Search-related context scoring
@@ -551,11 +563,15 @@ function calculateContextualScore(url: string, prompt?: string): number {
     promptLower.includes("buscar") ||
     promptLower.includes("pesquisar")
   ) {
-    if (urlLower.includes("pesquisa") || urlLower.includes("search"))
+    if (urlLower.includes("pesquisa") || urlLower.includes("search")) {
       score += 25;
-    if (urlLower.includes("query") || urlLower.includes("consulta"))
+    }
+    if (urlLower.includes("query") || urlLower.includes("consulta")) {
       score += 15;
-    if (urlLower.includes("find") || urlLower.includes("busca")) score += 12;
+    }
+    if (urlLower.includes("find") || urlLower.includes("busca")) {
+      score += 12;
+    }
   }
 
   // Filter/API integration context
@@ -569,8 +585,12 @@ function calculateContextualScore(url: string, prompt?: string): number {
     const paramCount = (url.split("?")[1] || "")
       .split("&")
       .filter((p) => p.trim()).length;
-    if (paramCount > 5) score += 10;
-    if (paramCount > 10) score += 15;
+    if (paramCount > 5) {
+      score += 10;
+    }
+    if (paramCount > 10) {
+      score += 15;
+    }
   }
 
   // TypeScript/fetcher generation context
@@ -581,8 +601,12 @@ function calculateContextualScore(url: string, prompt?: string): number {
     promptLower.includes("client")
   ) {
     // Prefer REST API endpoints for code generation
-    if (urlLower.includes("/api/")) score += 10;
-    if (urlLower.includes("/no-auth/")) score += 8; // Public APIs are easier to integrate
+    if (urlLower.includes("/api/")) {
+      score += 10;
+    }
+    if (urlLower.includes("/no-auth/")) {
+      score += 8; // Public APIs are easier to integrate
+    }
   }
 
   return score;
