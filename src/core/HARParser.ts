@@ -658,17 +658,33 @@ function parseRequestHeaders(
 }
 
 /**
- * Parse query string parameters
+ * Parse query string parameters from HAR queryString array or URL fallback
  */
 function parseQueryParams(
-  queryString: HarQueryString[] | undefined
+  queryString: HarQueryString[] | undefined,
+  url?: string
 ): Record<string, string> {
   const queryParams: Record<string, string> = {};
+
+  // First, try to use the queryString array from HAR
   for (const param of queryString || []) {
     if (param.name && param.value !== undefined) {
       queryParams[param.name] = param.value;
     }
   }
+
+  // If no parameters found and we have a URL, extract from URL directly
+  if (Object.keys(queryParams).length === 0 && url) {
+    try {
+      const urlObj = new URL(url);
+      for (const [name, value] of urlObj.searchParams) {
+        queryParams[name] = value;
+      }
+    } catch (_error) {
+      // URL parsing failed, ignore and return empty object
+    }
+  }
+
   return queryParams;
 }
 
@@ -708,7 +724,7 @@ export function formatRequest(harRequest: HarRequest): RequestModel {
   const method = harRequest.method || "GET";
   const url = harRequest.url || "";
   const headers = parseRequestHeaders(harRequest.headers);
-  const queryParams = parseQueryParams(harRequest.queryString);
+  const queryParams = parseQueryParams(harRequest.queryString, url);
   const body = parseRequestBody(harRequest.postData);
 
   return new Request(
