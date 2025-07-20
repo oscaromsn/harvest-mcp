@@ -248,6 +248,23 @@ describe("SessionManager", () => {
         isComplete: () => true,
         getUnresolvedNodes: () => [],
         getNodeCount: () => 1,
+        getNode: (nodeId: string) => ({
+          id: nodeId,
+          content: { key: { url: session.state.actionUrl } },
+        }),
+        areAllNodesParameterClassified: () => true,
+        getNodesNeedingClassification: () => [],
+        getTrulyDynamicParts: () => [],
+        getAllNodes: () =>
+          new Map([
+            [
+              "test-master-node",
+              {
+                id: "test-master-node",
+                content: { key: { url: session.state.actionUrl } },
+              },
+            ],
+          ]),
       };
       session.dagManager = mockDAGManager as any;
 
@@ -348,6 +365,162 @@ describe("SessionManager", () => {
       analysis = sessionManager.analyzeCompletionState(sessionId);
       expect(analysis.recommendations).toContain(
         "Verify HAR file contains valid HTTP requests"
+      );
+    });
+
+    it("should correctly detect actionUrl state synchronization issue", async () => {
+      const params: SessionStartParams = {
+        harPath: "tests/fixtures/test-data/pangea_search.har",
+        prompt: "test session",
+      };
+
+      const sessionId = await sessionManager.createSession(params);
+      const session = sessionManager.getSession(sessionId);
+
+      // Simulate the bug scenario: actionUrl is set but hasActionUrl returns false
+      session.state.masterNodeId = "test-master-node";
+      session.state.actionUrl =
+        "https://jurisprudencia.jt.jus.br/jurisprudencia-nacional-backend/api/no-auth/pesquisa?sessionId=_95b8n8u&latitude=0&longitude=0";
+
+      // Mock DAG manager to simulate having a master node
+      const mockDAGManager = {
+        isComplete: () => true,
+        getUnresolvedNodes: () => [],
+        getNodeCount: () => 1,
+        getNode: (nodeId: string) => ({
+          id: nodeId,
+          url: session.state.actionUrl,
+        }),
+        getAllNodes: () =>
+          new Map([
+            [
+              "test-master-node",
+              { id: "test-master-node", url: session.state.actionUrl },
+            ],
+          ]),
+        areAllNodesParameterClassified: () => true,
+        getNodesNeedingClassification: () => [],
+        getTrulyDynamicParts: () => [],
+      };
+      session.dagManager = mockDAGManager as any;
+
+      const analysis = sessionManager.analyzeCompletionState(sessionId);
+
+      // This test validates the fix: when actionUrl is set, hasActionUrl should be true
+      expect(analysis.diagnostics.hasActionUrl).toBe(true);
+      expect(analysis.diagnostics.hasMasterNode).toBe(true);
+
+      // The critical check: should NOT have "Target action URL has not been identified" blocker
+      expect(analysis.blockers).not.toContain(
+        "Target action URL has not been identified"
+      );
+
+      // Since we have actionUrl, masterNode, and complete DAG, analysis should be complete
+      expect(analysis.isComplete).toBe(true);
+      expect(analysis.blockers).toHaveLength(0);
+    });
+
+    it("should handle edge case where actionUrl is empty string", async () => {
+      const params: SessionStartParams = {
+        harPath: "tests/fixtures/test-data/pangea_search.har",
+        prompt: "test session",
+      };
+
+      const sessionId = await sessionManager.createSession(params);
+      const session = sessionManager.getSession(sessionId);
+
+      // Test edge case: actionUrl is empty string
+      session.state.masterNodeId = "test-master-node";
+      session.state.actionUrl = "";
+
+      const analysis = sessionManager.analyzeCompletionState(sessionId);
+
+      // Empty string should be considered as no actionUrl
+      expect(analysis.diagnostics.hasActionUrl).toBe(false);
+      // Since masterNodeId is set but no actual node exists, expect different blocker
+      expect(analysis.blockers).toContain(
+        "Master node ID is set but node does not exist in DAG"
+      );
+    });
+
+    it("should handle edge case where actionUrl is undefined", async () => {
+      const params: SessionStartParams = {
+        harPath: "tests/fixtures/test-data/pangea_search.har",
+        prompt: "test session",
+      };
+
+      const sessionId = await sessionManager.createSession(params);
+      const session = sessionManager.getSession(sessionId);
+
+      // Test edge case: actionUrl is undefined
+      session.state.masterNodeId = "test-master-node";
+      session.state.actionUrl = undefined as any;
+
+      const analysis = sessionManager.analyzeCompletionState(sessionId);
+
+      // Undefined should be considered as no actionUrl
+      expect(analysis.diagnostics.hasActionUrl).toBe(false);
+      // Since masterNodeId is set but no actual node exists, expect different blocker
+      expect(analysis.blockers).toContain(
+        "Master node ID is set but node does not exist in DAG"
+      );
+    });
+
+    it("should recover actionUrl from master node when state sync issue occurs", async () => {
+      const params: SessionStartParams = {
+        harPath: "tests/fixtures/test-data/pangea_search.har",
+        prompt: "test session",
+      };
+
+      const sessionId = await sessionManager.createSession(params);
+      const session = sessionManager.getSession(sessionId);
+
+      // Create a master node with a URL
+      const testUrl = "https://jurisprudencia.jt.jus.br/api/no-auth/pesquisa";
+      const nodeContent = {
+        key: {
+          url: testUrl,
+          method: "GET",
+          headers: {},
+          body: null,
+        },
+        value: null,
+      };
+
+      const masterNodeId = session.dagManager.addNode(
+        "master",
+        nodeContent as any,
+        {
+          dynamicParts: [],
+        }
+      );
+
+      // Set the master node ID but deliberately leave actionUrl unset to simulate the bug
+      session.state.masterNodeId = masterNodeId;
+      session.state.actionUrl = undefined as any; // Simulate the state sync issue
+
+      // Mock the extended DAG manager methods required for completion analysis
+      const mockExtendedMethods = {
+        areAllNodesParameterClassified: () => true,
+        getNodesNeedingClassification: () => [],
+        getTrulyDynamicParts: () => [],
+        getAllNodes: () =>
+          new Map([[masterNodeId, { id: masterNodeId, url: testUrl }]]),
+      };
+
+      // Add missing methods to the existing DAG manager
+      Object.assign(session.dagManager, mockExtendedMethods);
+
+      const analysis = sessionManager.analyzeCompletionState(sessionId);
+
+      // The fix should recover the actionUrl from the master node
+      expect(session.state.actionUrl).toBe(testUrl);
+      expect(analysis.diagnostics.hasActionUrl).toBe(true);
+      expect(analysis.diagnostics.hasMasterNode).toBe(true);
+
+      // Should NOT have the blocker since state was recovered
+      expect(analysis.blockers).not.toContain(
+        "Target action URL has not been identified"
       );
     });
   });
