@@ -1,9 +1,13 @@
-import type {
-  AuthenticationType,
-  DAGNode,
-  HarvestSession,
-  RequestModel,
-  TokenInfo,
+import {
+  type AuthenticationType,
+  type ClassifiedParameter,
+  type DAGNode,
+  HarvestError,
+  type HarvestSession,
+  type ParameterDiagnostic,
+  type ParameterErrorContext,
+  type RequestModel,
+  type TokenInfo,
 } from "../types/index.js";
 
 /**
@@ -35,6 +39,54 @@ export function generateWrapperScript(session: HarvestSession): string {
   if (!session.dagManager.isComplete()) {
     const unresolvedNodes = session.dagManager.getUnresolvedNodes();
 
+    // Generate detailed parameter diagnostics
+    const diagnostics: ParameterDiagnostic[] = [];
+    const enhancedUnresolvedNodes = [];
+
+    for (const node of unresolvedNodes) {
+      const nodeParameters: ClassifiedParameter[] = []; // Parameters for this node
+
+      for (const param of node.unresolvedParts) {
+        // For now, provide basic diagnostic without full classification data
+        // This will be enhanced when ParameterClassificationAgent is integrated
+        const diagnostic: ParameterDiagnostic = {
+          parameter: param,
+          classification: "dynamic", // Default until classification system is integrated
+          issue: `Parameter "${param}" cannot be resolved from previous API responses`,
+          possibleSources: [
+            "Previous API response data",
+            "User input parameters",
+            "Session initialization data",
+            "Authentication flow",
+            "Cookie data",
+          ],
+          recommendedAction: `Verify if "${param}" should be classified as sessionConstant or userInput`,
+          debugCommand: `debug_get_node_details --session=${session.id} --node=${node.nodeId}`,
+        };
+
+        diagnostics.push(diagnostic);
+        nodeParameters.push({
+          name: param,
+          value: param,
+          classification: "dynamic",
+          confidence: 0.8,
+          source: "heuristic",
+          metadata: {
+            occurrenceCount: 1,
+            totalRequests: 1,
+            consistencyScore: 1.0,
+            parameterPattern: `^${param}$`,
+            domainContext: "unresolved",
+          },
+        });
+      }
+
+      enhancedUnresolvedNodes.push({
+        nodeId: node.nodeId,
+        parameters: nodeParameters,
+      });
+    }
+
     // Create detailed error message with actionable information
     const errorDetails = unresolvedNodes
       .map(
@@ -45,10 +97,30 @@ export function generateWrapperScript(session: HarvestSession): string {
     const actionableMessage =
       unresolvedNodes.length === 0
         ? "Analysis appears complete but DAG validation failed. This may indicate an internal issue with dependency resolution."
-        : `The following ${unresolvedNodes.length} nodes still have unresolved dependencies:\n${errorDetails}\n\nTo resolve this:\n  1. Continue processing with 'analysis_process_next_node'\n  2. Check for manual intervention needs with debug tools\n  3. Verify all required input variables are provided`;
+        : `The following ${unresolvedNodes.length} nodes still have unresolved dependencies:\n${errorDetails}\n\nTo resolve this:\n  1. Continue processing with 'analysis_process_next_node'\n  2. Check for manual intervention needs with 'debug_get_unresolved_nodes'\n  3. Use 'debug_get_completion_blockers' for detailed analysis\n  4. Verify all required input variables are provided`;
 
-    throw new Error(
-      `Code generation failed: Analysis not complete.\n\n${actionableMessage}`
+    // Create enhanced error context
+    const errorContext: ParameterErrorContext = {
+      sessionId: session.id,
+      unresolvedNodes: enhancedUnresolvedNodes,
+      recommendations: [
+        "Use debug_get_completion_blockers for comprehensive analysis",
+        "Check if unresolved parameters are session constants",
+        "Verify input variables are correctly provided",
+        "Consider manual parameter classification if needed",
+      ],
+      debugCommands: [
+        `debug_get_completion_blockers --session=${session.id}`,
+        `debug_get_unresolved_nodes --session=${session.id}`,
+        `session_status --session=${session.id}`,
+      ],
+      parameterAnalysis: diagnostics,
+    };
+
+    throw new HarvestError(
+      `Code generation failed: Analysis not complete.\n\n${actionableMessage}`,
+      "ANALYSIS_INCOMPLETE",
+      errorContext
     );
   }
 

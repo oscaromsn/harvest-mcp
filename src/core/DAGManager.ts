@@ -311,12 +311,22 @@ export class DAGManager {
 
   /**
    * Check if the graph has no unresolved nodes (all dynamic parts resolved)
+   * Enhanced to consider parameter classification - only truly "dynamic" parameters block completion
    */
   isComplete(): boolean {
     for (const nodeId of this.graph.nodes()) {
       const node = this.graph.node(nodeId);
       if (node?.dynamicParts && node.dynamicParts.length > 0) {
-        return false;
+        // If we have parameter classifications, filter out non-dynamic parameters
+        if (node.classifiedParameters && node.classifiedParameters.length > 0) {
+          const trulyDynamicParts = this.getTrulyDynamicParts(node);
+          if (trulyDynamicParts.length > 0) {
+            return false;
+          }
+        } else {
+          // Fallback to old behavior if no classification is available
+          return false;
+        }
       }
     }
     return true;
@@ -324,6 +334,7 @@ export class DAGManager {
 
   /**
    * Get all unresolved nodes (nodes with remaining dynamic parts)
+   * Enhanced to consider parameter classification - only truly "dynamic" parameters are considered unresolved
    */
   getUnresolvedNodes(): Array<{ nodeId: string; unresolvedParts: string[] }> {
     const unresolvedNodes: Array<{
@@ -334,14 +345,83 @@ export class DAGManager {
     for (const nodeId of this.graph.nodes()) {
       const node = this.graph.node(nodeId);
       if (node?.dynamicParts && node.dynamicParts.length > 0) {
-        unresolvedNodes.push({
-          nodeId,
-          unresolvedParts: [...node.dynamicParts],
-        });
+        // If we have parameter classifications, filter out non-dynamic parameters
+        if (node.classifiedParameters && node.classifiedParameters.length > 0) {
+          const trulyDynamicParts = this.getTrulyDynamicParts(node);
+          if (trulyDynamicParts.length > 0) {
+            unresolvedNodes.push({
+              nodeId,
+              unresolvedParts: trulyDynamicParts,
+            });
+          }
+        } else {
+          // Fallback to old behavior if no classification is available
+          unresolvedNodes.push({
+            nodeId,
+            unresolvedParts: [...node.dynamicParts],
+          });
+        }
       }
     }
 
     return unresolvedNodes;
+  }
+
+  /**
+   * Get parameters that are truly dynamic (need resolution from previous responses)
+   * Filters out sessionConstants, userInputs, staticConstants, and optional parameters
+   */
+  private getTrulyDynamicParts(node: DAGNode): string[] {
+    if (!node.dynamicParts || !node.classifiedParameters) {
+      return node.dynamicParts || [];
+    }
+
+    return node.dynamicParts.filter((part) => {
+      const classification = node.classifiedParameters?.find(
+        (cp) => cp.value === part || cp.name === part
+      );
+
+      // Only consider parameters classified as "dynamic" as truly unresolved
+      // sessionConstants, userInputs, etc. don't block completion
+      return !classification || classification.classification === "dynamic";
+    });
+  }
+
+  /**
+   * Get session constants and user inputs for a node (for code generation)
+   */
+  getNodeConstants(nodeId: string): {
+    sessionConstants: Record<string, string>;
+    userInputs: Record<string, string>;
+    staticConstants: Record<string, string>;
+  } {
+    const node = this.getNode(nodeId);
+    const result = {
+      sessionConstants: {} as Record<string, string>,
+      userInputs: {} as Record<string, string>,
+      staticConstants: {} as Record<string, string>,
+    };
+
+    if (!node?.classifiedParameters) {
+      return result;
+    }
+
+    for (const param of node.classifiedParameters) {
+      switch (param.classification) {
+        case "sessionConstant":
+          result.sessionConstants[param.name] = param.value;
+          break;
+        case "userInput":
+          result.userInputs[param.name] = param.value;
+          break;
+        case "staticConstant":
+          result.staticConstants[param.name] = param.value;
+          break;
+        // "dynamic" and "optional" parameters are handled elsewhere
+      }
+    }
+
+    return result;
   }
 
   /**
