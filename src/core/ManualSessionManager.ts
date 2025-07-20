@@ -353,21 +353,73 @@ export class ManualSessionManager {
 
       while (attempt <= maxRetries) {
         try {
-          // Stop network tracking before collection
-          if (session.artifactCollector.isTrackingNetwork()) {
-            session.artifactCollector.stopNetworkTracking();
-            logger.debug(
-              "[ManualSessionManager] Stopped network tracking for artifact collection"
-            );
-          }
+          // Check HAR quality before stopping tracking
+          const harQuality = session.artifactCollector.getCurrentQuality();
+          const harCount = session.artifactCollector.getHarEntryCount();
+          const apiCount = session.artifactCollector.getApiRequestCount();
+          const pendingCount =
+            session.artifactCollector.getPendingRequestCount();
 
-          const artifactCollection =
-            await session.artifactCollector.collectAllArtifacts(
-              session.agent.page,
-              session.agent.context,
-              session.outputDir
+          logger.info(
+            `[ManualSessionManager] Pre-stop HAR validation for session ${sessionId}: ` +
+              `quality=${harQuality}, entries=${harCount}, api=${apiCount}, pending=${pendingCount}`
+          );
+
+          // Pre-stop validation to prevent empty HAR files
+          if (harQuality === "empty" || harCount === 0) {
+            logger.warn(
+              `[ManualSessionManager] Session ${sessionId} has no meaningful network activity. ` +
+                `HAR quality: ${harQuality}, entries: ${harCount}. ` +
+                "Consider interacting more with the application before stopping."
             );
-          artifacts = artifactCollection.artifacts;
+
+            // Still stop tracking but use permissive config for HAR generation
+            if (session.artifactCollector.isTrackingNetwork()) {
+              session.artifactCollector.stopNetworkTracking();
+            }
+
+            // Use permissive HAR config for minimal sessions
+            const permissiveHarConfig = {
+              minEntries: 0,
+              minApiRequests: 0,
+              waitForPendingMs: 1000,
+              qualityThreshold: "poor" as const,
+            };
+
+            const artifactCollection =
+              await session.artifactCollector.collectAllArtifacts(
+                session.agent.page,
+                session.agent.context,
+                session.outputDir,
+                permissiveHarConfig
+              );
+            artifacts = artifactCollection.artifacts;
+          } else {
+            // Stop network tracking before collection
+            if (session.artifactCollector.isTrackingNetwork()) {
+              session.artifactCollector.stopNetworkTracking();
+              logger.debug(
+                "[ManualSessionManager] Stopped network tracking for artifact collection"
+              );
+            }
+
+            // Use quality-enforcing HAR config for sessions with good data
+            const qualityHarConfig = {
+              minEntries: Math.max(1, harCount),
+              minApiRequests: Math.max(0, apiCount),
+              waitForPendingMs: pendingCount > 0 ? 3000 : 1000,
+              qualityThreshold: harQuality as "good" | "excellent",
+            };
+
+            const artifactCollection =
+              await session.artifactCollector.collectAllArtifacts(
+                session.agent.page,
+                session.agent.context,
+                session.outputDir,
+                qualityHarConfig
+              );
+            artifacts = artifactCollection.artifacts;
+          }
 
           // Add MCP URIs to artifacts for resource access
           artifacts = artifacts.map((artifact) => ({
@@ -430,10 +482,29 @@ export class ManualSessionManager {
         // Try to generate HAR file from captured entries even if browser is closed
         if (harEntryCount > 0) {
           try {
+            const apiCount = session.artifactCollector.getApiRequestCount();
+            const quality = session.artifactCollector.getCurrentQuality();
+
+            logger.info(
+              `[ManualSessionManager] Generating HAR for closed session ${sessionId}: ` +
+                `entries=${harEntryCount}, api=${apiCount}, quality=${quality}`
+            );
+
             const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
             const harPath = join(session.outputDir, `network-${timestamp}.har`);
-            const harArtifact =
-              await session.artifactCollector.generateHarFile(harPath);
+
+            // Use permissive config for closed sessions to maximize recovery
+            const closedSessionConfig = {
+              minEntries: 0,
+              minApiRequests: 0,
+              waitForPendingMs: 0, // No waiting for closed sessions
+              qualityThreshold: "poor" as const,
+            };
+
+            const harArtifact = await session.artifactCollector.generateHarFile(
+              harPath,
+              closedSessionConfig
+            );
             // Add MCP URI for the artifact
             harArtifact.mcpUri = this.generateMcpUriForArtifact(
               sessionId,
@@ -449,6 +520,10 @@ export class ManualSessionManager {
               `[ManualSessionManager] Failed to generate HAR file for closed session ${sessionId}: ${harError}`
             );
           }
+        } else {
+          logger.info(
+            `[ManualSessionManager] No HAR entries captured for closed session ${sessionId}, skipping HAR generation`
+          );
         }
 
         // Include any artifacts that were already collected during the session
@@ -651,7 +726,31 @@ export class ManualSessionManager {
   }
 
   /**
-   * Perform health check on a session
+   * Get real-time network activity status for a session
+   */
+  getSessionNetworkActivity(sessionId: string): {
+    exists: boolean;
+    activity?: ReturnType<
+      typeof import("../browser/ArtifactCollector.js")["ArtifactCollector"]["prototype"]["getNetworkActivityStatus"]
+    >;
+    summary?: ReturnType<
+      typeof import("../browser/ArtifactCollector.js")["ArtifactCollector"]["prototype"]["getNetworkActivitySummary"]
+    >;
+  } {
+    const session = this.activeSessions.get(sessionId);
+    if (!session) {
+      return { exists: false };
+    }
+
+    return {
+      exists: true,
+      activity: session.artifactCollector?.getNetworkActivityStatus(),
+      summary: session.artifactCollector?.getNetworkActivitySummary(),
+    };
+  }
+
+  /**
+   * Perform health check on a session with enhanced network monitoring
    */
   async checkSessionHealth(sessionId: string): Promise<{
     isHealthy: boolean;
@@ -665,6 +764,9 @@ export class ManualSessionManager {
       networkRequestCount: number;
       networkTrackingActive: boolean;
     };
+    networkActivity?: ReturnType<
+      typeof import("../browser/ArtifactCollector.js")["ArtifactCollector"]["prototype"]["getNetworkActivityStatus"]
+    >;
   }> {
     const session = this.activeSessions.get(sessionId);
     if (!session) {
@@ -732,6 +834,34 @@ export class ManualSessionManager {
       );
     }
 
+    // Get real-time network activity status
+    let networkActivity:
+      | ReturnType<
+          typeof import("../browser/ArtifactCollector.js")["ArtifactCollector"]["prototype"]["getNetworkActivityStatus"]
+        >
+      | undefined;
+    if (session.artifactCollector) {
+      networkActivity = session.artifactCollector.getNetworkActivityStatus();
+
+      // Add network-specific recommendations
+      recommendations.push(...networkActivity.recommendations);
+
+      // Additional network-based health checks
+      if (networkActivity.quality === "empty" && duration > 60000) {
+        issues.push("No meaningful network activity after 1+ minutes");
+        recommendations.push(
+          "Try interacting more with the application to generate requests"
+        );
+      }
+
+      if (networkActivity.pendingRequestCount > 10) {
+        issues.push("Too many pending requests - possible network issues");
+        recommendations.push(
+          "Check network connectivity or wait for requests to complete"
+        );
+      }
+    }
+
     if (networkRequestCount === 0 && duration > 30000) {
       // Session running for more than 30 seconds
       recommendations.push(
@@ -776,6 +906,7 @@ export class ManualSessionManager {
         networkTrackingActive:
           session.artifactCollector?.isTrackingNetwork() || false,
       },
+      ...(networkActivity && { networkActivity }),
     };
   }
 
