@@ -555,8 +555,6 @@ export class SessionManager {
   analyzeCompletionState(sessionId: string): CompletionAnalysis {
     try {
       const session = this.getSession(sessionId);
-      const blockers: string[] = [];
-      const recommendations: string[] = [];
 
       // Ensure DAG state is refreshed before analysis to reflect latest parameter classifications
       this.refreshDAGStateForParameterClassifications(sessionId);
@@ -565,8 +563,19 @@ export class SessionManager {
       const dagComplete = session.dagManager.isComplete();
       const unresolvedNodes = session.dagManager.getUnresolvedNodes();
       const hasMasterNode = !!session.state.masterNodeId;
-      const hasActionUrl = !!session.state.actionUrl;
+      let hasActionUrl = !!session.state.actionUrl;
       const queueEmpty = session.state.toBeProcessedNodes.length === 0;
+
+      // Enhanced debugging for actionUrl state tracking
+      logger.debug("analyzeCompletionState - actionUrl diagnostic details", {
+        sessionId,
+        actionUrlValue: session.state.actionUrl,
+        actionUrlType: typeof session.state.actionUrl,
+        actionUrlLength: session.state.actionUrl?.length || 0,
+        hasActionUrl,
+        masterNodeId: session.state.masterNodeId,
+        hasMasterNode,
+      });
       const totalNodes = session.dagManager.getNodeCount();
       const allNodesClassified = (
         session.dagManager as ExtendedDAGManager
@@ -582,23 +591,8 @@ export class SessionManager {
       // Analyze bootstrap readiness
       const bootstrapAnalysis = this.analyzeBootstrapReadiness(session);
 
-      const diagnostics = {
-        hasMasterNode,
-        dagComplete,
-        queueEmpty,
-        totalNodes,
-        unresolvedNodes: unresolvedNodes.length,
-        pendingInQueue: session.state.toBeProcessedNodes.length,
-        hasActionUrl,
-        authAnalysisComplete: authReadinessAnalysis.analysisComplete,
-        authReadiness: authReadinessAnalysis.isReady,
-        authErrors: authReadinessAnalysis.errorCount,
-        allNodesClassified,
-        nodesNeedingClassification: nodesNeedingClassification.length,
-        bootstrapAnalysisComplete: bootstrapAnalysis.isComplete,
-        sessionConstantsCount: bootstrapAnalysis.sessionConstantsCount,
-        unresolvedSessionConstants: bootstrapAnalysis.unresolvedCount,
-      };
+      const blockers: string[] = [];
+      const recommendations: string[] = [];
 
       // Condition 1: Master node must be identified and exist in DAG
       if (hasMasterNode && session.state.masterNodeId) {
@@ -617,6 +611,11 @@ export class SessionManager {
         recommendations.push(
           "Run 'analysis_run_initial_analysis' to identify the target action URL"
         );
+
+        // Also check for actionUrl when there's no master node at all
+        if (!hasActionUrl) {
+          blockers.push("Target action URL has not been identified");
+        }
       }
 
       // Condition 2: Action URL must be identified (but avoid duplication with master node check)
@@ -627,10 +626,53 @@ export class SessionManager {
           session.state.masterNodeId
         );
         if (masterNode) {
-          blockers.push("Target action URL has not been identified");
-          recommendations.push(
-            "Ensure initial analysis successfully identifies the main workflow URL"
-          );
+          // Get the URL from the master node content
+          const masterNodeUrl = (masterNode.content as any)?.key?.url;
+
+          logger.debug("Master node found, checking for actionUrl recovery", {
+            sessionId,
+            masterNodeUrl,
+            sessionActionUrl: session.state.actionUrl,
+            hasUrl: !!masterNodeUrl,
+            hasSessionActionUrl: !!session.state.actionUrl,
+            nodeType: masterNode.nodeType,
+            contentStructure: {
+              hasContent: !!masterNode.content,
+              hasKey: !!(masterNode.content as any)?.key,
+              hasUrl: !!(masterNode.content as any)?.key?.url,
+            },
+          });
+
+          // Defensive fix: Check if we can recover the actionUrl from the master node
+          if (masterNodeUrl && !session.state.actionUrl) {
+            logger.warn(
+              "State synchronization issue detected: actionUrl missing but master node has URL, recovering",
+              {
+                sessionId,
+                masterNodeUrl,
+                sessionActionUrl: session.state.actionUrl,
+              }
+            );
+
+            // Recover the actionUrl from the master node
+            session.state.actionUrl = masterNodeUrl;
+
+            // Recalculate hasActionUrl with the recovered value
+            hasActionUrl = !!session.state.actionUrl;
+
+            logger.info("Successfully recovered actionUrl from master node", {
+              sessionId,
+              recoveredUrl: session.state.actionUrl,
+            });
+
+            // Don't add the blocker since we recovered the state
+          } else {
+            // Genuine case where actionUrl is missing and can't be recovered
+            blockers.push("Target action URL has not been identified");
+            recommendations.push(
+              "Ensure initial analysis successfully identifies the main workflow URL"
+            );
+          }
         }
       }
 
@@ -736,11 +778,30 @@ export class SessionManager {
         }
       }
 
+      // Recreate diagnostics with updated values (especially hasActionUrl after recovery)
+      const finalDiagnostics = {
+        hasMasterNode,
+        dagComplete,
+        queueEmpty,
+        totalNodes,
+        unresolvedNodes: unresolvedNodes.length,
+        pendingInQueue: session.state.toBeProcessedNodes.length,
+        hasActionUrl, // This now reflects any recovery that occurred
+        authAnalysisComplete: authReadinessAnalysis.analysisComplete,
+        authReadiness: authReadinessAnalysis.isReady,
+        authErrors: authReadinessAnalysis.errorCount,
+        allNodesClassified,
+        nodesNeedingClassification: nodesNeedingClassification.length,
+        bootstrapAnalysisComplete: bootstrapAnalysis.isComplete,
+        sessionConstantsCount: bootstrapAnalysis.sessionConstantsCount,
+        unresolvedSessionConstants: bootstrapAnalysis.unresolvedCount,
+      };
+
       return {
         isComplete,
         blockers,
         recommendations,
-        diagnostics,
+        diagnostics: finalDiagnostics,
       };
     } catch (_error) {
       logger.error(
