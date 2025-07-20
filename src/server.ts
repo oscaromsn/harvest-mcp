@@ -6,6 +6,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { analyzeAuthentication } from "./agents/AuthenticationAgent.js";
 import {
+  findBootstrapDependencies,
   findDependencies,
   isJavaScriptOrHtml,
 } from "./agents/DependencyAgent.js";
@@ -2940,12 +2941,59 @@ export class HarvestMCPServer {
       sessionId
     );
 
-    // Add "not found" nodes for unresolved parts
-    newNodesAdded += this.addNotFoundNodes(
-      dependencies.notFoundParts,
-      nodeId,
-      session
-    );
+    // Try bootstrap dependency resolution for unresolved parts
+    if (dependencies.notFoundParts.length > 0) {
+      this.sessionManager.addLog(
+        sessionId,
+        "info",
+        `Attempting bootstrap dependency resolution for ${dependencies.notFoundParts.length} unresolved parts`
+      );
+
+      try {
+        const bootstrapSources = await findBootstrapDependencies(
+          dependencies.notFoundParts,
+          session.harData
+        );
+
+        // Process bootstrap dependencies
+        const { resolvedParts, stillUnresolved } =
+          this.processBootstrapDependencies(
+            bootstrapSources,
+            dependencies.notFoundParts,
+            nodeId,
+            session,
+            sessionId
+          );
+
+        newNodesAdded += resolvedParts.length;
+
+        this.sessionManager.addLog(
+          sessionId,
+          "info",
+          `Bootstrap resolution: ${resolvedParts.length} resolved, ${stillUnresolved.length} remain unresolved`
+        );
+
+        // Only create "not found" nodes for truly unresolved parts
+        newNodesAdded += this.addNotFoundNodes(
+          stillUnresolved,
+          nodeId,
+          session
+        );
+      } catch (error) {
+        this.sessionManager.addLog(
+          sessionId,
+          "warn",
+          `Bootstrap dependency resolution failed: ${error instanceof Error ? error.message : "Unknown error"}`
+        );
+
+        // Fallback: create "not found" nodes for all unresolved parts
+        newNodesAdded += this.addNotFoundNodes(
+          dependencies.notFoundParts,
+          nodeId,
+          session
+        );
+      }
+    }
 
     // Check for cycles after adding dependencies
     this.validateNoCycles(session, sessionId);
@@ -3047,6 +3095,85 @@ export class HarvestMCPServer {
     }
 
     return addedCount;
+  }
+
+  /**
+   * Process bootstrap dependencies and update DAG with bootstrap source information
+   */
+  private processBootstrapDependencies(
+    bootstrapSources: Map<
+      string,
+      import("./types/index.js").BootstrapParameterSource
+    >,
+    originalUnresolved: string[],
+    nodeId: string,
+    session: ReturnType<typeof this.sessionManager.getSession>,
+    sessionId: string
+  ): { resolvedParts: string[]; stillUnresolved: string[] } {
+    const resolvedParts: string[] = [];
+    const stillUnresolved: string[] = [];
+
+    for (const part of originalUnresolved) {
+      const bootstrapSource = bootstrapSources.get(part);
+
+      if (bootstrapSource) {
+        // Update the consumer node with bootstrap source information
+        const currentNode = session.dagManager.getNode(nodeId);
+        if (currentNode?.classifiedParameters) {
+          // Find and update the classified parameter with bootstrap source
+          const updatedParameters = currentNode.classifiedParameters.map(
+            (param) => {
+              if (
+                param.value === part &&
+                param.classification === "sessionConstant"
+              ) {
+                return {
+                  ...param,
+                  metadata: {
+                    ...param.metadata,
+                    bootstrapSource,
+                    requiresBootstrap: true,
+                    domainContext:
+                      param.metadata.domainContext || "session_bootstrap",
+                  },
+                };
+              }
+              return param;
+            }
+          );
+
+          session.dagManager.updateNode(nodeId, {
+            classifiedParameters: updatedParameters,
+            bootstrapSource: bootstrapSource, // Also add to node level for easy access
+          });
+
+          resolvedParts.push(part);
+
+          this.sessionManager.addLog(
+            sessionId,
+            "info",
+            `Resolved bootstrap dependency for ${part} from ${bootstrapSource.sourceUrl} (${bootstrapSource.type})`
+          );
+        } else {
+          // If node doesn't have classified parameters yet, still record the bootstrap source
+          session.dagManager.updateNode(nodeId, {
+            bootstrapSource: bootstrapSource,
+          });
+
+          resolvedParts.push(part);
+
+          this.sessionManager.addLog(
+            sessionId,
+            "info",
+            `Added bootstrap source for ${part} from ${bootstrapSource.sourceUrl} (${bootstrapSource.type})`
+          );
+        }
+      } else {
+        stillUnresolved.push(part);
+      }
+    }
+
+    return { resolvedParts, stillUnresolved };
   }
 
   /**
