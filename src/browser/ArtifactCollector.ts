@@ -7,6 +7,7 @@
 import { access, mkdir, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { BrowserContext, Page, Request, Response } from "playwright";
+import { HARGenerationError } from "../types/index.js";
 import { logBrowserError, logBrowserOperation } from "../utils/logger.js";
 import { pathTranslator } from "../utils/pathTranslator.js";
 import type { Artifact, ArtifactCollection } from "./types.js";
@@ -67,6 +68,13 @@ export interface HarData {
   };
 }
 
+export interface HARGenerationConfig {
+  minEntries?: number; // Minimum entries required (default: 5)
+  minApiRequests?: number; // Minimum API requests (default: 1)
+  waitForPendingMs?: number; // Wait for pending requests (default: 2000ms)
+  qualityThreshold?: "poor" | "good" | "excellent"; // Minimum quality (default: "good")
+}
+
 export interface ScreenshotOptions {
   type?: "png" | "jpeg";
   quality?: number;
@@ -91,6 +99,9 @@ export class ArtifactCollector {
   >();
   private networkRequestCallback?: ((count: number) => void) | undefined;
   private clientAccessible: boolean;
+  private pendingResponses = new Map<string, Request>();
+  private lastRequestTimestamp = 0;
+  private apiRequestCount = 0;
 
   constructor(clientAccessible = false) {
     this.clientAccessible = clientAccessible;
@@ -163,6 +174,22 @@ export class ArtifactCollector {
 
       // Create request handler
       this.requestHandler = (request: Request) => {
+        const requestId = `${Date.now()}-${Math.random()}`;
+        const url = request.url();
+
+        // Track pending request
+        this.pendingResponses.set(requestId, request);
+        this.lastRequestTimestamp = Date.now();
+
+        // Check if this is an API request
+        if (
+          url.includes("/api/") ||
+          url.includes("/v1/") ||
+          url.includes("/v2/")
+        ) {
+          this.apiRequestCount++;
+        }
+
         const harEntry: HarEntry = {
           startedDateTime: new Date().toISOString(),
           time: 0,
@@ -205,7 +232,12 @@ export class ArtifactCollector {
         };
 
         // Store reference to HAR entry on request for response handler
-        (request as Request & { _harEntry: HarEntry })._harEntry = harEntry;
+        (
+          request as Request & { _harEntry: HarEntry; _requestId: string }
+        )._harEntry = harEntry;
+        (
+          request as Request & { _harEntry: HarEntry; _requestId: string }
+        )._requestId = requestId;
         this.harEntries.push(harEntry);
 
         // Notify callback of updated request count
@@ -217,14 +249,20 @@ export class ArtifactCollector {
           method: request.method(),
           url: request.url(),
           entryCount: this.harEntries.length,
+          apiRequestCount: this.apiRequestCount,
+          pendingCount: this.pendingResponses.size,
         });
       };
 
       // Create response handler
       this.responseHandler = (response: Response) => {
-        const harEntry = (
-          response.request() as Request & { _harEntry?: HarEntry }
-        )._harEntry;
+        const requestWithMetadata = response.request() as Request & {
+          _harEntry?: HarEntry;
+          _requestId?: string;
+        };
+        const harEntry = requestWithMetadata._harEntry;
+        const requestId = requestWithMetadata._requestId;
+
         if (harEntry) {
           harEntry.response = {
             status: response.status(),
@@ -248,9 +286,15 @@ export class ArtifactCollector {
             },
           };
 
+          // Remove from pending responses when response is received
+          if (requestId) {
+            this.pendingResponses.delete(requestId);
+          }
+
           logBrowserOperation("network_response_tracked", {
             status: response.status(),
             url: response.url(),
+            pendingCount: this.pendingResponses.size,
           });
         }
       };
@@ -288,6 +332,9 @@ export class ArtifactCollector {
 
       logBrowserOperation("network_tracking_stopped", {
         harEntryCount: this.harEntries.length,
+        apiRequestCount: this.apiRequestCount,
+        pendingCount: this.pendingResponses.size,
+        quality: this.assessHarQuality(),
       });
     } catch (error) {
       logBrowserError(error as Error, {
@@ -298,14 +345,137 @@ export class ArtifactCollector {
   }
 
   /**
-   * Generate HAR file from collected network data
+   * Wait for pending network requests to complete
    */
-  async generateHarFile(outputPath: string): Promise<Artifact> {
+  private async waitForPendingRequests(waitMs: number): Promise<void> {
+    if (this.pendingResponses.size === 0) {
+      return;
+    }
+
+    logBrowserOperation("waiting_for_pending_requests", {
+      pendingCount: this.pendingResponses.size,
+      waitMs,
+    });
+
+    const startTime = Date.now();
+    const endTime = startTime + waitMs;
+
+    while (Date.now() < endTime && this.pendingResponses.size > 0) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+
+    logBrowserOperation("pending_requests_wait_complete", {
+      finalPendingCount: this.pendingResponses.size,
+      waitedMs: Date.now() - startTime,
+    });
+  }
+
+  /**
+   * Assess HAR quality based on current entries
+   */
+  private assessHarQuality(): "excellent" | "good" | "poor" | "empty" {
+    const entryCount = this.harEntries.length;
+    const apiCount = this.apiRequestCount;
+    const postCount = this.harEntries.filter(
+      (entry) =>
+        entry.request.method === "POST" ||
+        entry.request.method === "PUT" ||
+        entry.request.method === "DELETE"
+    ).length;
+
+    if (entryCount === 0) {
+      return "empty";
+    }
+
+    if (apiCount >= 3 || postCount >= 2) {
+      return "excellent";
+    }
+
+    if (entryCount >= 5 || apiCount >= 1) {
+      return "good";
+    }
+
+    return "poor";
+  }
+
+  /**
+   * Generate HAR file from collected network data with quality validation
+   */
+  async generateHarFile(
+    outputPath: string,
+    config?: HARGenerationConfig
+  ): Promise<Artifact> {
     try {
+      const defaultConfig: Required<HARGenerationConfig> = {
+        minEntries: 5,
+        minApiRequests: 1,
+        waitForPendingMs: 2000,
+        qualityThreshold: "good",
+      };
+
+      const finalConfig = { ...defaultConfig, ...config };
+
       logBrowserOperation("har_generation_start", {
         entryCount: this.harEntries.length,
+        apiRequestCount: this.apiRequestCount,
+        pendingCount: this.pendingResponses.size,
         outputPath,
+        config: finalConfig,
       });
+
+      // Wait for pending requests to complete
+      if (finalConfig.waitForPendingMs > 0) {
+        await this.waitForPendingRequests(finalConfig.waitForPendingMs);
+      }
+
+      // Assess current quality
+      const currentQuality = this.assessHarQuality();
+
+      // Check minimum requirements
+      if (this.harEntries.length < finalConfig.minEntries) {
+        throw new HARGenerationError(
+          `Insufficient HAR entries: ${this.harEntries.length} < ${finalConfig.minEntries} required. ` +
+            "Try interacting more with the application to generate network traffic.",
+          {
+            entryCount: this.harEntries.length,
+            apiCount: this.apiRequestCount,
+            pendingCount: this.pendingResponses.size,
+            quality: currentQuality,
+          }
+        );
+      }
+
+      if (this.apiRequestCount < finalConfig.minApiRequests) {
+        throw new HARGenerationError(
+          `Insufficient API requests: ${this.apiRequestCount} < ${finalConfig.minApiRequests} required. ` +
+            "Look for data loading operations, form submissions, or API interactions.",
+          {
+            entryCount: this.harEntries.length,
+            apiCount: this.apiRequestCount,
+            pendingCount: this.pendingResponses.size,
+            quality: currentQuality,
+          }
+        );
+      }
+
+      // Check quality threshold
+      const qualityLevels = { poor: 0, good: 1, excellent: 2 };
+      const requiredLevel = qualityLevels[finalConfig.qualityThreshold];
+      const currentLevel =
+        currentQuality === "empty" ? -1 : qualityLevels[currentQuality];
+
+      if (currentLevel < requiredLevel) {
+        throw new HARGenerationError(
+          `HAR quality "${currentQuality}" below required "${finalConfig.qualityThreshold}". ` +
+            "Try capturing more meaningful interactions like form submissions or data operations.",
+          {
+            entryCount: this.harEntries.length,
+            apiCount: this.apiRequestCount,
+            pendingCount: this.pendingResponses.size,
+            quality: currentQuality,
+          }
+        );
+      }
 
       // Get page title if available (safely handle destroyed contexts)
       let pageTitle = "Session";
@@ -404,6 +574,9 @@ export class ArtifactCollector {
 
       logBrowserOperation("har_generation_complete", {
         entryCount: this.harEntries.length,
+        apiRequestCount: this.apiRequestCount,
+        finalPendingCount: this.pendingResponses.size,
+        quality: currentQuality,
         outputPath,
         size: validation.size,
         validated: true,
@@ -584,12 +757,13 @@ export class ArtifactCollector {
   }
 
   /**
-   * Collect all artifacts (HAR, cookies, screenshot)
+   * Collect all artifacts (HAR, cookies, screenshot) with optional HAR generation config
    */
   async collectAllArtifacts(
     page: Page,
     context: BrowserContext,
-    outputDir: string
+    outputDir: string,
+    harConfig?: HARGenerationConfig
   ): Promise<ArtifactCollection> {
     try {
       logBrowserOperation("artifact_collection_start", {
@@ -600,9 +774,9 @@ export class ArtifactCollector {
       const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
       const artifacts: Artifact[] = [];
 
-      // Generate HAR file
+      // Generate HAR file with optional config
       const harPath = join(outputDir, `network-${timestamp}.har`);
-      const harArtifact = await this.generateHarFile(harPath);
+      const harArtifact = await this.generateHarFile(harPath, harConfig);
       artifacts.push(harArtifact);
 
       // Extract cookies
@@ -642,13 +816,192 @@ export class ArtifactCollector {
   }
 
   /**
-   * Clear all HAR entries
+   * Clear all HAR entries and reset tracking counters
    */
   clearHarEntries(): void {
     logBrowserOperation("har_entries_cleared", {
       previousCount: this.harEntries.length,
+      previousApiCount: this.apiRequestCount,
+      previousPendingCount: this.pendingResponses.size,
     });
     this.harEntries = [];
+    this.pendingResponses.clear();
+    this.apiRequestCount = 0;
+    this.lastRequestTimestamp = 0;
+  }
+
+  /**
+   * Get current API request count
+   */
+  getApiRequestCount(): number {
+    return this.apiRequestCount;
+  }
+
+  /**
+   * Get count of pending requests
+   */
+  getPendingRequestCount(): number {
+    return this.pendingResponses.size;
+  }
+
+  /**
+   * Get time since last network request (milliseconds)
+   */
+  getTimeSinceLastRequest(): number {
+    return this.lastRequestTimestamp === 0
+      ? 0
+      : Date.now() - this.lastRequestTimestamp;
+  }
+
+  /**
+   * Get current HAR quality assessment
+   */
+  getCurrentQuality(): "excellent" | "good" | "poor" | "empty" {
+    return this.assessHarQuality();
+  }
+
+  /**
+   * Get network activity monitoring status
+   */
+  getNetworkActivityStatus(): {
+    isTracking: boolean;
+    harEntryCount: number;
+    apiRequestCount: number;
+    pendingRequestCount: number;
+    lastRequestTime: number;
+    timeSinceLastRequest: number;
+    quality: "excellent" | "good" | "poor" | "empty";
+    isActive: boolean; // True if requests within last 30 seconds
+    recommendations: string[];
+  } {
+    const timeSinceLastRequest = this.getTimeSinceLastRequest();
+    const isActive = timeSinceLastRequest < 30000; // Active if request within 30 seconds
+    const quality = this.getCurrentQuality();
+
+    const recommendations: string[] = [];
+
+    // Generate real-time recommendations
+    if (!this.isNetworkTracking) {
+      recommendations.push("Network tracking is not active");
+    } else if (this.harEntries.length === 0) {
+      recommendations.push(
+        "No network requests captured yet - try interacting with the page"
+      );
+    } else if (this.apiRequestCount === 0) {
+      recommendations.push(
+        "No API requests captured - look for data loading or form submissions"
+      );
+    } else if (quality === "poor") {
+      recommendations.push(
+        "Low network activity - try completing more workflows"
+      );
+    } else if (!isActive && this.harEntries.length > 0) {
+      recommendations.push(
+        "No recent network activity - current capture may be complete"
+      );
+    }
+
+    if (this.pendingResponses.size > 0) {
+      recommendations.push(
+        `${this.pendingResponses.size} requests still pending - wait before stopping`
+      );
+    }
+
+    return {
+      isTracking: this.isNetworkTracking,
+      harEntryCount: this.harEntries.length,
+      apiRequestCount: this.apiRequestCount,
+      pendingRequestCount: this.pendingResponses.size,
+      lastRequestTime: this.lastRequestTimestamp,
+      timeSinceLastRequest,
+      quality,
+      isActive,
+      recommendations,
+    };
+  }
+
+  /**
+   * Get detailed network activity summary
+   */
+  getNetworkActivitySummary(): {
+    summary: string;
+    status: "active" | "idle" | "complete" | "empty";
+    details: {
+      totalRequests: number;
+      apiRequests: number;
+      pendingRequests: number;
+      methodBreakdown: Record<string, number>;
+      domainBreakdown: Record<string, number>;
+      recent: Array<{ method: string; url: string; timestamp: string }>;
+    };
+  } {
+    const methodBreakdown: Record<string, number> = {};
+    const domainBreakdown: Record<string, number> = {};
+    const recent: Array<{ method: string; url: string; timestamp: string }> =
+      [];
+
+    // Analyze all entries
+    for (const entry of this.harEntries) {
+      // Method breakdown
+      const method = entry.request.method;
+      methodBreakdown[method] = (methodBreakdown[method] || 0) + 1;
+
+      // Domain breakdown
+      try {
+        const domain = new URL(entry.request.url).hostname;
+        domainBreakdown[domain] = (domainBreakdown[domain] || 0) + 1;
+      } catch {
+        // Ignore invalid URLs
+      }
+    }
+
+    // Get recent entries (last 10)
+    const recentEntries = this.harEntries.slice(-10);
+    for (const entry of recentEntries) {
+      recent.push({
+        method: entry.request.method,
+        url: entry.request.url,
+        timestamp: entry.startedDateTime,
+      });
+    }
+
+    // Determine status
+    let status: "active" | "idle" | "complete" | "empty";
+    const timeSinceLastRequest = this.getTimeSinceLastRequest();
+
+    if (this.harEntries.length === 0) {
+      status = "empty";
+    } else if (timeSinceLastRequest < 10000) {
+      // 10 seconds
+      status = "active";
+    } else if (timeSinceLastRequest < 60000) {
+      // 1 minute
+      status = "idle";
+    } else {
+      status = "complete";
+    }
+
+    // Generate summary
+    let summary = `Network capture ${status}: ${this.harEntries.length} total requests`;
+    if (this.apiRequestCount > 0) {
+      summary += `, ${this.apiRequestCount} API requests`;
+    }
+    if (this.pendingResponses.size > 0) {
+      summary += `, ${this.pendingResponses.size} pending`;
+    }
+
+    return {
+      summary,
+      status,
+      details: {
+        totalRequests: this.harEntries.length,
+        apiRequests: this.apiRequestCount,
+        pendingRequests: this.pendingResponses.size,
+        methodBreakdown,
+        domainBreakdown,
+        recent,
+      },
+    };
   }
 
   /**
