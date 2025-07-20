@@ -120,6 +120,62 @@ export interface AuthenticationAnalysis {
   };
 }
 
+// ========== Parameter Classification Types ==========
+
+/**
+ * Parameter classification types for enhanced analysis
+ */
+export type ParameterClassification =
+  | "dynamic" // Resolved from previous API response
+  | "sessionConstant" // Session-scoped constant (session tokens, CSRF)
+  | "userInput" // User-provided parameter (search terms, IDs)
+  | "staticConstant" // Hardcoded application constant
+  | "optional"; // Can be omitted without breaking functionality
+
+/**
+ * Classified parameter with metadata for analysis
+ */
+export interface ClassifiedParameter {
+  name: string;
+  value: string;
+  classification: ParameterClassification;
+  confidence: number;
+  source: "heuristic" | "llm" | "manual";
+  metadata: {
+    occurrenceCount: number;
+    totalRequests: number;
+    consistencyScore: number; // 0-1, how consistent across requests
+    parameterPattern: string; // regex pattern if detected
+    domainContext?: string; // session, auth, pagination, etc.
+  };
+}
+
+/**
+ * Parameter diagnostic information for error reporting
+ */
+export interface ParameterDiagnostic {
+  parameter: string;
+  classification: ParameterClassification;
+  issue: string;
+  possibleSources: string[];
+  recommendedAction: string;
+  debugCommand?: string;
+}
+
+/**
+ * Enhanced error context for parameter-related issues
+ */
+export interface ParameterErrorContext {
+  sessionId: string;
+  unresolvedNodes: Array<{
+    nodeId: string;
+    parameters: ClassifiedParameter[];
+  }>;
+  recommendations: string[];
+  debugCommands: string[];
+  parameterAnalysis: ParameterDiagnostic[];
+}
+
 // ========== Core Session Types ==========
 
 export interface HarvestSession {
@@ -212,6 +268,7 @@ export interface CurlDAGNode {
   extractedParts?: string[];
   inputVariables?: Record<string, string>;
   authInfo?: RequestAuthenticationInfo;
+  classifiedParameters?: ClassifiedParameter[];
 }
 
 export interface CookieDAGNode {
@@ -221,6 +278,7 @@ export interface CookieDAGNode {
   dynamicParts?: string[];
   extractedParts?: string[];
   inputVariables?: Record<string, string>;
+  classifiedParameters?: ClassifiedParameter[];
 }
 
 export interface NotFoundDAGNode {
@@ -230,6 +288,7 @@ export interface NotFoundDAGNode {
   dynamicParts?: string[];
   extractedParts?: string[];
   inputVariables?: Record<string, string>;
+  classifiedParameters?: ClassifiedParameter[];
 }
 
 export interface MasterDAGNode {
@@ -240,6 +299,7 @@ export interface MasterDAGNode {
   extractedParts?: string[];
   inputVariables?: Record<string, string>;
   authInfo?: RequestAuthenticationInfo;
+  classifiedParameters?: ClassifiedParameter[];
 }
 
 export interface MasterCurlDAGNode {
@@ -250,6 +310,7 @@ export interface MasterCurlDAGNode {
   extractedParts?: string[];
   inputVariables?: Record<string, string>;
   authInfo?: RequestAuthenticationInfo;
+  classifiedParameters?: ClassifiedParameter[];
 }
 
 export type DAGNode =
