@@ -86,6 +86,22 @@ export async function findBootstrapDependencies(
       }
     }
 
+    // Fallback: For session constants that appear consistently across requests
+    // but have no detectable bootstrap source, create synthetic bootstrap sources
+    // This handles mid-session HAR captures where initial page loads aren't included
+    const unresolved = dynamicParts.filter(
+      (part) => !bootstrapSources.has(part)
+    );
+    if (unresolved.length > 0) {
+      const syntheticSources = createSyntheticBootstrapSources(
+        unresolved,
+        harData
+      );
+      for (const [part, source] of syntheticSources) {
+        bootstrapSources.set(part, source);
+      }
+    }
+
     return bootstrapSources;
   } catch (error) {
     throw new HarvestError(
@@ -94,6 +110,56 @@ export async function findBootstrapDependencies(
       { originalError: error }
     );
   }
+}
+
+/**
+ * Create synthetic bootstrap sources for session constants that appear consistently
+ * but have no detectable initial source (mid-session HAR captures)
+ */
+function createSyntheticBootstrapSources(
+  unresolvedParts: string[],
+  harData: ParsedHARData
+): Map<string, BootstrapParameterSource> {
+  const syntheticSources = new Map<string, BootstrapParameterSource>();
+
+  for (const part of unresolvedParts) {
+    // Check if this parameter appears consistently across requests (likely session constant)
+    const occurrences = harData.requests.filter((req) => {
+      return (
+        req.url.includes(part) ||
+        (req.queryParams && Object.values(req.queryParams).includes(part)) ||
+        (req.body && typeof req.body === "string" && req.body.includes(part))
+      );
+    });
+
+    // If parameter appears in 3+ requests consistently, treat as session constant
+    if (occurrences.length >= 3) {
+      // Find the earliest request that uses this parameter
+      const earliestRequest = occurrences.reduce((earliest, current) => {
+        const earliestTime = earliest.timestamp?.getTime() || 0;
+        const currentTime = current.timestamp?.getTime() || 0;
+        return currentTime < earliestTime ? current : earliest;
+      });
+
+      // Create synthetic bootstrap source pointing to a hypothetical initial page
+      const baseUrl = new URL(earliestRequest.url).origin;
+      syntheticSources.set(part, {
+        type: "initial-page-html",
+        sourceUrl: baseUrl,
+        extractionDetails: {
+          pattern:
+            "// Synthetic bootstrap - session constant established before HAR capture",
+          syntheticSource: true, // Mark as synthetic for transparency
+        },
+      });
+
+      console.log(
+        `Created synthetic bootstrap source for session constant: ${part}`
+      );
+    }
+  }
+
+  return syntheticSources;
 }
 
 /**
