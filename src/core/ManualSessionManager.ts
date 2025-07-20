@@ -13,6 +13,38 @@ import type {
   SessionStopResult,
 } from "../types/index.js";
 import { logger } from "../utils/logger.js";
+
+/**
+ * Custom error for when a session is still active and should not be stopped
+ * This error preserves the session state and provides activity information
+ */
+export class SessionStillActiveError extends Error {
+  public readonly sessionId: string;
+  public readonly activity: {
+    isActive: boolean;
+    lastRequestTime: number;
+    timeSinceLastRequest: number;
+    formattedTimeSince: string;
+    totalRequests: number;
+    apiRequests: number;
+    pendingRequests: number;
+  };
+  public readonly recommendations: string[];
+
+  constructor(
+    message: string,
+    sessionId: string,
+    activity: SessionStillActiveError["activity"],
+    recommendations: string[]
+  ) {
+    super(message);
+    this.name = "SessionStillActiveError";
+    this.sessionId = sessionId;
+    this.activity = activity;
+    this.recommendations = recommendations;
+  }
+}
+
 import {
   MemoryMonitor,
   type MemorySnapshot,
@@ -624,6 +656,46 @@ export class ManualSessionManager {
     try {
       // Check if browser/page is still alive before proceeding
       const isPageAlive = await this.checkPageHealth(session);
+
+      // Check for recent user activity - protect ongoing user work
+      if (isPageAlive && session.artifactCollector) {
+        const activityStatus =
+          session.artifactCollector.getNetworkActivityStatus();
+        const timeSinceLastRequest = activityStatus.timeSinceLastRequest;
+
+        // Define activity thresholds
+        const ACTIVE_THRESHOLD = 30 * 1000; // 30 seconds
+        const RECENT_ACTIVITY_THRESHOLD = 2 * 60 * 1000; // 2 minutes
+
+        if (timeSinceLastRequest < ACTIVE_THRESHOLD) {
+          // User is actively interacting - throw custom error that preserves session
+          throw new SessionStillActiveError(
+            "Session appears to be in active use",
+            sessionId,
+            {
+              isActive: true,
+              lastRequestTime: activityStatus.lastRequestTime,
+              timeSinceLastRequest,
+              formattedTimeSince: this.formatDuration(timeSinceLastRequest),
+              totalRequests: activityStatus.harEntryCount,
+              apiRequests: activityStatus.apiRequestCount,
+              pendingRequests: activityStatus.pendingRequestCount,
+            },
+            [
+              "DO NOT stop this session - user is actively using the browser",
+              "Respect user's current work and wait for natural completion",
+              "Check session activity status again after user finishes current task",
+            ]
+          );
+        }
+        if (timeSinceLastRequest < RECENT_ACTIVITY_THRESHOLD) {
+          // Recent activity - provide warning but allow stop
+          logger.warn(
+            `[ManualSessionManager] Recent activity detected for session ${sessionId}. ` +
+              `Last request: ${this.formatDuration(timeSinceLastRequest)} ago. Proceeding with stop.`
+          );
+        }
+      }
       let finalUrl = "Unknown";
       let finalPageTitle = "Unknown";
       let artifacts: Artifact[] = [];
@@ -689,13 +761,21 @@ export class ManualSessionManager {
         },
       };
     } catch (error) {
+      // Check if this is a SessionStillActiveError - if so, don't clean up the session
+      if (error instanceof SessionStillActiveError) {
+        logger.info(
+          `[ManualSessionManager] Session ${sessionId} is still active, preserving session state`
+        );
+        throw error; // Re-throw without cleanup to preserve session
+      }
+
       const errorMessage =
         error instanceof Error ? error.message : String(error);
       logger.error(
         `[ManualSessionManager] Error stopping session ${sessionId}: ${errorMessage}`
       );
 
-      // Perform emergency cleanup
+      // Only perform emergency cleanup for actual failures, not activity detection
       await this.emergencySessionCleanup(session, sessionId);
 
       throw new Error(`Failed to stop session: ${errorMessage}`);
@@ -1145,10 +1225,15 @@ export class ManualSessionManager {
     }
 
     instructions.push("");
-    instructions.push("🛑 When finished, use the session_stop_manual tool to:");
-    instructions.push("- Collect all artifacts");
-    instructions.push("- Get session summary");
-    instructions.push("- Clean up browser resources");
+    instructions.push(
+      "🛑 AGENT INSTRUCTION: Only use session_stop_manual when:"
+    );
+    instructions.push("- User explicitly states they are finished");
+    instructions.push("- User indicates their work is complete");
+    instructions.push("- User asks to stop or end the session");
+    instructions.push(
+      "- Do NOT stop based on assumptions or workflow completion"
+    );
 
     return instructions;
   }
@@ -1869,6 +1954,34 @@ export class ManualSessionManager {
       default:
         return `harvest://manual/${sessionId}/artifacts/other/${filename}`;
     }
+  }
+
+  /**
+   * Format duration in milliseconds to human-readable string
+   */
+  private formatDuration(ms: number): string {
+    if (ms < 1000) {
+      return `${ms}ms`;
+    }
+
+    const seconds = Math.floor(ms / 1000);
+    if (seconds < 60) {
+      return `${seconds}s`;
+    }
+
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = seconds % 60;
+    if (minutes < 60) {
+      return remainingSeconds > 0
+        ? `${minutes}m ${remainingSeconds}s`
+        : `${minutes}m`;
+    }
+
+    const hours = Math.floor(minutes / 60);
+    const remainingMinutes = minutes % 60;
+    return remainingMinutes > 0
+      ? `${hours}h ${remainingMinutes}m`
+      : `${hours}h`;
   }
 }
 
