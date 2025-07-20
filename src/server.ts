@@ -2103,7 +2103,10 @@ export class HarvestMCPServer {
       }
 
       // Find the corresponding request in HAR data using flexible URL matching
-      const targetRequest = this.findRequestByFlexibleUrl(session.harData.requests, actionUrl);
+      const targetRequest = this.findRequestByFlexibleUrl(
+        session.harData.requests,
+        actionUrl
+      );
       if (!targetRequest) {
         return {
           content: [
@@ -2150,7 +2153,9 @@ export class HarvestMCPServer {
       session.state.toBeProcessedNodes.push(masterNodeId);
 
       // Ensure atomic state validation after master node creation
-      const completionAnalysis = this.sessionManager.analyzeCompletionState(argsObj.sessionId);
+      const completionAnalysis = this.sessionManager.analyzeCompletionState(
+        argsObj.sessionId
+      );
       this.sessionManager.addLog(
         argsObj.sessionId,
         "debug",
@@ -2362,7 +2367,7 @@ export class HarvestMCPServer {
     if (session.state.toBeProcessedNodes.length === 0) {
       // When queue is empty, check if DAG has unresolved nodes
       const unresolvedNodes = session.dagManager.getUnresolvedNodes();
-      
+
       if (unresolvedNodes.length > 0) {
         // Analysis is blocked - queue is empty but nodes still need resolution
         return {
@@ -2375,53 +2380,57 @@ export class HarvestMCPServer {
                 isComplete: false,
                 totalNodes: session.dagManager.getNodeCount(),
                 unresolvedNodes: unresolvedNodes.length,
-                blockedNodes: unresolvedNodes.map(node => {
+                blockedNodes: unresolvedNodes.map((node) => {
                   const dagNode = session.dagManager.getNode(node.nodeId);
                   let curlCommand = "Not available";
-                  
+
                   // Extract curl command for request-based nodes
-                  if (dagNode && 
-                      (dagNode.nodeType === "curl" || dagNode.nodeType === "master_curl" || dagNode.nodeType === "master") &&
-                      dagNode.content && "key" in dagNode.content) {
+                  if (
+                    dagNode &&
+                    (dagNode.nodeType === "curl" ||
+                      dagNode.nodeType === "master_curl" ||
+                      dagNode.nodeType === "master") &&
+                    dagNode.content &&
+                    "key" in dagNode.content
+                  ) {
                     try {
                       curlCommand = dagNode.content.key.toCurlCommand();
                     } catch {
                       curlCommand = "Error generating curl command";
                     }
                   }
-                  
+
                   return {
                     nodeId: node.nodeId,
                     unresolvedParts: node.unresolvedParts,
-                    curlCommand
+                    curlCommand,
                   };
                 }),
                 recommendations: [
                   "Use 'debug_get_unresolved_nodes' to see detailed blocking information",
                   "Consider manual intervention if dependencies cannot be auto-resolved",
-                  "Check if unresolved parts are client-generated values that need placeholders"
-                ]
-              }),
-            },
-          ],
-        };
-      } else {
-        // Truly complete - queue is empty and no unresolved nodes
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify({
-                status: "analysis_complete",
-                message: "All nodes processed and resolved",
-                isComplete: true,
-                totalNodes: session.dagManager.getNodeCount(),
-                unresolvedNodes: 0
+                  "Check if unresolved parts are client-generated values that need placeholders",
+                ],
               }),
             },
           ],
         };
       }
+      // Truly complete - queue is empty and no unresolved nodes
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              status: "analysis_complete",
+              message: "All nodes processed and resolved",
+              isComplete: true,
+              totalNodes: session.dagManager.getNodeCount(),
+              unresolvedNodes: 0,
+            }),
+          },
+        ],
+      };
     }
     return null;
   }
@@ -2435,58 +2444,70 @@ export class HarvestMCPServer {
   ): RequestModel | null {
     try {
       const targetParsed = new URL(targetUrl);
-      
+
       // First try exact match for backward compatibility
-      const exactMatch = requests.find(req => req.url === targetUrl);
+      const exactMatch = requests.find((req) => req.url === targetUrl);
       if (exactMatch) {
         return exactMatch;
       }
-      
+
       // Find candidates that match base path (protocol + hostname + pathname)
-      const candidates = requests.filter(req => {
+      const candidates = requests.filter((req) => {
         try {
           const reqParsed = new URL(req.url);
-          return reqParsed.protocol === targetParsed.protocol &&
-                 reqParsed.hostname === targetParsed.hostname &&
-                 reqParsed.pathname === targetParsed.pathname;
+          return (
+            reqParsed.protocol === targetParsed.protocol &&
+            reqParsed.hostname === targetParsed.hostname &&
+            reqParsed.pathname === targetParsed.pathname
+          );
         } catch {
           return false; // Skip invalid URLs
         }
       });
-      
+
       if (candidates.length === 0) {
         return null;
       }
-      
+
       if (candidates.length === 1) {
         const firstCandidate = candidates[0];
         return firstCandidate || null;
       }
-      
+
       // Apply tie-breaking heuristics
       return this.selectBestUrlCandidate(candidates, targetParsed);
-      
     } catch {
       // If URL parsing fails, fall back to exact string matching
-      return requests.find(req => req.url === targetUrl) || null;
+      return requests.find((req) => req.url === targetUrl) || null;
     }
   }
 
   /**
    * Select the best candidate from multiple URL matches using heuristics
    */
-  private selectBestUrlCandidate(candidates: RequestModel[], targetParsed: URL): RequestModel {
+  private selectBestUrlCandidate(
+    candidates: RequestModel[],
+    targetParsed: URL
+  ): RequestModel {
     // Ensure we have candidates
     if (candidates.length === 0) {
       throw new Error("No candidates provided for URL selection");
     }
-    
+
     // Heuristic 1: Prefer request with most overlapping query parameter keys
     const targetParams = new URLSearchParams(targetParsed.search);
     const targetParamKeys = Array.from(targetParams.keys());
 
     if (targetParamKeys.length > 0) {
-      let bestMatch = candidates[0] || candidates[candidates.length - 1]; // Safe due to length check
+      let bestMatch = candidates[0];
+      if (!bestMatch) {
+        // This should never happen due to length check above, but provide safe fallback
+        const validCandidate = candidates.find((c) => c);
+        if (!validCandidate) {
+          throw new Error("No valid candidates found despite length check");
+        }
+        return validCandidate;
+      }
       let maxOverlap = 0;
 
       for (const candidate of candidates) {
@@ -2517,7 +2538,10 @@ export class HarvestMCPServer {
       try {
         const bestParams = new URL(best.url).searchParams;
         const currentParams = new URL(current.url).searchParams;
-        return Array.from(currentParams.keys()).length > Array.from(bestParams.keys()).length ? current : best;
+        return Array.from(currentParams.keys()).length >
+          Array.from(bestParams.keys()).length
+          ? current
+          : best;
       } catch {
         return best;
       }
@@ -3289,7 +3313,10 @@ export class HarvestMCPServer {
       const session = this.sessionManager.getSession(argsObj.sessionId);
 
       // Validate that the URL exists in the HAR data using flexible matching
-      const targetRequest = this.findRequestByFlexibleUrl(session.harData.requests, argsObj.url);
+      const targetRequest = this.findRequestByFlexibleUrl(
+        session.harData.requests,
+        argsObj.url
+      );
 
       if (!targetRequest) {
         throw new HarvestError(
@@ -4643,24 +4670,32 @@ ${recommendationsList}
         // Handle different status types from enhanced processNextNode
         if (processData.status === "blocked_on_dependencies") {
           // Analysis is stalled - break the loop and provide detailed information
-          steps.push(`🚫 Analysis stalled after ${iterations} iterations: ${processData.message}`);
+          steps.push(
+            `🚫 Analysis stalled after ${iterations} iterations: ${processData.message}`
+          );
           if (processData.blockedNodes && processData.blockedNodes.length > 0) {
-            steps.push(`📋 Blocked nodes: ${processData.blockedNodes.length} nodes with unresolved dependencies`);
-            warnings.push(`Unresolved dependencies in ${processData.blockedNodes.length} nodes`);
-            warnings.push("Use debug tools to inspect blocked nodes and their dependencies");
+            steps.push(
+              `📋 Blocked nodes: ${processData.blockedNodes.length} nodes with unresolved dependencies`
+            );
+            warnings.push(
+              `Unresolved dependencies in ${processData.blockedNodes.length} nodes`
+            );
+            warnings.push(
+              "Use debug tools to inspect blocked nodes and their dependencies"
+            );
           }
           break; // Exit the loop - we're stalled and need intervention
-        } else if (processData.status === "analysis_complete") {
+        }
+        if (processData.status === "analysis_complete") {
           // Analysis completed during processing
           isComplete = true;
           steps.push(`✅ Analysis completed during iteration ${iterations}`);
           break;
-        } else {
-          // Regular processing or legacy status
-          steps.push(
-            `📦 Processed node ${iterations}: ${processData.message || "Node processed"}`
-          );
         }
+        // Regular processing or legacy status
+        steps.push(
+          `📦 Processed node ${iterations}: ${processData.message || "Node processed"}`
+        );
       }
     }
 
