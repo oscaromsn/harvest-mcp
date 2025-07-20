@@ -1,6 +1,7 @@
 import { getLLMClient } from "../core/LLMClient.js";
 import type { FunctionDefinition } from "../core/providers/types.js";
 import type {
+  BootstrapParameterSource,
   CookieData,
   CookieDependency,
   CookieSearchResult,
@@ -51,6 +52,281 @@ export async function findDependencies(
       { originalError: error }
     );
   }
+}
+
+/**
+ * Find bootstrap dependencies for session-constant dynamic parts
+ * This function analyzes the initial HTML page loads to find session parameters
+ */
+export async function findBootstrapDependencies(
+  dynamicParts: string[],
+  harData: ParsedHARData
+): Promise<Map<string, BootstrapParameterSource>> {
+  const bootstrapSources = new Map<string, BootstrapParameterSource>();
+
+  if (!dynamicParts || dynamicParts.length === 0) {
+    return bootstrapSources;
+  }
+
+  try {
+    // Find the initial HTML page load (usually the first request to the main domain)
+    const initialHtmlRequests = findInitialHtmlRequests(harData.requests);
+
+    for (const htmlRequest of initialHtmlRequests) {
+      for (const part of dynamicParts) {
+        if (bootstrapSources.has(part)) {
+          continue; // Already found source for this parameter
+        }
+
+        // Check for bootstrap source in this HTML request
+        const source = await analyzeBootstrapSource(part, htmlRequest);
+        if (source) {
+          bootstrapSources.set(part, source);
+        }
+      }
+    }
+
+    return bootstrapSources;
+  } catch (error) {
+    throw new HarvestError(
+      `Bootstrap dependency finding failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+      "BOOTSTRAP_DEPENDENCY_FINDING_FAILED",
+      { originalError: error }
+    );
+  }
+}
+
+/**
+ * Find initial HTML page loads that could establish session state
+ */
+function findInitialHtmlRequests(requests: RequestModel[]): RequestModel[] {
+  return requests
+    .filter((request) => {
+      // Look for HTML responses
+      const contentType =
+        request.response?.headers?.["content-type"] ||
+        request.response?.headers?.["Content-Type"] ||
+        "";
+
+      // Check if it's an HTML response
+      if (!contentType.includes("text/html")) {
+        return false;
+      }
+
+      // Prioritize main page loads (GET requests to root or main paths)
+      if (request.method.toUpperCase() === "GET") {
+        const url = new URL(request.url);
+        const path = url.pathname;
+
+        // Main page indicators
+        return (
+          path === "/" ||
+          path === "" ||
+          path.endsWith("/") ||
+          !path.includes(".") // No file extension
+        );
+      }
+
+      return false;
+    })
+    .slice(0, 3); // Limit to first 3 HTML requests for performance
+}
+
+/**
+ * Analyze a single HTML request to find bootstrap source for a parameter
+ */
+async function analyzeBootstrapSource(
+  parameter: string,
+  htmlRequest: RequestModel
+): Promise<BootstrapParameterSource | null> {
+  try {
+    // Check response body for inline JavaScript containing the parameter
+    const responseText = htmlRequest.response?.text || "";
+    if (responseText && searchInHtmlContent(responseText, parameter)) {
+      return {
+        type: "initial-page-html",
+        sourceUrl: htmlRequest.url,
+        extractionDetails: {
+          pattern: generateExtractionPattern(parameter, responseText),
+        },
+      };
+    }
+
+    // Check Set-Cookie headers
+    const setCookieSource = analyzeSetCookieHeaders(parameter, htmlRequest);
+    if (setCookieSource) {
+      return setCookieSource;
+    }
+
+    return null;
+  } catch (error) {
+    // Log error but don't fail the entire analysis
+    console.error(`Error analyzing bootstrap source for ${parameter}:`, error);
+    return null;
+  }
+}
+
+/**
+ * Search for parameter value in HTML content (script tags, inline JS, etc.)
+ */
+function searchInHtmlContent(htmlContent: string, parameter: string): boolean {
+  // Simple string search first
+  if (htmlContent.includes(parameter)) {
+    return true;
+  }
+
+  // Look specifically in script tags
+  const scriptTagRegex = /<script[^>]*>([\s\S]*?)<\/script>/gi;
+  let match: RegExpExecArray | null = scriptTagRegex.exec(htmlContent);
+
+  while (match !== null) {
+    const scriptContent = match[1];
+    if (scriptContent?.includes(parameter)) {
+      return true;
+    }
+    match = scriptTagRegex.exec(htmlContent);
+  }
+
+  return false;
+}
+
+/**
+ * Generate regex pattern to extract parameter from HTML content
+ */
+function generateExtractionPattern(
+  parameter: string,
+  htmlContent: string
+): string {
+  // Look for common JavaScript variable assignment patterns
+  const patterns = [
+    // sessionId = "value"
+    `(?:sessionId|session_id)\\s*[=:]\\s*["']([^"']+)["']`,
+    // window.sessionId = "value"
+    `window\\.(?:sessionId|session_id)\\s*=\\s*["']([^"']+)["']`,
+    // var sessionId = "value"
+    `(?:var|let|const)\\s+(?:sessionId|session_id)\\s*=\\s*["']([^"']+)["']`,
+    // "sessionId":"value"
+    `["'](?:sessionId|session_id)["']\\s*:\\s*["']([^"']+)["']`,
+    // For tokens like juristkn
+    `(?:token|tkn|juristkn)\\s*[=:]\\s*["']([^"']+)["']`,
+    // Generic pattern for the exact parameter value
+    `["']?${escapeRegex(parameter)}["']?`,
+  ];
+
+  // Try to find which pattern matches in the content
+  for (const pattern of patterns) {
+    const regex = new RegExp(pattern, "i");
+    if (regex.test(htmlContent)) {
+      return pattern;
+    }
+  }
+
+  // Fallback: just look for the literal value
+  return escapeRegex(parameter);
+}
+
+/**
+ * Escape special regex characters
+ */
+function escapeRegex(string: string): string {
+  return string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Analyze Set-Cookie headers for bootstrap parameters
+ */
+function analyzeSetCookieHeaders(
+  parameter: string,
+  htmlRequest: RequestModel
+): BootstrapParameterSource | null {
+  const responseHeaders = htmlRequest.response?.headers || {};
+
+  // Look for Set-Cookie headers
+  for (const [headerName, headerValue] of Object.entries(responseHeaders)) {
+    if (headerName.toLowerCase() === "set-cookie") {
+      // Parse cookie to see if it contains our parameter
+      const cookieParts = headerValue.split(";")[0]?.split("=");
+      if (cookieParts && cookieParts.length >= 2) {
+        const [cookieName, cookieValue] = cookieParts;
+
+        // Check if cookie value contains our parameter
+        if (cookieValue?.includes(parameter)) {
+          const extractionDetails: {
+            pattern: string;
+            cookieName?: string;
+            jsonPath?: string;
+          } = {
+            pattern: `${cookieName}=([^;]+)`,
+          };
+
+          if (cookieName) {
+            extractionDetails.cookieName = cookieName.trim();
+          }
+
+          return {
+            type: "initial-page-cookie",
+            sourceUrl: htmlRequest.url,
+            extractionDetails,
+          };
+        }
+
+        // Check if cookie name matches parameter patterns
+        if (cookieName && isSessionParameterName(cookieName, parameter)) {
+          const extractionDetails: {
+            pattern: string;
+            cookieName?: string;
+            jsonPath?: string;
+          } = {
+            pattern: `${cookieName}=([^;]+)`,
+          };
+
+          if (cookieName) {
+            extractionDetails.cookieName = cookieName.trim();
+          }
+
+          return {
+            type: "initial-page-cookie",
+            sourceUrl: htmlRequest.url,
+            extractionDetails,
+          };
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Check if a cookie name likely corresponds to a session parameter
+ */
+function isSessionParameterName(
+  cookieName: string,
+  parameter: string
+): boolean {
+  const lowerCookieName = cookieName.toLowerCase();
+  const lowerParameter = parameter.toLowerCase();
+
+  // Direct match
+  if (lowerCookieName === lowerParameter) {
+    return true;
+  }
+
+  // Common session parameter patterns
+  const sessionPatterns = [
+    "session",
+    "sess",
+    "token",
+    "auth",
+    "csrf",
+    "xsrf",
+    "jwt",
+  ];
+
+  return sessionPatterns.some(
+    (pattern) =>
+      lowerCookieName.includes(pattern) && lowerParameter.includes(pattern)
+  );
 }
 
 /**
