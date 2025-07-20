@@ -11,10 +11,23 @@ import {
 } from "./agents/DependencyAgent.js";
 import { identifyDynamicParts } from "./agents/DynamicPartsAgent.js";
 import { identifyInputVariables } from "./agents/InputVariablesAgent.js";
-import { identifyEndUrl } from "./agents/URLIdentificationAgent.js";
+import {
+  analyzeParameterHeuristically,
+  classifyParameters,
+} from "./agents/ParameterClassificationAgent.js";
+import {
+  calculateApiPatternScore,
+  calculateKeywordRelevance,
+  calculateMethodScore,
+  calculateParameterComplexityScore,
+  calculateResponseTypeScore,
+  identifyEndUrl,
+  sortUrlsByRelevance,
+} from "./agents/URLIdentificationAgent.js";
 import { AuthenticationAnalyzer } from "./core/AuthenticationAnalyzer.js";
 import { generateWrapperScript } from "./core/CodeGenerator.js";
 import { CompletedSessionManager } from "./core/CompletedSessionManager.js";
+import { DAGManager } from "./core/DAGManager.js";
 import { parseHARFile } from "./core/HARParser.js";
 import { getLLMClient } from "./core/LLMClient.js";
 import { manualSessionManager } from "./core/ManualSessionManager.js";
@@ -22,12 +35,14 @@ import { validateConfiguration } from "./core/providers/ProviderFactory.js";
 import { SessionManager } from "./core/SessionManager.js";
 import {
   type BrowserSessionInfo,
+  type ClassifiedParameter,
   type CleanupResult,
   type CookieDependency,
   type HarValidationResult,
   HarvestError,
   ManualSessionStartSchema,
   ManualSessionStopSchema,
+  type ParameterClassification,
   type RequestDependency,
   type RequestModel,
   type SessionConfig,
@@ -476,6 +491,119 @@ export class HarvestMCPServer {
       },
       async (params): Promise<CallToolResult> => {
         return await this.handleGenerateWrapperScript(params);
+      }
+    );
+
+    // Advanced Debug and Manual Controls
+    this.server.tool(
+      "debug_override_parameter_classification",
+      "Manually override the classification of a parameter in a session. Useful when automatic classification is incorrect.",
+      {
+        sessionId: z.string().uuid().describe("UUID of the session to modify"),
+        nodeId: z
+          .string()
+          .uuid()
+          .describe("UUID of the node containing the parameter"),
+        parameterValue: z
+          .string()
+          .describe("The exact parameter value to reclassify"),
+        newClassification: z
+          .enum([
+            "dynamic",
+            "sessionConstant",
+            "userInput",
+            "staticConstant",
+            "optional",
+          ])
+          .describe("The new classification for this parameter"),
+        reasoning: z
+          .string()
+          .optional()
+          .describe("Optional explanation for the override"),
+      },
+      async (params): Promise<CallToolResult> => {
+        return await this.handleOverrideParameterClassification(params);
+      }
+    );
+    this.server.tool(
+      "debug_batch_classify_parameters",
+      "Manually classify multiple parameters at once using pattern matching.",
+      {
+        sessionId: z.string().uuid().describe("UUID of the session to modify"),
+        classifications: z
+          .array(
+            z.object({
+              pattern: z
+                .string()
+                .describe("Regex pattern to match parameter names"),
+              classification: z
+                .enum([
+                  "dynamic",
+                  "sessionConstant",
+                  "userInput",
+                  "staticConstant",
+                  "optional",
+                ])
+                .describe("Classification for matching parameters"),
+              reasoning: z
+                .string()
+                .optional()
+                .describe("Explanation for this classification rule"),
+            })
+          )
+          .describe("List of classification rules to apply"),
+      },
+      async (params): Promise<CallToolResult> => {
+        return await this.handleBatchClassifyParameters(params);
+      }
+    );
+    this.server.tool(
+      "debug_skip_node",
+      "Mark a node as optional/skippable in the dependency graph. Useful for bypassing problematic nodes.",
+      {
+        sessionId: z.string().uuid().describe("UUID of the session"),
+        nodeId: z.string().uuid().describe("UUID of the node to skip"),
+        reason: z.string().describe("Reason for skipping this node"),
+      },
+      async (params): Promise<CallToolResult> => {
+        return await this.handleSkipNode(params);
+      }
+    );
+    this.server.tool(
+      "debug_inject_response",
+      "Manually inject a response for a node to unblock analysis. Useful for nodes that cannot be resolved automatically.",
+      {
+        sessionId: z.string().uuid().describe("UUID of the session"),
+        nodeId: z
+          .string()
+          .uuid()
+          .describe("UUID of the node to inject response for"),
+        responseData: z
+          .record(z.unknown())
+          .describe("The response data to inject (as JSON object)"),
+        extractedParts: z
+          .record(z.string())
+          .optional()
+          .describe("Optional mapping of extracted variable names to values"),
+      },
+      async (params): Promise<CallToolResult> => {
+        return await this.handleInjectResponse(params);
+      }
+    );
+    this.server.tool(
+      "debug_reset_analysis",
+      "Reset the analysis state for a session while preserving the HAR data. Allows restarting analysis with different parameters.",
+      {
+        sessionId: z.string().uuid().describe("UUID of the session to reset"),
+        preserveManualOverrides: z
+          .boolean()
+          .optional()
+          .describe(
+            "Whether to preserve manual parameter classifications (default: true)"
+          ),
+      },
+      async (params): Promise<CallToolResult> => {
+        return await this.handleResetAnalysis(params);
       }
     );
 
@@ -1867,17 +1995,22 @@ export class HarvestMCPServer {
       }
 
       // Process dynamic parts and input variables
-      const { dynamicParts, finalDynamicParts, identifiedInputVars } =
-        await this.processDynamicPartsAndInputVariables(
-          curlCommand,
-          session,
-          argsObj.sessionId
-        );
+      const {
+        dynamicParts,
+        finalDynamicParts,
+        identifiedInputVars,
+        classifiedParameters,
+      } = await this.processDynamicPartsAndInputVariables(
+        curlCommand,
+        session,
+        argsObj.sessionId
+      );
 
-      // Update node with processed information
+      // Update node with processed information including parameter classification
       session.dagManager.updateNode(nodeId, {
         dynamicParts: finalDynamicParts,
         inputVariables: identifiedInputVars,
+        classifiedParameters: classifiedParameters,
       });
 
       // Process dependencies and add new nodes
@@ -2646,6 +2779,7 @@ export class HarvestMCPServer {
     dynamicParts: string[];
     finalDynamicParts: string[];
     identifiedInputVars: Record<string, string>;
+    classifiedParameters: ClassifiedParameter[];
   }> {
     // Step 1: Identify dynamic parts
     const dynamicParts = await identifyDynamicParts(
@@ -2659,7 +2793,53 @@ export class HarvestMCPServer {
       `Identified ${dynamicParts.length} dynamic parts: ${dynamicParts.join(", ")}`
     );
 
-    // Step 2: Check for input variables in the dynamic parts
+    // Step 2: NEW - Classify parameters to distinguish session constants from truly dynamic parts
+    let classifiedParameters: ClassifiedParameter[] = [];
+    if (dynamicParts.length > 0) {
+      try {
+        classifiedParameters = await classifyParameters(
+          dynamicParts,
+          session.harData.requests,
+          sessionId
+        );
+
+        // Log classification results
+        const classificationSummary = classifiedParameters.reduce(
+          (acc, param) => {
+            acc[param.classification] = (acc[param.classification] || 0) + 1;
+            return acc;
+          },
+          {} as Record<string, number>
+        );
+
+        this.sessionManager.addLog(
+          sessionId,
+          "info",
+          `Parameter classification: ${JSON.stringify(classificationSummary)}`
+        );
+
+        // Log session constants specifically (these will not block completion)
+        const sessionConstants = classifiedParameters.filter(
+          (p) => p.classification === "sessionConstant"
+        );
+        if (sessionConstants.length > 0) {
+          this.sessionManager.addLog(
+            sessionId,
+            "info",
+            `Identified session constants: ${sessionConstants.map((p) => p.name || p.value).join(", ")}`
+          );
+        }
+      } catch (error) {
+        this.sessionManager.addLog(
+          sessionId,
+          "warn",
+          `Parameter classification failed: ${error instanceof Error ? error.message : "Unknown error"}. Continuing with legacy approach.`
+        );
+        // Continue with existing logic if classification fails
+      }
+    }
+
+    // Step 3: Check for input variables in the dynamic parts
     let finalDynamicParts = dynamicParts;
     let identifiedInputVars: Record<string, string> = {};
 
@@ -2685,7 +2865,32 @@ export class HarvestMCPServer {
       }
     }
 
-    return { dynamicParts, finalDynamicParts, identifiedInputVars };
+    // Step 4: Filter truly dynamic parts based on classification
+    // Only parameters classified as "dynamic" should block workflow completion
+    if (classifiedParameters.length > 0) {
+      const trulyDynamicParts = dynamicParts.filter((part) => {
+        const classification = classifiedParameters.find(
+          (cp) => cp.value === part || cp.name === part
+        );
+        return !classification || classification.classification === "dynamic";
+      });
+
+      if (trulyDynamicParts.length !== finalDynamicParts.length) {
+        this.sessionManager.addLog(
+          sessionId,
+          "info",
+          `Filtered ${finalDynamicParts.length - trulyDynamicParts.length} non-dynamic parameters. Remaining: ${trulyDynamicParts.length}`
+        );
+        finalDynamicParts = trulyDynamicParts;
+      }
+    }
+
+    return {
+      dynamicParts,
+      finalDynamicParts,
+      identifiedInputVars,
+      classifiedParameters,
+    };
   }
 
   /**
@@ -4728,8 +4933,9 @@ ${recommendationsList}
     argsObj: ReturnType<typeof this.parseCompleteAnalysisArgs>,
     steps: string[],
     warnings: string[]
-  ) {
+  ): Promise<{ generatedCode: string; codeGenerationSuccess: boolean }> {
     let generatedCode = "";
+    let codeGenerationSuccess = false;
 
     if (isComplete) {
       steps.push("📝 Step 3: Generating TypeScript wrapper code");
@@ -4741,12 +4947,18 @@ ${recommendationsList}
           (codeResult.content?.[0]?.text as string) || '{"code": ""}'
         );
 
-        if (codeResult.isError) {
+        if (
+          codeResult.isError ||
+          !codeData.code ||
+          codeData.code.trim().length === 0
+        ) {
           // Use enhanced completion analysis to understand why code generation failed
           const analysis = this.sessionManager.analyzeCompletionState(
             argsObj.sessionId
           );
           warnings.push("Code generation failed");
+          codeGenerationSuccess = false;
+
           if (analysis.isComplete) {
             warnings.push(
               "Reason: Unknown code generation error despite complete analysis"
@@ -4757,7 +4969,8 @@ ${recommendationsList}
             );
           }
         } else {
-          generatedCode = codeData.code || "";
+          generatedCode = codeData.code;
+          codeGenerationSuccess = true;
           steps.push(
             `✅ Code generation complete - ${generatedCode.length} characters generated`
           );
@@ -4770,15 +4983,20 @@ ${recommendationsList}
         warnings.push(
           `Code generation error: ${error instanceof Error ? error.message : "Unknown error"}`
         );
+        codeGenerationSuccess = false;
+
         if (!analysis.isComplete) {
           warnings.push(
             `Analysis state issue: ${analysis.blockers.join("; ")}`
           );
         }
       }
+    } else {
+      steps.push("⏭️ Step 3: Skipped code generation (analysis not complete)");
+      codeGenerationSuccess = false;
     }
 
-    return generatedCode;
+    return { generatedCode, codeGenerationSuccess };
   }
 
   /**
@@ -4791,22 +5009,31 @@ ${recommendationsList}
     targetUrl: string;
     elapsedTime: number;
     generatedCode: string;
+    codeGenerationSuccess: boolean;
     steps: string[];
     warnings: string[];
   }): CallToolResult {
+    // Overall workflow success requires both analysis completion AND successful code generation
+    const overallSuccess = params.isComplete && params.codeGenerationSuccess;
+
     return {
       content: [
         {
           type: "text",
           text: JSON.stringify({
-            success: true,
+            success: overallSuccess,
             sessionId: params.sessionId,
             result: {
-              isComplete: params.isComplete,
+              analysisComplete: params.isComplete,
+              codeGenerated: params.codeGenerationSuccess,
+              workflowStatus: overallSuccess
+                ? "completed"
+                : params.isComplete
+                  ? "code_generation_failed"
+                  : "analysis_incomplete",
               iterations: params.iterations,
               targetUrl: params.targetUrl,
               elapsedTime: params.elapsedTime,
-              codeGenerated: !!params.generatedCode,
               codeLength: params.generatedCode.length,
             },
             steps: params.steps,
@@ -4864,12 +5091,8 @@ ${recommendationsList}
       const { isComplete, iterations } = processingResult;
 
       // Step 3: Generate code (if analysis is complete)
-      const generatedCode = await this.generateCodeIfComplete(
-        isComplete,
-        argsObj,
-        steps,
-        warnings
-      );
+      const { generatedCode, codeGenerationSuccess } =
+        await this.generateCodeIfComplete(isComplete, argsObj, steps, warnings);
 
       const elapsedTime = Date.now() - startTime;
       steps.push(`🎯 Workflow completed in ${elapsedTime}ms`);
@@ -4881,6 +5104,7 @@ ${recommendationsList}
         targetUrl: initialData.actionUrl,
         elapsedTime,
         generatedCode,
+        codeGenerationSuccess,
         steps,
         warnings,
       });
@@ -6415,6 +6639,858 @@ ${recommendationsList}
     const i = Math.floor(Math.log(bytes) / Math.log(k));
 
     return `${(bytes / k ** i).toFixed(1)} ${sizes[i]}`;
+  }
+
+  /**
+   * Handle debug_preview_har tool call
+   */
+  public async handlePreviewHar(args: unknown): Promise<CallToolResult> {
+    try {
+      const argsObj = args as {
+        harPath: string;
+        showUrls?: boolean;
+        showAuth?: boolean;
+      };
+
+      // Parse HAR file
+      const parsedHar = await parseHARFile(argsObj.harPath, {
+        excludeKeywords: ["favicon", "analytics", "tracking"],
+        includeAllApiRequests: true,
+      });
+
+      // Get validation info
+      const validation = parsedHar.validation;
+
+      // Build preview response
+      const preview: {
+        success: boolean;
+        harPath: string;
+        quality: string;
+        stats: Record<string, unknown>;
+        issues: string[];
+        recommendations: string[];
+        authAnalysis?: unknown;
+        summary?: unknown;
+        urls?: Array<{
+          method: string;
+          url: string;
+          requestType: string;
+          responseType: string;
+        }>;
+        requests?: Array<{
+          method: string;
+          url: string;
+          hasBody: boolean;
+          hasAuth: boolean;
+        }>;
+      } = {
+        success: true,
+        harPath: argsObj.harPath,
+        quality: validation?.quality || "unknown",
+        stats: validation?.stats || {},
+        issues: validation?.issues || [],
+        recommendations: validation?.recommendations || [],
+      };
+
+      // Add URLs if requested
+      if (argsObj.showUrls) {
+        preview.urls = parsedHar.urls.map((url: URLInfo) => ({
+          method: url.method,
+          url: url.url,
+          requestType: url.requestType,
+          responseType: url.responseType,
+        }));
+      }
+
+      // Add auth analysis if requested
+      if (argsObj.showAuth) {
+        preview.authAnalysis = validation?.authAnalysis || {
+          hasAuthHeaders: false,
+          hasCookies: false,
+          hasTokens: false,
+          authTypes: [],
+        };
+      }
+
+      // Add summary
+      preview.summary = {
+        totalRequests: parsedHar.requests.length,
+        totalUrls: parsedHar.urls.length,
+        apiRequests: validation?.stats.apiRequests || 0,
+        hasAuthentication: validation?.authAnalysis.hasAuthHeaders || false,
+        readyForAnalysis:
+          validation?.quality !== "empty" && validation?.quality !== "poor",
+      };
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(preview),
+          },
+        ],
+      };
+    } catch (error) {
+      throw new HarvestError(
+        `HAR preview failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+        "HAR_PREVIEW_FAILED",
+        { originalError: error }
+      );
+    }
+  }
+
+  /**
+   * Handle debug_test_url_identification tool call
+   */
+  public async handleTestUrlIdentification(
+    args: unknown
+  ): Promise<CallToolResult> {
+    try {
+      const argsObj = args as {
+        harPath: string;
+        prompt: string;
+        topN?: number;
+      };
+
+      const topN = argsObj.topN || 5;
+
+      // Parse HAR file
+      const parsedHar = await parseHARFile(argsObj.harPath);
+
+      if (parsedHar.urls.length === 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                success: false,
+                error: "No URLs found in HAR file",
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      // Use URL identification heuristics
+      const sortedUrls = sortUrlsByRelevance(parsedHar.urls, argsObj.prompt);
+      const topUrls = sortedUrls.slice(0, topN);
+
+      // Calculate scores for each URL
+      const urlsWithScores = topUrls.map((url, index) => {
+        const keywordScore = calculateKeywordRelevance(url.url, argsObj.prompt);
+        const apiPatternScore = calculateApiPatternScore(url.url);
+        const parameterScore = calculateParameterComplexityScore(url.url);
+        const methodScore = calculateMethodScore(url.method, argsObj.prompt);
+        const responseTypeScore = calculateResponseTypeScore(url.responseType);
+
+        const totalScore =
+          keywordScore * 3 +
+          apiPatternScore * 2 +
+          parameterScore * 1.5 +
+          methodScore +
+          responseTypeScore * 0.8;
+
+        return {
+          rank: index + 1,
+          url: url.url,
+          method: url.method,
+          scores: {
+            total: Math.round(totalScore * 10) / 10,
+            keyword: keywordScore,
+            apiPattern: apiPatternScore,
+            parameters: parameterScore,
+            method: methodScore,
+            responseType: responseTypeScore,
+          },
+          analysis: {
+            hasKeywordMatch: keywordScore > 0,
+            isApiEndpoint: apiPatternScore > 0,
+            complexity:
+              parameterScore > 10
+                ? "high"
+                : parameterScore > 5
+                  ? "medium"
+                  : "low",
+          },
+        };
+      });
+
+      // Identify the most likely URL
+      const likelyUrl = topUrls[0];
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              success: true,
+              prompt: argsObj.prompt,
+              likelyUrl: likelyUrl?.url || "No suitable URL found",
+              topCandidates: urlsWithScores,
+              totalUrlsAnalyzed: parsedHar.urls.length,
+              recommendation: likelyUrl
+                ? `Most likely URL: ${likelyUrl.url} (${likelyUrl.method})`
+                : "No clear match found - consider manual URL selection with debug_set_master_node",
+            }),
+          },
+        ],
+      };
+    } catch (error) {
+      throw new HarvestError(
+        `URL identification test failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+        "URL_TEST_FAILED",
+        { originalError: error }
+      );
+    }
+  }
+
+  /**
+   * Handle debug_analyze_parameters tool call
+   */
+  public async handleAnalyzeParameters(args: unknown): Promise<CallToolResult> {
+    try {
+      const argsObj = args as {
+        harPath: string;
+        url?: string;
+      };
+
+      // Parse HAR file
+      const parsedHar = await parseHARFile(argsObj.harPath);
+
+      // Filter requests if URL provided
+      const requests = argsObj.url
+        ? parsedHar.requests.filter(
+            (req: RequestModel) => req.url === argsObj.url
+          )
+        : parsedHar.requests;
+
+      if (requests.length === 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                success: false,
+                error: argsObj.url
+                  ? `No requests found for URL: ${argsObj.url}`
+                  : "No requests found in HAR file",
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      // Extract all parameters from requests
+      const allParameters = new Map<
+        string,
+        {
+          occurrences: number;
+          contexts: string[];
+          values: Set<string>;
+        }
+      >();
+
+      for (const request of requests) {
+        // Extract from URL query params
+        const url = new URL(request.url);
+        for (const [key, value] of url.searchParams) {
+          if (!allParameters.has(key)) {
+            allParameters.set(key, {
+              occurrences: 0,
+              contexts: [],
+              values: new Set(),
+            });
+          }
+          const param = allParameters.get(key);
+          if (!param) {
+            continue;
+          }
+          param.occurrences++;
+          param.contexts.push("query");
+          param.values.add(value);
+        }
+
+        // Extract from request body if JSON
+        if (request.body && typeof request.body === "object") {
+          const extractParams = (obj: Record<string, unknown>, prefix = "") => {
+            for (const [key, value] of Object.entries(obj)) {
+              const fullKey = prefix ? `${prefix}.${key}` : key;
+              if (
+                typeof value === "object" &&
+                value !== null &&
+                !Array.isArray(value)
+              ) {
+                extractParams(value as Record<string, unknown>, fullKey);
+              } else {
+                if (!allParameters.has(fullKey)) {
+                  allParameters.set(fullKey, {
+                    occurrences: 0,
+                    contexts: [],
+                    values: new Set(),
+                  });
+                }
+                const param = allParameters.get(fullKey);
+                if (!param) {
+                  continue;
+                }
+                param.occurrences++;
+                param.contexts.push("body");
+                param.values.add(String(value));
+              }
+            }
+          };
+          extractParams(request.body as Record<string, unknown>);
+        }
+      }
+
+      // Analyze parameters using heuristics
+      const parameterAnalysis = Array.from(allParameters.entries()).map(
+        ([name, data]) => {
+          const consistency =
+            data.values.size === 1 ? 1.0 : 1.0 / data.values.size;
+          const occurrenceRate = data.occurrences / requests.length;
+
+          // Use heuristic analysis
+          const analysis = analyzeParameterHeuristically(
+            name,
+            parsedHar.requests
+          );
+
+          return {
+            parameter: name,
+            occurrences: data.occurrences,
+            uniqueValues: data.values.size,
+            consistency: Math.round(consistency * 100),
+            occurrenceRate: Math.round(occurrenceRate * 100),
+            contexts: Array.from(new Set(data.contexts)),
+            predictedClassification: analysis.classification,
+            confidence: Math.round(analysis.confidence * 100),
+            reasoning: analysis.reasoning,
+            sampleValues: Array.from(data.values).slice(0, 3),
+          };
+        }
+      );
+
+      // Sort by importance (occurrences * consistency)
+      parameterAnalysis.sort(
+        (a, b) => b.occurrences * b.consistency - a.occurrences * a.consistency
+      );
+
+      // Group by classification
+      const classificationSummary = parameterAnalysis.reduce(
+        (acc, param) => {
+          acc[param.predictedClassification] =
+            (acc[param.predictedClassification] || 0) + 1;
+          return acc;
+        },
+        {} as Record<string, number>
+      );
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              success: true,
+              requestsAnalyzed: requests.length,
+              totalParameters: allParameters.size,
+              parameters: parameterAnalysis,
+              classificationSummary,
+              recommendations: [
+                "Parameters with high consistency (>90%) are likely sessionConstants",
+                "Parameters with low consistency (<30%) are likely userInputs",
+                "Use session_start to run full analysis with parameter classification",
+              ],
+            }),
+          },
+        ],
+      };
+    } catch (error) {
+      throw new HarvestError(
+        `Parameter analysis failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+        "PARAMETER_ANALYSIS_FAILED",
+        { originalError: error }
+      );
+    }
+  }
+
+  /**
+   * Handle debug_override_parameter_classification tool call
+   */
+  public async handleOverrideParameterClassification(
+    args: unknown
+  ): Promise<CallToolResult> {
+    try {
+      const argsObj = args as {
+        sessionId: string;
+        nodeId: string;
+        parameterValue: string;
+        newClassification: ParameterClassification;
+        reasoning?: string;
+      };
+
+      const session = this.sessionManager.getSession(argsObj.sessionId);
+      const node = session.dagManager.getNode(argsObj.nodeId);
+
+      if (!node) {
+        throw new HarvestError(
+          `Node ${argsObj.nodeId} not found`,
+          "NODE_NOT_FOUND",
+          { nodeId: argsObj.nodeId }
+        );
+      }
+
+      // Update classified parameters
+      if (!node.classifiedParameters) {
+        node.classifiedParameters = [];
+      }
+
+      // Find and update the parameter
+      let found = false;
+      for (const param of node.classifiedParameters) {
+        if (param.value === argsObj.parameterValue) {
+          param.classification = argsObj.newClassification;
+          param.confidence = 1.0;
+          param.source = "manual";
+          param.metadata.domainContext =
+            argsObj.reasoning || `Manually set to ${argsObj.newClassification}`;
+          found = true;
+          break;
+        }
+      }
+
+      if (!found) {
+        // Add new classification
+        node.classifiedParameters.push({
+          name: argsObj.parameterValue,
+          value: argsObj.parameterValue,
+          classification: argsObj.newClassification,
+          confidence: 1.0,
+          source: "manual",
+          metadata: {
+            occurrenceCount: 1,
+            totalRequests: 1,
+            consistencyScore: 1.0,
+            parameterPattern: `^${argsObj.parameterValue}$`,
+            domainContext:
+              argsObj.reasoning ||
+              `Manually set to ${argsObj.newClassification}`,
+          },
+        });
+      }
+
+      // Update node
+      session.dagManager.updateNode(argsObj.nodeId, node);
+
+      // Log the change
+      this.sessionManager.addLog(
+        argsObj.sessionId,
+        "info",
+        `Manually reclassified parameter "${argsObj.parameterValue}" as ${argsObj.newClassification}`
+      );
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              success: true,
+              sessionId: argsObj.sessionId,
+              nodeId: argsObj.nodeId,
+              parameter: argsObj.parameterValue,
+              newClassification: argsObj.newClassification,
+              reasoning: argsObj.reasoning,
+              message: "Parameter classification updated successfully",
+            }),
+          },
+        ],
+      };
+    } catch (error) {
+      throw new HarvestError(
+        `Parameter classification override failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+        "PARAMETER_OVERRIDE_FAILED",
+        { originalError: error }
+      );
+    }
+  }
+
+  /**
+   * Handle debug_batch_classify_parameters tool call
+   */
+  public async handleBatchClassifyParameters(
+    args: unknown
+  ): Promise<CallToolResult> {
+    try {
+      const argsObj = args as {
+        sessionId: string;
+        classifications: Array<{
+          pattern: string;
+          classification: ParameterClassification;
+          reasoning?: string;
+        }>;
+      };
+
+      const session = this.sessionManager.getSession(argsObj.sessionId);
+      const allNodes = session.dagManager.getAllNodes();
+      let totalUpdated = 0;
+      const updates: Array<{
+        nodeId: string;
+        parameter: string;
+        classification: string;
+      }> = [];
+
+      // Apply classification rules to all nodes
+      for (const [nodeId, node] of allNodes) {
+        if (!node.classifiedParameters) {
+          node.classifiedParameters = [];
+        }
+
+        let nodeUpdated = false;
+
+        // Apply each classification rule
+        for (const rule of argsObj.classifications) {
+          const regex = new RegExp(rule.pattern);
+
+          // Check existing classified parameters
+          for (const param of node.classifiedParameters) {
+            if (regex.test(param.name) || regex.test(param.value)) {
+              param.classification = rule.classification;
+              param.confidence = 1.0;
+              param.source = "manual";
+              param.metadata.domainContext =
+                rule.reasoning || `Batch classified as ${rule.classification}`;
+              updates.push({
+                nodeId,
+                parameter: param.value,
+                classification: rule.classification,
+              });
+              totalUpdated++;
+              nodeUpdated = true;
+            }
+          }
+
+          // Also check dynamic parts that might not be classified yet
+          if (node.dynamicParts) {
+            for (const part of node.dynamicParts) {
+              if (regex.test(part)) {
+                // Check if already classified
+                const existing = node.classifiedParameters.find(
+                  (p) => p.value === part
+                );
+                if (!existing) {
+                  node.classifiedParameters.push({
+                    name: part,
+                    value: part,
+                    classification: rule.classification,
+                    confidence: 1.0,
+                    source: "manual",
+                    metadata: {
+                      occurrenceCount: 1,
+                      totalRequests: 1,
+                      consistencyScore: 1.0,
+                      parameterPattern: `^${part}$`,
+                      domainContext:
+                        rule.reasoning ||
+                        `Batch classified as ${rule.classification}`,
+                    },
+                  });
+                  updates.push({
+                    nodeId,
+                    parameter: part,
+                    classification: rule.classification,
+                  });
+                  totalUpdated++;
+                  nodeUpdated = true;
+                }
+              }
+            }
+          }
+        }
+
+        if (nodeUpdated) {
+          session.dagManager.updateNode(nodeId, node);
+        }
+      }
+
+      // Log the changes
+      this.sessionManager.addLog(
+        argsObj.sessionId,
+        "info",
+        `Batch parameter classification applied: ${totalUpdated} parameters updated across ${updates.length} nodes`
+      );
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              success: true,
+              sessionId: argsObj.sessionId,
+              totalUpdated,
+              updates,
+              message: "Batch classification applied successfully",
+            }),
+          },
+        ],
+      };
+    } catch (error) {
+      throw new HarvestError(
+        `Batch parameter classification failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+        "BATCH_CLASSIFICATION_FAILED",
+        { originalError: error }
+      );
+    }
+  }
+
+  /**
+   * Handle debug_skip_node tool call
+   */
+  public async handleSkipNode(args: unknown): Promise<CallToolResult> {
+    try {
+      const argsObj = args as {
+        sessionId: string;
+        nodeId: string;
+        reason: string;
+      };
+
+      const session = this.sessionManager.getSession(argsObj.sessionId);
+      const node = session.dagManager.getNode(argsObj.nodeId);
+
+      if (!node) {
+        throw new HarvestError(
+          `Node ${argsObj.nodeId} not found`,
+          "NODE_NOT_FOUND",
+          { nodeId: argsObj.nodeId }
+        );
+      }
+
+      // Mark all parameters as optional
+      if (node.dynamicParts) {
+        if (!node.classifiedParameters) {
+          node.classifiedParameters = [];
+        }
+
+        for (const part of node.dynamicParts) {
+          const existing = node.classifiedParameters.find(
+            (p) => p.value === part
+          );
+          if (existing) {
+            existing.classification = "optional";
+            existing.metadata.domainContext = `Skipped: ${argsObj.reason}`;
+          } else {
+            node.classifiedParameters.push({
+              name: part,
+              value: part,
+              classification: "optional",
+              confidence: 1.0,
+              source: "manual",
+              metadata: {
+                occurrenceCount: 1,
+                totalRequests: 1,
+                consistencyScore: 1.0,
+                parameterPattern: `^${part}$`,
+                domainContext: `Skipped: ${argsObj.reason}`,
+              },
+            });
+          }
+        }
+      }
+
+      // Update node
+      session.dagManager.updateNode(argsObj.nodeId, node);
+
+      // Log the change
+      this.sessionManager.addLog(
+        argsObj.sessionId,
+        "info",
+        `Node ${argsObj.nodeId} marked as skippable: ${argsObj.reason}`
+      );
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              success: true,
+              sessionId: argsObj.sessionId,
+              nodeId: argsObj.nodeId,
+              reason: argsObj.reason,
+              message: "Node marked as skippable successfully",
+            }),
+          },
+        ],
+      };
+    } catch (error) {
+      throw new HarvestError(
+        `Skip node failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+        "SKIP_NODE_FAILED",
+        { originalError: error }
+      );
+    }
+  }
+
+  /**
+   * Handle debug_inject_response tool call
+   */
+  public async handleInjectResponse(args: unknown): Promise<CallToolResult> {
+    try {
+      const argsObj = args as {
+        sessionId: string;
+        nodeId: string;
+        responseData: Record<string, unknown>;
+        extractedParts?: Record<string, string>;
+      };
+
+      const session = this.sessionManager.getSession(argsObj.sessionId);
+      const node = session.dagManager.getNode(argsObj.nodeId);
+
+      if (!node) {
+        throw new HarvestError(
+          `Node ${argsObj.nodeId} not found`,
+          "NODE_NOT_FOUND",
+          { nodeId: argsObj.nodeId }
+        );
+      }
+
+      // Inject response data
+      if (node.nodeType === "curl" || node.nodeType === "master_curl") {
+        node.content.value = {
+          status: 200,
+          statusText: "OK (Injected)",
+          headers: {},
+          json: argsObj.responseData,
+        };
+
+        // Mark dynamic parts as resolved
+        if (node.dynamicParts) {
+          node.dynamicParts = [];
+        }
+
+        // Add extracted parts if provided
+        if (argsObj.extractedParts) {
+          node.extractedParts = Object.keys(argsObj.extractedParts);
+
+          // Store the extracted values somewhere accessible
+          // This would need to be implemented in the dependency resolution logic
+        }
+      }
+
+      // Update node
+      session.dagManager.updateNode(argsObj.nodeId, node);
+
+      // Log the change
+      this.sessionManager.addLog(
+        argsObj.sessionId,
+        "info",
+        `Injected response for node ${argsObj.nodeId}`
+      );
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              success: true,
+              sessionId: argsObj.sessionId,
+              nodeId: argsObj.nodeId,
+              responseData: argsObj.responseData,
+              extractedParts: argsObj.extractedParts,
+              message: "Response injected successfully",
+            }),
+          },
+        ],
+      };
+    } catch (error) {
+      throw new HarvestError(
+        `Response injection failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+        "RESPONSE_INJECTION_FAILED",
+        { originalError: error }
+      );
+    }
+  }
+
+  /**
+   * Handle debug_reset_analysis tool call
+   */
+  public async handleResetAnalysis(args: unknown): Promise<CallToolResult> {
+    try {
+      const argsObj = args as {
+        sessionId: string;
+        preserveManualOverrides?: boolean;
+      };
+
+      const preserveOverrides = argsObj.preserveManualOverrides ?? true;
+      const session = this.sessionManager.getSession(argsObj.sessionId);
+
+      // Save manual overrides if needed
+      const manualOverrides: Array<{
+        nodeId: string;
+        parameter: ClassifiedParameter;
+      }> = [];
+
+      if (preserveOverrides) {
+        const allNodes = session.dagManager.getAllNodes();
+        for (const [nodeId, node] of allNodes) {
+          if (node.classifiedParameters) {
+            for (const param of node.classifiedParameters) {
+              if (param.source === "manual") {
+                manualOverrides.push({ nodeId, parameter: param });
+              }
+            }
+          }
+        }
+      }
+
+      // Reset DAG manager
+      session.dagManager = new DAGManager();
+
+      // Reset session state
+      session.state = {
+        toBeProcessedNodes: [],
+        inProcessNodeDynamicParts: [],
+        inputVariables: session.state.inputVariables, // Preserve input variables
+        isComplete: false,
+        logs: [
+          {
+            timestamp: new Date(),
+            level: "info",
+            message: "Analysis reset",
+            data: { preserveManualOverrides: preserveOverrides },
+          },
+        ],
+      };
+
+      // Log the reset
+      this.sessionManager.addLog(
+        argsObj.sessionId,
+        "info",
+        `Analysis reset with ${manualOverrides.length} manual overrides preserved`
+      );
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              success: true,
+              sessionId: argsObj.sessionId,
+              preservedOverrides: manualOverrides.length,
+              message: "Analysis reset successfully",
+              nextStep:
+                "Run analysis_run_initial_analysis to restart the workflow",
+            }),
+          },
+        ],
+      };
+    } catch (error) {
+      throw new HarvestError(
+        `Analysis reset failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+        "ANALYSIS_RESET_FAILED",
+        { originalError: error }
+      );
+    }
   }
 
   /**
