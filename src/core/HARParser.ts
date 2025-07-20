@@ -248,10 +248,33 @@ function analyzeAuthentication(
   }
 
   if (!analysis.hasAuthHeaders && !analysis.hasCookies && !analysis.hasTokens) {
-    analysis.issues.push("No authentication mechanisms detected");
-    analysis.recommendations.push(
-      "If API requires authentication, capture requests while authenticated"
-    );
+    // Check if these are likely public API endpoints before warning about authentication
+    const hasPublicApiPatterns = entries.some((entry) => {
+      const request = entry.request as { url?: string };
+      if (request.url) {
+        const url = request.url.toLowerCase();
+        return (
+          url.includes("/no-auth/") ||
+          url.includes("/public/") ||
+          url.includes("/open/") ||
+          // Legal/jurisprudence APIs are often public
+          (url.includes("jurisprudencia") && url.includes("/api/"))
+        );
+      }
+      return false;
+    });
+
+    if (hasPublicApiPatterns) {
+      // For public APIs, provide informational note instead of warning
+      analysis.recommendations.push(
+        "Public API endpoints detected - no authentication required for code generation"
+      );
+    } else {
+      analysis.issues.push("No authentication mechanisms detected");
+      analysis.recommendations.push(
+        "If API requires authentication, capture requests while authenticated"
+      );
+    }
   }
 
   return analysis;
