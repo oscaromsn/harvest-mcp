@@ -4,17 +4,14 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { AuthenticationAgent } from "./agents/AuthenticationAgent.js";
+import { analyzeAuthentication } from "./agents/AuthenticationAgent.js";
 import {
   findDependencies,
   isJavaScriptOrHtml,
 } from "./agents/DependencyAgent.js";
 import { identifyDynamicParts } from "./agents/DynamicPartsAgent.js";
 import { identifyInputVariables } from "./agents/InputVariablesAgent.js";
-import {
-  analyzeParameterHeuristically,
-  classifyParameters,
-} from "./agents/ParameterClassificationAgent.js";
+import { classifyParameters } from "./agents/ParameterClassificationAgent.js";
 import {
   calculateApiPatternScore,
   calculateKeywordRelevance,
@@ -24,7 +21,7 @@ import {
   identifyEndUrl,
   sortUrlsByRelevance,
 } from "./agents/URLIdentificationAgent.js";
-import { AuthenticationAnalyzer } from "./core/AuthenticationAnalyzer.js";
+// AuthenticationAnalyzer replaced with AuthenticationAgent
 import { generateWrapperScript } from "./core/CodeGenerator.js";
 import { CompletedSessionManager } from "./core/CompletedSessionManager.js";
 import { DAGManager } from "./core/DAGManager.js";
@@ -40,6 +37,7 @@ import {
   type CookieDependency,
   type HarValidationResult,
   HarvestError,
+  type HarvestSession,
   ManualSessionStartSchema,
   ManualSessionStopSchema,
   type ParameterClassification,
@@ -2003,7 +2001,8 @@ export class HarvestMCPServer {
       } = await this.processDynamicPartsAndInputVariables(
         curlCommand,
         session,
-        argsObj.sessionId
+        argsObj.sessionId,
+        nodeId
       );
 
       // Update node with processed information including parameter classification
@@ -2774,7 +2773,8 @@ export class HarvestMCPServer {
   private async processDynamicPartsAndInputVariables(
     curlCommand: string,
     session: ReturnType<typeof this.sessionManager.getSession>,
-    sessionId: string
+    sessionId: string,
+    nodeId: string
   ): Promise<{
     dynamicParts: string[];
     finalDynamicParts: string[];
@@ -2797,11 +2797,15 @@ export class HarvestMCPServer {
     let classifiedParameters: ClassifiedParameter[] = [];
     if (dynamicParts.length > 0) {
       try {
-        classifiedParameters = await classifyParameters(
-          dynamicParts,
-          session.harData.requests,
-          sessionId
-        );
+        // Get the current request from the node to classify its parameters
+        const node = session.dagManager.getNode(nodeId);
+        if (node?.content.key) {
+          const currentRequest = node.content.key as RequestModel;
+          classifiedParameters = await classifyParameters(
+            currentRequest,
+            session
+          );
+        }
 
         // Log classification results
         const classificationSummary = classifiedParameters.reduce(
@@ -6357,10 +6361,8 @@ ${recommendationsList}
         `Running authentication analysis for session ${argsObj.sessionId}`
       );
 
-      // Run comprehensive authentication analysis
-      const authAnalysis = await AuthenticationAnalyzer.analyzeHARData(
-        session.harData
-      );
+      // Run comprehensive authentication analysis using new AuthenticationAgent
+      const authAnalysis = await analyzeAuthentication(session);
 
       // Store the analysis in the session
       session.state.authAnalysis = authAnalysis;
@@ -6464,11 +6466,29 @@ ${recommendationsList}
         `Testing authentication for endpoint: ${argsObj.requestMethod} ${argsObj.requestUrl}`
       );
 
-      // Analyze individual request authentication
-      const requestAuthInfo = await AuthenticationAgent.analyzeRequest(
-        targetRequest,
-        `test-${Date.now()}`
-      );
+      // Analyze individual request authentication (using the new AuthenticationAgent)
+      const mockSession = {
+        id: `test-${Date.now()}`,
+        prompt: "Test authentication analysis",
+        harData: { requests: [targetRequest] },
+        dagManager: { getAllNodes: () => new Map() },
+      } as HarvestSession;
+
+      const authAnalysis = await analyzeAuthentication(mockSession);
+      const requestAuthInfo = authAnalysis.authenticatedRequests[0] || {
+        requestId: `test-${Date.now()}`,
+        url: targetRequest.url,
+        method: targetRequest.method,
+        authenticationType: authAnalysis.primaryAuthType,
+        requirement: authAnalysis.hasAuthentication
+          ? ("required" as const)
+          : ("none" as const),
+        tokens: authAnalysis.tokens,
+        authHeaders: {},
+        authCookies: {},
+        authParams: {},
+        isAuthFailure: false,
+      };
 
       // Check if request has authentication failures
       const hasAuthFailure = requestAuthInfo.isAuthFailure;
@@ -6952,11 +6972,15 @@ ${recommendationsList}
             data.values.size === 1 ? 1.0 : 1.0 / data.values.size;
           const occurrenceRate = data.occurrences / requests.length;
 
-          // Use heuristic analysis
-          const analysis = analyzeParameterHeuristically(
-            name,
-            parsedHar.requests
-          );
+          // Use heuristic analysis (simplified fallback)
+          const analysis = {
+            classification: consistency > 0.8 ? "staticConstant" : "userInput",
+            confidence: consistency,
+            reasoning:
+              consistency > 0.8
+                ? "Consistent value across requests"
+                : "Variable value suggests user input",
+          };
 
           return {
             parameter: name,
