@@ -1,54 +1,204 @@
 /**
- * End-to-end regression test for the Brazilian Labor Justice jurisprudence workflow
+ * Regression Test: Jurisprudencia.jt.jus.br Analysis Failures
  *
- * This test validates the complete analysis workflow for the jurisprudencia.jt.jus.br
- * website, ensuring all issues identified in the troubleshooting report are resolved.
+ * This test documents and partially reproduces the critical cascading failure
+ * reported by the client when analyzing the jurisprudencia.jt.jus.br Brazilian
+ * legal search system.
  *
- * Test scenarios:
- * 1. Automatic target URL identification should succeed
- * 2. Parameter classification should correctly identify static session constants
- * 3. Code generation should complete without manual intervention
- * 4. Generated code should be valid TypeScript without compilation errors
+ * Current Status: This test demonstrates the root causes identified in the
+ * investigation and serves as a regression test framework. Some assertions
+ * are commented out until the underlying fixes are implemented.
+ *
+ * Issues Documented:
+ * 1. URL identification heuristic scoring problems
+ * 2. Manual master node setting requirements
+ * 3. Missing automatic session constant classification
+ * 4. Batch classification semantic vs value matching issues
+ * 5. Bootstrap source resolution gaps for client-side tokens
+ * 6. Analysis completion blockers
  */
 
 import fs from "fs";
 import path from "path";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
+import { parseHARFile } from "../../src/core/HARParser.js";
+import { validateConfiguration } from "../../src/core/providers/ProviderFactory.js";
 
-describe.skip("Jurisprudencia Regression Test", () => {
-  const harFilePath = path.join(
+describe("Jurisprudencia Analysis Regression Test", () => {
+  // Path to the actual HAR file from the failure report
+  const harFilePath = path.resolve(
     __dirname,
-    "../fixtures/test-data/1b831f6c-ebe6-4a35-962a-5c730254e808/original.har"
+    "../fixtures/test-data/5e1eb521-0288-4098-ba7e-f5b6bdba3973/network-2025-07-20T20-01-47-813Z.har"
   );
 
-  // The original prompt from the troubleshooting report
-  const testPrompt =
-    "Generate a TypeScript fetcher that can search for jurisprudence with support for all available filters including: search terms, date ranges, courts/tribunals, judges/relators, process types, and any other classification filters. The fetcher should return structured data with all available fields from the search results.";
+  // The user's original prompt that triggered the failure cascade
+  const userPrompt =
+    "Generate a TypeScript fetcher that can search jurisprudencia.jt.jus.br for legal decisions";
 
-  it("should complete full analysis workflow without manual intervention", async () => {
-    // This test validates the fixes implemented in the refactoring
-    // TODO: Implement proper MCP protocol test once test harness is available
+  beforeEach(async () => {
+    // Validate LLM configuration before test
+    await validateConfiguration();
+  });
+
+  it("documents the HAR file structure and identifies key issues", async () => {
+    // ===== VERIFICATION: HAR FILE EXISTS AND IS VALID =====
     expect(fs.existsSync(harFilePath)).toBe(true);
-    expect(testPrompt).toContain("jurisprudence");
-  }, 60000);
 
-  it("should properly classify session constants without LLM intervention", async () => {
-    // TODO: Implement parameter classification test
-    expect(true).toBe(true);
+    const harData = await parseHARFile(harFilePath);
+    expect(harData).toBeDefined();
+    expect(harData.requests.length).toBeGreaterThan(0);
+
+    // ===== ISSUE #1 DOCUMENTATION: URL IDENTIFICATION PROBLEMS =====
+    // Find the main search endpoint and auxiliary actions
+    const searchEndpoints = harData.requests.filter(
+      (req) =>
+        req.url.includes("/api/no-auth/pesquisa") && !req.url.includes("copiar")
+    );
+    const auxiliaryActions = harData.requests.filter(
+      (req) =>
+        req.url.includes("copiarDecisao") ||
+        req.url.includes("copiarInteiroTeor")
+    );
+
+    expect(searchEndpoints.length).toBeGreaterThan(0);
+    expect(auxiliaryActions.length).toBeGreaterThan(0);
+
+    // Document the issue: Search endpoints use GET, auxiliary actions use POST
+    const searchEndpoint = searchEndpoints[0]!;
+    const auxiliaryAction = auxiliaryActions[0];
+
+    expect(searchEndpoint.method).toBe("GET");
+    if (auxiliaryAction) {
+      expect(auxiliaryAction.method).toBe("POST");
+    }
+
+    // ===== ISSUE #3 DOCUMENTATION: SESSION TOKEN PATTERNS =====
+    // Extract query parameters from search endpoint to identify session tokens
+    const searchUrl = new URL(searchEndpoint.url);
+    const sessionTokens: string[] = [];
+
+    for (const [, value] of searchUrl.searchParams) {
+      // Pattern 1: sessionId format _[7 alphanumeric chars]
+      if (value.match(/^_[a-zA-Z0-9]{7}$/)) {
+        sessionTokens.push(value);
+      }
+      // Pattern 2: juristkn format [15 hex chars]
+      if (value.match(/^[a-f0-9]{15}$/)) {
+        sessionTokens.push(value);
+      }
+    }
+
+    // Verify the problematic tokens are present
+    expect(sessionTokens.length).toBeGreaterThanOrEqual(1);
+
+    // ===== ISSUE #6 DOCUMENTATION: NO BOOTSTRAP SOURCES =====
+    // Verify that no request in the HAR file generates these tokens
+    let tokensFoundInResponses = 0;
+    for (const token of sessionTokens) {
+      for (const request of harData.requests) {
+        if (request.response?.text?.includes(token)) {
+          tokensFoundInResponses++;
+        }
+      }
+    }
+
+    // This confirms the issue: session tokens not generated by any API call
+    expect(tokensFoundInResponses).toBe(0);
+
+    console.log("Regression Test Documentation:");
+    console.log(`- Search endpoints found: ${searchEndpoints.length}`);
+    console.log(`- Auxiliary actions found: ${auxiliaryActions.length}`);
+    console.log(`- Session tokens identified: ${sessionTokens.length}`);
+    console.log(`- Tokens found in API responses: ${tokensFoundInResponses}`);
+    console.log(`- Session tokens: ${sessionTokens.join(", ")}`);
   });
 
-  it("should identify correct target URL automatically", async () => {
-    // TODO: Implement URL identification test
-    expect(true).toBe(true);
-  });
+  it("demonstrates the heuristic scoring issues in URL identification", async () => {
+    // This test examines the specific heuristic scoring problem that caused Issue #1
+    const harData = await parseHARFile(harFilePath);
 
-  it("should not generate authentication warnings for public API", async () => {
-    // TODO: Implement authentication warning test
-    expect(true).toBe(true);
-  });
+    // Get all URLs from the HAR file in URLInfo format
+    const urlInfos = harData.requests.map((req) => ({
+      url: req.url,
+      method: req.method,
+      requestType: req.headers["Content-Type"] || "unknown",
+      responseType: req.response?.headers?.["content-type"] || "unknown",
+    }));
 
-  it("should generate valid TypeScript code that compiles", async () => {
-    // TODO: Implement code generation test
-    expect(true).toBe(true);
+    // Import scoring functions for direct testing
+    const {
+      sortUrlsByRelevance,
+      calculateParameterComplexityScore,
+      calculateMethodScore,
+      calculateKeywordRelevance,
+    } = await import("../../src/agents/URLIdentificationAgent.js");
+
+    const sortedUrls = sortUrlsByRelevance(urlInfos, userPrompt);
+
+    // Find the search endpoint and a secondary action endpoint
+    const searchEndpoint = sortedUrls.find(
+      (url) =>
+        url.url.includes("/api/no-auth/pesquisa") && !url.url.includes("copiar")
+    );
+    const copyActionEndpoint = sortedUrls.find((url) =>
+      url.url.includes("copiarDecisao")
+    );
+
+    expect(searchEndpoint).toBeDefined();
+    expect(copyActionEndpoint).toBeDefined();
+
+    // Calculate individual scoring components to understand the failure
+    const searchMethodScore = calculateMethodScore(
+      searchEndpoint!.method,
+      userPrompt
+    );
+    const copyMethodScore = calculateMethodScore(
+      copyActionEndpoint!.method,
+      userPrompt
+    );
+
+    const searchParamScore = calculateParameterComplexityScore(
+      searchEndpoint!.url
+    );
+    const copyParamScore = calculateParameterComplexityScore(
+      copyActionEndpoint!.url
+    );
+
+    const searchKeywordScore = calculateKeywordRelevance(
+      searchEndpoint!.url,
+      userPrompt
+    );
+    const copyKeywordScore = calculateKeywordRelevance(
+      copyActionEndpoint!.url,
+      userPrompt
+    );
+
+    // Diagnostic information for understanding the scoring issue
+    console.log("URL Scoring Analysis:");
+    console.log("Search Endpoint:", searchEndpoint!.url);
+    console.log("  Method Score:", searchMethodScore);
+    console.log("  Param Score:", searchParamScore);
+    console.log("  Keyword Score:", searchKeywordScore);
+    console.log("Copy Action Endpoint:", copyActionEndpoint!.url);
+    console.log("  Method Score:", copyMethodScore);
+    console.log("  Param Score:", copyParamScore);
+    console.log("  Keyword Score:", copyKeywordScore);
+
+    // Document the current behavior vs expected behavior
+    const searchIndex = sortedUrls.findIndex((url) => url === searchEndpoint);
+    const copyIndex = sortedUrls.findIndex((url) => url === copyActionEndpoint);
+
+    console.log(`Search endpoint ranking: ${searchIndex}`);
+    console.log(`Copy action ranking: ${copyIndex}`);
+
+    // Issue #1 Root Cause Documentation:
+    // This demonstrates whether the search endpoint ranks higher than auxiliary actions
+    // When fixed, searchIndex should be < copyIndex
+    const isCorrectlyRanked = searchIndex < copyIndex;
+    console.log(`Is correctly ranked: ${isCorrectlyRanked}`);
+
+    // For now, we document the current behavior rather than asserting the fix
+    expect(typeof searchIndex).toBe("number");
+    expect(typeof copyIndex).toBe("number");
   });
 });
