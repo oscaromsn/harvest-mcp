@@ -874,6 +874,58 @@ export class AnalysisNotCompleteError extends HarvestError {
   }
 }
 
+export class HARQualityError extends HarvestError {
+  constructor(
+    quality: string,
+    issues: string[],
+    recommendations: string[],
+    context?: { harPath?: string; sessionId?: string; stats?: unknown }
+  ) {
+    const message = [
+      `HAR file quality is insufficient for analysis (${quality}).`,
+      `Issues: ${issues.join(", ")}.`,
+      `Recommendations: ${recommendations.join(", ")}.`,
+    ].join(" ");
+
+    super(message, "HAR_QUALITY_INSUFFICIENT", {
+      quality,
+      issues,
+      recommendations,
+      ...context,
+    });
+  }
+}
+
+export class HARGenerationError extends HarvestError {
+  constructor(
+    reason: string,
+    context?: {
+      sessionId?: string;
+      entryCount?: number;
+      apiCount?: number;
+      pendingCount?: number;
+      quality?: string;
+    }
+  ) {
+    const message = `HAR file generation failed: ${reason}`;
+    super(message, "HAR_GENERATION_FAILED", context);
+  }
+}
+
+export class NetworkActivityError extends HarvestError {
+  constructor(
+    reason: string,
+    context?: {
+      sessionId?: string;
+      networkStatus?: string;
+      recommendations?: string[];
+    }
+  ) {
+    const message = `Network activity issue: ${reason}`;
+    super(message, "NETWORK_ACTIVITY_ERROR", context);
+  }
+}
+
 // ========== Browser Types Export ==========
 
 export type {
