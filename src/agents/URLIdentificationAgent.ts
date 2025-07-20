@@ -496,8 +496,10 @@ function calculateComprehensiveRelevanceScore(
   totalScore += apiPatternScore * 2;
 
   // Factor 3: Parameter complexity (more parameters = likely main endpoint)
+  // Significantly increased weight for parameter complexity since search endpoints
+  // typically have many filter and query parameters
   const parameterScore = calculateParameterComplexityScore(urlInfo.url);
-  totalScore += parameterScore * 1.5;
+  totalScore += parameterScore * 3; // Increased from 1.5 to 3
 
   // Factor 4: HTTP method appropriateness
   const methodScore = calculateMethodScore(urlInfo.method, prompt);
@@ -507,7 +509,83 @@ function calculateComprehensiveRelevanceScore(
   const responseScore = calculateResponseTypeScore(urlInfo.responseType);
   totalScore += responseScore * 0.8;
 
+  // Factor 6: Contextual prompt-URL matching
+  const contextualScore = calculateContextualScore(urlInfo.url, prompt);
+  totalScore += contextualScore * 2.5;
+
   return totalScore;
+}
+
+/**
+ * Calculate contextual score based on prompt-URL semantic matching
+ */
+function calculateContextualScore(url: string, prompt?: string): number {
+  if (!prompt) return 0;
+
+  const urlLower = url.toLowerCase();
+  const promptLower = prompt.toLowerCase();
+  let score = 0;
+
+  // Legal/Jurisprudence context scoring
+  if (
+    promptLower.includes("jurisprudencia") ||
+    promptLower.includes("legal") ||
+    promptLower.includes("tribunal") ||
+    promptLower.includes("decisao") ||
+    promptLower.includes("acordao") ||
+    promptLower.includes("judge")
+  ) {
+    if (urlLower.includes("jurisprudencia")) score += 15;
+    if (urlLower.includes("pesquisa")) score += 20; // High boost for search in legal context
+    if (urlLower.includes("tribunal")) score += 10;
+    if (urlLower.includes("acordao")) score += 12;
+    if (urlLower.includes("decisao")) score += 12;
+  }
+
+  // Search-related context scoring
+  if (
+    promptLower.includes("search") ||
+    promptLower.includes("find") ||
+    promptLower.includes("query") ||
+    promptLower.includes("fetch") ||
+    promptLower.includes("buscar") ||
+    promptLower.includes("pesquisar")
+  ) {
+    if (urlLower.includes("pesquisa") || urlLower.includes("search"))
+      score += 25;
+    if (urlLower.includes("query") || urlLower.includes("consulta"))
+      score += 15;
+    if (urlLower.includes("find") || urlLower.includes("busca")) score += 12;
+  }
+
+  // Filter/API integration context
+  if (
+    promptLower.includes("filter") ||
+    promptLower.includes("parameter") ||
+    promptLower.includes("api") ||
+    promptLower.includes("integration")
+  ) {
+    // Boost URLs with many parameters for integration tasks
+    const paramCount = (url.split("?")[1] || "")
+      .split("&")
+      .filter((p) => p.trim()).length;
+    if (paramCount > 5) score += 10;
+    if (paramCount > 10) score += 15;
+  }
+
+  // TypeScript/fetcher generation context
+  if (
+    promptLower.includes("typescript") ||
+    promptLower.includes("fetcher") ||
+    promptLower.includes("generate") ||
+    promptLower.includes("client")
+  ) {
+    // Prefer REST API endpoints for code generation
+    if (urlLower.includes("/api/")) score += 10;
+    if (urlLower.includes("/no-auth/")) score += 8; // Public APIs are easier to integrate
+  }
+
+  return score;
 }
 
 /**
@@ -538,12 +616,15 @@ export function calculateApiPatternScore(url: string): number {
 
   // Specific patterns for common endpoints
   const endpointPatterns = [
-    { pattern: /\/no-auth\//, score: 10 }, // Public API
-    { pattern: /\/public\//, score: 8 }, // Public endpoint
+    { pattern: /\/no-auth\//, score: 15 }, // Public API (increased from 10)
+    { pattern: /\/public\//, score: 12 }, // Public endpoint (increased from 8)
+    { pattern: /\/open\//, score: 10 }, // Open endpoint
     { pattern: /\/search/, score: 12 }, // Search endpoint
-    { pattern: /\/pesquisa/, score: 15 }, // Portuguese search (critical!)
+    { pattern: /\/pesquisa/, score: 20 }, // Portuguese search (critical! increased from 15)
     { pattern: /\/query/, score: 10 }, // Query endpoint
     { pattern: /\/find/, score: 8 }, // Find endpoint
+    { pattern: /\/busca/, score: 15 }, // Portuguese search alternative
+    { pattern: /\/consulta/, score: 12 }, // Portuguese query
   ];
 
   for (const { pattern, score: patternScore } of endpointPatterns) {
