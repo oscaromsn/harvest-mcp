@@ -349,6 +349,8 @@ export async function executeWorkflow() {
           authAnalysisComplete: true,
           authReadiness: true,
           authErrors: 0,
+          allNodesClassified: true,
+          nodesNeedingClassification: 0,
         },
       };
 
