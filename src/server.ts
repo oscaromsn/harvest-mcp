@@ -28,7 +28,10 @@ import { CompletedSessionManager } from "./core/CompletedSessionManager.js";
 import { DAGManager } from "./core/DAGManager.js";
 import { parseHARFile } from "./core/HARParser.js";
 import { getLLMClient } from "./core/LLMClient.js";
-import { manualSessionManager } from "./core/ManualSessionManager.js";
+import {
+  manualSessionManager,
+  SessionStillActiveError,
+} from "./core/ManualSessionManager.js";
 import { validateConfiguration } from "./core/providers/ProviderFactory.js";
 import { SessionManager } from "./core/SessionManager.js";
 import {
