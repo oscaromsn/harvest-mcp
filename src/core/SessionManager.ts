@@ -1,4 +1,5 @@
 import { v4 as uuidv4 } from "uuid";
+import { analyzeAuthentication } from "../agents/AuthenticationAgent.js";
 import {
   type AuthenticationAnalysis,
   type CookieData,
@@ -10,7 +11,7 @@ import {
   type SessionState,
 } from "../types/index.js";
 import { createComponentLogger } from "../utils/logger.js";
-import { AuthenticationAnalyzer } from "./AuthenticationAnalyzer.js";
+// AuthenticationAnalyzer replaced with AuthenticationAgent
 import { parseCookieFile } from "./CookieParser.js";
 import { DAGManager } from "./DAGManager.js";
 import { parseHARFile } from "./HARParser.js";
@@ -793,10 +794,8 @@ export class SessionManager {
         "Starting comprehensive authentication analysis"
       );
 
-      // Run authentication analysis using the AuthenticationAnalyzer
-      const authAnalysis = await AuthenticationAnalyzer.analyzeHARData(
-        session.harData
-      );
+      // Run authentication analysis using the new AuthenticationAgent
+      const authAnalysis = await analyzeAuthentication(session);
 
       // Store the analysis in session state
       session.state.authAnalysis = authAnalysis;
@@ -845,6 +844,162 @@ export class SessionManager {
     this.analyzeCompletionState(sessionId);
     // The state is already updated in analyzeCompletionState
     // This method now just provides the legacy interface
+  }
+
+  /**
+   * Get detailed state transition guidance for users
+   */
+  getStateTransitionGuidance(sessionId: string): {
+    currentState: string;
+    nextActions: string[];
+    progressSummary: string;
+    estimatedCompletion: number; // 0-100 percentage
+  } {
+    try {
+      const analysis = this.analyzeCompletionState(sessionId);
+      this.getSession(sessionId);
+
+      let currentState: string;
+      let nextActions: string[] = [];
+      let estimatedCompletion = 0;
+
+      if (!analysis.diagnostics.hasMasterNode) {
+        currentState = "NEEDS_INITIAL_ANALYSIS";
+        nextActions = [
+          "Run 'analysis_run_initial_analysis' to identify target action URL",
+        ];
+        estimatedCompletion = 10;
+      } else if (
+        analysis.diagnostics.unresolvedNodes > 0 ||
+        analysis.diagnostics.pendingInQueue > 0
+      ) {
+        currentState = "PROCESSING_DEPENDENCIES";
+        nextActions = [
+          "Continue with 'analysis_process_next_node' to resolve dependencies",
+        ];
+        estimatedCompletion =
+          30 +
+          Math.floor(
+            ((analysis.diagnostics.totalNodes -
+              analysis.diagnostics.unresolvedNodes) /
+              analysis.diagnostics.totalNodes) *
+              50
+          );
+      } else if (!analysis.diagnostics.authAnalysisComplete) {
+        currentState = "NEEDS_AUTH_ANALYSIS";
+        nextActions = ["Run authentication analysis before code generation"];
+        estimatedCompletion = 80;
+      } else if (analysis.isComplete) {
+        currentState = "READY_FOR_CODE_GENERATION";
+        nextActions = ["Generate code with 'codegen_generate_wrapper_script'"];
+        estimatedCompletion = 100;
+      } else {
+        currentState = "BLOCKED";
+        nextActions = analysis.recommendations.slice(0, 2); // Top 2 recommendations
+        estimatedCompletion = 60;
+      }
+
+      const progressSummary =
+        `Session has ${analysis.diagnostics.totalNodes} nodes, ` +
+        `${analysis.diagnostics.unresolvedNodes} unresolved, ` +
+        `${analysis.diagnostics.pendingInQueue} queued for processing`;
+
+      return {
+        currentState,
+        nextActions,
+        progressSummary,
+        estimatedCompletion,
+      };
+    } catch (error) {
+      return {
+        currentState: "ERROR",
+        nextActions: ["Check session exists and is properly initialized"],
+        progressSummary: "Unable to determine session progress",
+        estimatedCompletion: 0,
+      };
+    }
+  }
+
+  /**
+   * Provide smart recovery suggestions for common stuck states
+   */
+  getRecoverySuggestions(sessionId: string): {
+    isStuck: boolean;
+    commonIssues: string[];
+    recoverActions: string[];
+    debugCommands: string[];
+  } {
+    try {
+      const analysis = this.analyzeCompletionState(sessionId);
+      this.getSession(sessionId);
+      const queueStatus = this.getQueueStatus(sessionId);
+
+      const commonIssues: string[] = [];
+      const recoverActions: string[] = [];
+      const debugCommands: string[] = [];
+
+      // Check for empty queue with unresolved nodes
+      if (
+        queueStatus.queueLength === 0 &&
+        queueStatus.unresolvedNodeCount > 0
+      ) {
+        commonIssues.push(
+          "Processing queue is empty but unresolved nodes exist"
+        );
+        recoverActions.push(
+          "Use 'debug_repopulate_queue' to restore queue from unresolved nodes"
+        );
+        debugCommands.push("debug_get_unresolved_nodes");
+      }
+
+      // Check for nodes in queue but nothing happening
+      if (
+        queueStatus.queueLength > 0 &&
+        analysis.diagnostics.unresolvedNodes === 0
+      ) {
+        commonIssues.push("Queue has nodes but all dependencies are resolved");
+        recoverActions.push(
+          "Clear processing queue or investigate queue contents"
+        );
+        debugCommands.push("debug_get_node_details for queue contents");
+      }
+
+      // Check for missing master node
+      if (!analysis.diagnostics.hasMasterNode) {
+        commonIssues.push("Target action URL not identified");
+        recoverActions.push(
+          "Re-run initial analysis or manually set master node"
+        );
+        debugCommands.push("debug_list_all_requests", "debug_set_master_node");
+      }
+
+      // Check for authentication issues
+      if (analysis.diagnostics.authErrors > 0) {
+        commonIssues.push("Authentication failures detected in session data");
+        recoverActions.push("Re-capture HAR with valid authentication tokens");
+        debugCommands.push("auth_analyze_session");
+      }
+
+      const isStuck =
+        commonIssues.length > 0 ||
+        (queueStatus.queueLength === 0 &&
+          queueStatus.unresolvedNodeCount === 0 &&
+          !analysis.isComplete);
+
+      return {
+        isStuck,
+        commonIssues,
+        recoverActions,
+        debugCommands,
+      };
+    } catch (error) {
+      return {
+        isStuck: true,
+        commonIssues: ["Unable to analyze session state"],
+        recoverActions: ["Verify session exists and restart if necessary"],
+        debugCommands: ["session_list"],
+      };
+    }
   }
 
   /**
