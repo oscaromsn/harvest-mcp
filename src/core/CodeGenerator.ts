@@ -1,4 +1,10 @@
-import type { DAGNode, HarvestSession, RequestModel } from "../types/index.js";
+import type {
+  AuthenticationType,
+  DAGNode,
+  HarvestSession,
+  RequestModel,
+  TokenInfo,
+} from "../types/index.js";
 
 /**
  * Generate a complete TypeScript wrapper script from a completed analysis session
@@ -230,6 +236,9 @@ function generateNotFoundNodeCode(node: DAGNode, functionName: string): string {
 function generateFunctionParameters(node: DAGNode): string {
   const params: string[] = [];
 
+  // Always include authConfig as first parameter
+  params.push("authConfig?: AuthConfig");
+
   // Add input variables as parameters
   if (node.inputVariables && Object.keys(node.inputVariables).length > 0) {
     for (const [key, defaultValue] of Object.entries(node.inputVariables)) {
@@ -344,7 +353,7 @@ export function generateHeader(session: HarvestSession): string {
 }
 
 /**
- * Generate TypeScript imports and type definitions
+ * Generate TypeScript imports and type definitions with authentication support
  */
 export function generateImports(): string {
   const lines: string[] = [];
@@ -364,7 +373,31 @@ export function generateImports(): string {
   lines.push("  body?: string;");
   lines.push("}");
   lines.push("");
-  lines.push("export type { ApiResponse, RequestOptions };");
+  lines.push("// Authentication configuration interface");
+  lines.push("interface AuthConfig {");
+  lines.push("  type: 'bearer' | 'api_key' | 'basic' | 'session' | 'custom';");
+  lines.push("  token?: string;");
+  lines.push("  apiKey?: string;");
+  lines.push("  username?: string;");
+  lines.push("  password?: string;");
+  lines.push("  sessionCookies?: Record<string, string>;");
+  lines.push("  customHeaders?: Record<string, string>;");
+  lines.push("  tokenRefreshUrl?: string;");
+  lines.push("  onTokenExpired?: () => Promise<string>;");
+  lines.push("}");
+  lines.push("");
+  lines.push("// Authentication error for retry logic");
+  lines.push("class AuthenticationError extends Error {");
+  lines.push(
+    "  constructor(message: string, public status: number, public response?: any) {"
+  );
+  lines.push("    super(message);");
+  lines.push("    this.name = 'AuthenticationError';");
+  lines.push("  }");
+  lines.push("}");
+  lines.push("");
+  lines.push("export type { ApiResponse, RequestOptions, AuthConfig };");
+  lines.push("export { AuthenticationError };");
 
   return lines.join("\n");
 }
@@ -498,9 +531,34 @@ function generateHeadersAndOptions(
   for (const [key, value] of Object.entries(request.headers)) {
     // Escape quotes in header values
     const escapedValue = value.replace(/'/g, "\\'");
+    const lowerKey = key.toLowerCase();
+    // Skip authentication headers - these will be handled dynamically
+    if (
+      lowerKey === "authorization" ||
+      lowerKey === "cookie" ||
+      lowerKey.includes("api-key") ||
+      lowerKey.includes("auth-token") ||
+      lowerKey.includes("x-api-key")
+    ) {
+      lines.push(
+        `      // '${key}': SKIPPED - Will be set dynamically based on authConfig`
+      );
+      continue;
+    }
+
     lines.push(`      '${key}': '${escapedValue}',`);
   }
   lines.push("    };");
+  lines.push("");
+
+  // Generate authentication setup based on detected type
+  const authInfo = detectRequestAuthentication(request);
+  if (authInfo.hasAuthentication) {
+    generateAuthenticationSetup(authInfo, lines);
+  } else {
+    lines.push("    // No authentication detected - request may be public");
+    lines.push("");
+  }
 
   // Build request options
   lines.push("    const options: RequestOptions = {");
@@ -531,9 +589,53 @@ function generateRequestExecution(
 ): void {
   lines.push(`    const response = await fetch(${urlExpression}, options);`);
   lines.push("");
+  lines.push("    // Handle authentication errors with retry logic");
+  lines.push("    if (response.status === 401 || response.status === 403) {");
+  lines.push("      const authError = new AuthenticationError(");
+  lines.push(
+    "        `Authentication failed: ${response.status} ${response.statusText}`,"
+  );
+  lines.push("        response.status,");
+  lines.push("        await response.text()");
+  lines.push("      );");
+  lines.push("      ");
+  lines.push(
+    "      // If token refresh is available, attempt to refresh and retry"
+  );
+  lines.push("      if (authConfig?.onTokenExpired) {");
+  lines.push("        try {");
+  lines.push(
+    "          console.log('Attempting token refresh due to auth failure...');"
+  );
+  lines.push("          const newToken = await authConfig.onTokenExpired();");
+  lines.push("          // Update token and retry request");
+  lines.push("          if (authConfig.type === 'bearer' && newToken) {");
+  lines.push("            authConfig.token = newToken;");
+  lines.push(
+    '            options.headers["Authorization"] = `Bearer ${newToken}`;'
+  );
+  lines.push(
+    "            console.log('Token refreshed, retrying request...');"
+  );
+  lines.push("            // Retry the request once");
+  lines.push(
+    `            const retryResponse = await fetch(${urlExpression}, options);`
+  );
+  lines.push("            if (retryResponse.ok) {");
+  lines.push("              return await processResponse(retryResponse);");
+  lines.push("            }");
+  lines.push("          }");
+  lines.push("        } catch (refreshError) {");
+  lines.push("          console.warn('Token refresh failed:', refreshError);");
+  lines.push("        }");
+  lines.push("      }");
+  lines.push("      ");
+  lines.push("      throw authError;");
+  lines.push("    }");
+  lines.push("");
   lines.push("    if (!response.ok) {");
   lines.push(
-    "      throw new Error('Request failed: ' + response.status + ' ' + response.statusText);"
+    "      throw new Error(`Request failed: ${response.status} ${response.statusText}`);"
   );
   lines.push("    }");
   lines.push("");
@@ -590,7 +692,7 @@ function generateReturnStatement(lines: string[]): void {
 function generateErrorHandling(functionName: string, lines: string[]): void {
   lines.push("  } catch (error) {");
   lines.push(
-    `    throw new Error(\`${functionName} failed: \${error instanceof Error ? error.message : 'Unknown error'}\`);`
+    `    throw new Error(\`${functionName} failed: \\\${error instanceof Error ? error.message : 'Unknown error'}\`);`
   );
   lines.push("  }");
 }
@@ -616,4 +718,226 @@ function toPascalCase(str: string): string {
 
 function capitalize(str: string): string {
   return str.charAt(0).toUpperCase() + str.slice(1).toLowerCase();
+}
+
+// Authentication helper functions
+
+/**
+ * Detect authentication requirements in a request
+ */
+function detectRequestAuthentication(request: RequestModel): {
+  hasAuthentication: boolean;
+  authType: AuthenticationType;
+  tokens: TokenInfo[];
+  authHeaders: string[];
+  authCookies: string[];
+  warningMessage?: string;
+} {
+  const tokens: TokenInfo[] = [];
+  const authHeaders: string[] = [];
+  const authCookies: string[] = [];
+  let authType: AuthenticationType = "none";
+  let warningMessage: string | undefined;
+
+  // Check headers for authentication
+  for (const [headerName, headerValue] of Object.entries(request.headers)) {
+    const lowerName = headerName.toLowerCase();
+
+    if (lowerName === "authorization") {
+      authHeaders.push(headerName);
+      if (headerValue.toLowerCase().startsWith("bearer")) {
+        authType = "bearer_token";
+        tokens.push({
+          type: "bearer",
+          location: "header",
+          name: headerName,
+          value: headerValue.substring(7).trim(),
+        });
+        warningMessage =
+          "Bearer token detected - ensure token is obtained dynamically";
+      } else if (headerValue.toLowerCase().startsWith("basic")) {
+        authType = "basic_auth";
+        warningMessage =
+          "Basic auth detected - ensure credentials are obtained securely";
+      }
+    } else if (lowerName === "cookie") {
+      authCookies.push(headerName);
+      authType = "session_cookie";
+      warningMessage =
+        "Session cookies detected - ensure cookies are obtained from login flow";
+    } else if (
+      lowerName.includes("api-key") ||
+      lowerName.includes("x-api-key")
+    ) {
+      authHeaders.push(headerName);
+      authType = "api_key";
+      tokens.push({
+        type: "api_key",
+        location: "header",
+        name: headerName,
+        value: headerValue,
+      });
+      warningMessage =
+        "API key detected - ensure key is obtained from environment variables";
+    } else if (lowerName.includes("auth") || lowerName.includes("token")) {
+      authHeaders.push(headerName);
+      authType = "custom_header";
+      tokens.push({
+        type: "custom",
+        location: "header",
+        name: headerName,
+        value: headerValue,
+      });
+      warningMessage = "Custom authentication header detected";
+    }
+  }
+
+  // Check URL parameters for authentication
+  if (request.queryParams) {
+    for (const [paramName, paramValue] of Object.entries(request.queryParams)) {
+      const lowerName = paramName.toLowerCase();
+      if (
+        lowerName.includes("token") ||
+        lowerName.includes("api") ||
+        lowerName.includes("auth")
+      ) {
+        tokens.push({
+          type: "custom",
+          location: "url_param",
+          name: paramName,
+          value: paramValue,
+        });
+        if (authType === "none") {
+          authType = "url_parameter";
+          warningMessage =
+            "URL parameter authentication detected - consider moving to headers for security";
+        }
+      }
+    }
+  }
+
+  const result = {
+    hasAuthentication: authType !== "none",
+    authType,
+    tokens,
+    authHeaders,
+    authCookies,
+  } as {
+    hasAuthentication: boolean;
+    authType: AuthenticationType;
+    tokens: TokenInfo[];
+    authHeaders: string[];
+    authCookies: string[];
+    warningMessage?: string;
+  };
+
+  if (warningMessage) {
+    result.warningMessage = warningMessage;
+  }
+
+  return result;
+}
+
+/**
+ * Generate authentication setup code based on detected authentication type
+ */
+function generateAuthenticationSetup(
+  authInfo: ReturnType<typeof detectRequestAuthentication>,
+  lines: string[]
+): void {
+  lines.push(
+    "    // Authentication setup - IMPORTANT: Configure authConfig before using"
+  );
+  lines.push("    if (!authConfig) {");
+  lines.push(
+    "      throw new Error('Authentication required but authConfig not provided. See setup instructions below.');"
+  );
+  lines.push("    }");
+  lines.push("");
+
+  if (authInfo.warningMessage) {
+    lines.push(`    // WARNING: ${authInfo.warningMessage}`);
+    lines.push("");
+  }
+
+  switch (authInfo.authType) {
+    case "bearer_token":
+      lines.push("    // Bearer token authentication");
+      lines.push(
+        "    if (authConfig.type !== 'bearer' || !authConfig.token) {"
+      );
+      lines.push(
+        "      throw new Error('Bearer token required in authConfig.token');"
+      );
+      lines.push("    }");
+      lines.push(
+        '    headers["Authorization"] = `Bearer ${authConfig.token}`;'
+      );
+      break;
+
+    case "api_key":
+      lines.push("    // API key authentication");
+      lines.push(
+        "    if (authConfig.type !== 'api_key' || !authConfig.apiKey) {"
+      );
+      lines.push(
+        "      throw new Error('API key required in authConfig.apiKey');"
+      );
+      lines.push("    }");
+      for (const headerName of authInfo.authHeaders) {
+        lines.push(`    headers['${headerName}'] = authConfig.apiKey;`);
+      }
+      break;
+
+    case "basic_auth":
+      lines.push("    // Basic authentication");
+      lines.push(
+        "    if (authConfig.type !== 'basic' || !authConfig.username || !authConfig.password) {"
+      );
+      lines.push(
+        "      throw new Error('Username and password required in authConfig for basic auth');"
+      );
+      lines.push("    }");
+      lines.push(
+        "    const basicAuth = btoa(`${authConfig.username}:${authConfig.password}`);"
+      );
+      lines.push('    headers["Authorization"] = `Basic ${basicAuth}`;');
+      break;
+
+    case "session_cookie":
+      lines.push("    // Session cookie authentication");
+      lines.push(
+        "    if (authConfig.type !== 'session' || !authConfig.sessionCookies) {"
+      );
+      lines.push(
+        "      throw new Error('Session cookies required in authConfig.sessionCookies');"
+      );
+      lines.push("    }");
+      lines.push(
+        "    const cookiePairs = Object.entries(authConfig.sessionCookies)"
+      );
+      lines.push("      .map(([name, value]) => `${name}=${value}`)");
+      lines.push("      .join('; ');");
+      lines.push("    headers['Cookie'] = cookiePairs;");
+      break;
+
+    case "custom_header":
+    case "url_parameter":
+      lines.push("    // Custom authentication");
+      lines.push(
+        "    if (authConfig.type !== 'custom' || !authConfig.customHeaders) {"
+      );
+      lines.push(
+        "      throw new Error('Custom authentication headers required in authConfig.customHeaders');"
+      );
+      lines.push("    }");
+      lines.push("    Object.assign(headers, authConfig.customHeaders);");
+      break;
+  }
+
+  lines.push("");
+  lines.push("    // Add authentication validation logging");
+  lines.push(
+    "    console.log(`Making request with ${authInfo.authType} authentication`);"
+  );
 }

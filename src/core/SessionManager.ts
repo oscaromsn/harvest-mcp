@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from "uuid";
 import {
+  type AuthenticationAnalysis,
   type CookieData,
   type HarvestSession,
   type LogEntry,
@@ -9,6 +10,7 @@ import {
   type SessionState,
 } from "../types/index.js";
 import { createComponentLogger } from "../utils/logger.js";
+import { AuthenticationAnalyzer } from "./AuthenticationAnalyzer.js";
 import { parseCookieFile } from "./CookieParser.js";
 import { DAGManager } from "./DAGManager.js";
 import { parseHARFile } from "./HARParser.js";
@@ -30,6 +32,9 @@ export interface CompletionAnalysis {
     unresolvedNodes: number;
     pendingInQueue: number;
     hasActionUrl: boolean;
+    authAnalysisComplete: boolean;
+    authReadiness: boolean;
+    authErrors: number;
   };
 }
 
@@ -499,6 +504,10 @@ export class SessionManager {
       const queueEmpty = session.state.toBeProcessedNodes.length === 0;
       const totalNodes = session.dagManager.getNodeCount();
 
+      // Analyze authentication readiness
+      const authReadinessAnalysis =
+        this.analyzeAuthenticationReadiness(session);
+
       const diagnostics = {
         hasMasterNode,
         dagComplete,
@@ -507,6 +516,9 @@ export class SessionManager {
         unresolvedNodes: unresolvedNodes.length,
         pendingInQueue: session.state.toBeProcessedNodes.length,
         hasActionUrl,
+        authAnalysisComplete: authReadinessAnalysis.analysisComplete,
+        authReadiness: authReadinessAnalysis.isReady,
+        authErrors: authReadinessAnalysis.errorCount,
       };
 
       // Condition 1: Master node must be identified
@@ -553,6 +565,27 @@ export class SessionManager {
         blockers.push("No nodes found in dependency graph");
         recommendations.push("Verify HAR file contains valid HTTP requests");
         recommendations.push("Re-run initial analysis if needed");
+      }
+
+      // Condition 6: Authentication must be analyzed and ready for code generation
+      if (!authReadinessAnalysis.analysisComplete) {
+        blockers.push("Authentication analysis has not been completed");
+        recommendations.push(
+          "Run authentication analysis before code generation"
+        );
+        recommendations.push(
+          "Use 'auth_analyze_session' tool to analyze authentication requirements"
+        );
+      } else if (!authReadinessAnalysis.isReady) {
+        blockers.push(...authReadinessAnalysis.blockers);
+        recommendations.push(...authReadinessAnalysis.recommendations);
+      }
+
+      // Add authentication-specific warnings even if not blocking
+      if (authReadinessAnalysis.warnings.length > 0) {
+        for (const warning of authReadinessAnalysis.warnings) {
+          this.addLog(sessionId, "warn", `Authentication warning: ${warning}`);
+        }
       }
 
       const isComplete = blockers.length === 0;
@@ -603,7 +636,187 @@ export class SessionManager {
           unresolvedNodes: 0,
           pendingInQueue: 0,
           hasActionUrl: false,
+          authAnalysisComplete: false,
+          authReadiness: false,
+          authErrors: 0,
         },
+      };
+    }
+  }
+
+  /**
+   * Analyze authentication readiness for code generation
+   */
+  private analyzeAuthenticationReadiness(session: HarvestSession): {
+    analysisComplete: boolean;
+    isReady: boolean;
+    errorCount: number;
+    blockers: string[];
+    recommendations: string[];
+    warnings: string[];
+  } {
+    const analysis = {
+      analysisComplete: false,
+      isReady: false,
+      errorCount: 0,
+      blockers: [] as string[],
+      recommendations: [] as string[],
+      warnings: [] as string[],
+    };
+
+    // Check if authentication analysis has been performed
+    const authAnalysis = session.state.authAnalysis;
+    const harValidation = session.harData.validation;
+
+    if (authAnalysis) {
+      // Full authentication analysis has been performed
+      analysis.analysisComplete = true;
+
+      // Check for authentication failures
+      if (authAnalysis.failedAuthRequests.length > 0) {
+        analysis.errorCount = authAnalysis.failedAuthRequests.length;
+        analysis.blockers.push(
+          `Found ${authAnalysis.failedAuthRequests.length} authentication failures`
+        );
+        analysis.recommendations.push(
+          "Fix authentication failures before code generation"
+        );
+        analysis.recommendations.push(
+          "Ensure all authentication tokens are valid and not expired"
+        );
+      }
+
+      // Check code generation readiness
+      if (!authAnalysis.codeGeneration.isReady) {
+        analysis.blockers.push("Authentication not ready for code generation");
+        analysis.recommendations.push(
+          ...authAnalysis.codeGeneration.requiredSetup
+        );
+      }
+
+      // Add security warnings
+      if (authAnalysis.securityIssues.length > 0) {
+        analysis.warnings.push(...authAnalysis.securityIssues);
+      }
+
+      // Check for hardcoded tokens that need manual setup
+      if (authAnalysis.codeGeneration.hardcodedTokens.length > 0) {
+        analysis.warnings.push(
+          `Found ${authAnalysis.codeGeneration.hardcodedTokens.length} authentication tokens that require manual configuration`
+        );
+        analysis.recommendations.push(
+          "Configure authentication tokens before using generated code"
+        );
+      }
+
+      analysis.isReady = analysis.blockers.length === 0;
+    } else {
+      // Check if HAR validation detected authentication issues
+      if (harValidation?.authAnalysis) {
+        const harAuthAnalysis = harValidation.authAnalysis;
+
+        if (harAuthAnalysis.authErrors > 0) {
+          analysis.errorCount = harAuthAnalysis.authErrors;
+          analysis.blockers.push(
+            `Found ${harAuthAnalysis.authErrors} authentication errors in HAR data`
+          );
+          analysis.recommendations.push(
+            "Verify authentication tokens are valid and not expired"
+          );
+          analysis.recommendations.push(
+            "Re-capture HAR data with valid authentication"
+          );
+        }
+
+        if (
+          harAuthAnalysis.hasTokens &&
+          harAuthAnalysis.tokenPatterns.length > 0
+        ) {
+          analysis.warnings.push(
+            "Authentication tokens detected in requests - ensure they are handled dynamically"
+          );
+        }
+
+        if (
+          !harAuthAnalysis.hasAuthHeaders &&
+          !harAuthAnalysis.hasCookies &&
+          !harAuthAnalysis.hasTokens
+        ) {
+          analysis.warnings.push(
+            "No authentication mechanisms detected - API may be public or authentication was not captured"
+          );
+        }
+
+        analysis.analysisComplete = true;
+        analysis.isReady = analysis.blockers.length === 0;
+      } else {
+        analysis.blockers.push("Authentication analysis not performed");
+        analysis.recommendations.push(
+          "Run authentication analysis to detect requirements"
+        );
+      }
+    }
+
+    return analysis;
+  }
+
+  /**
+   * Run comprehensive authentication analysis on a session
+   */
+  async runAuthenticationAnalysis(sessionId: string): Promise<{
+    success: boolean;
+    authAnalysis?: AuthenticationAnalysis;
+    error?: string;
+  }> {
+    try {
+      const session = this.getSession(sessionId);
+
+      this.addLog(
+        sessionId,
+        "info",
+        "Starting comprehensive authentication analysis"
+      );
+
+      // Run authentication analysis using the AuthenticationAnalyzer
+      const authAnalysis = await AuthenticationAnalyzer.analyzeHARData(
+        session.harData
+      );
+
+      // Store the analysis in session state
+      session.state.authAnalysis = authAnalysis;
+
+      // Update authentication readiness
+      const readiness = this.analyzeAuthenticationReadiness(session);
+      session.state.authReadiness = {
+        isAuthComplete: readiness.isReady,
+        authBlockers: readiness.blockers,
+        authRecommendations: readiness.recommendations,
+      };
+
+      this.addLog(
+        sessionId,
+        "info",
+        `Authentication analysis complete: ${authAnalysis.authTypes.join(", ")} detected, ` +
+          `${authAnalysis.tokens.length} tokens found, ` +
+          `${authAnalysis.failedAuthRequests.length} auth failures`
+      );
+
+      return {
+        success: true,
+        authAnalysis,
+      };
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : "Unknown error";
+      this.addLog(
+        sessionId,
+        "error",
+        `Authentication analysis failed: ${errorMessage}`
+      );
+
+      return {
+        success: false,
+        error: errorMessage,
       };
     }
   }
