@@ -316,70 +316,208 @@ export function filterApiUrls(harUrls: URLInfo[]): URLInfo[] {
 
 /**
  * Sort URLs by relevance for action identification with prompt-aware keyword scoring
+ * Enhanced with API pattern recognition and parameter complexity analysis
  */
 export function sortUrlsByRelevance(
   harUrls: URLInfo[],
   prompt?: string
 ): URLInfo[] {
   return [...harUrls].sort((a, b) => {
-    // Calculate keyword relevance scores based on prompt
-    const aKeywordScore = calculateKeywordRelevance(a.url, prompt);
-    const bKeywordScore = calculateKeywordRelevance(b.url, prompt);
+    // Calculate comprehensive relevance scores
+    const aScore = calculateComprehensiveRelevanceScore(a, prompt);
+    const bScore = calculateComprehensiveRelevanceScore(b, prompt);
 
-    // Keyword relevance takes highest priority
-    if (aKeywordScore !== bKeywordScore) {
-      return bKeywordScore - aKeywordScore; // Higher score first
-    }
-
-    // Method priority (now more balanced for search endpoints)
-    const methodPriority: Record<string, number> = {
-      POST: 1,
-      PUT: 2,
-      PATCH: 3,
-      DELETE: 4,
-      GET: 3, // Elevated GET priority for search/query endpoints
-      OPTIONS: 6,
-      HEAD: 7,
-    };
-
-    const aPriority = methodPriority[a.method.toUpperCase()] || 10;
-    const bPriority = methodPriority[b.method.toUpperCase()] || 10;
-
-    if (aPriority !== bPriority) {
-      return aPriority - bPriority;
-    }
-
-    // Prioritize API paths
-    const aIsApi = a.url.includes("/api/");
-    const bIsApi = b.url.includes("/api/");
-
-    if (aIsApi && !bIsApi) {
-      return -1;
-    }
-    if (!aIsApi && bIsApi) {
-      return 1;
-    }
-
-    // Prioritize JSON responses
-    const aIsJson = a.responseType.toLowerCase().includes("json");
-    const bIsJson = b.responseType.toLowerCase().includes("json");
-
-    if (aIsJson && !bIsJson) {
-      return -1;
-    }
-    if (!aIsJson && bIsJson) {
-      return 1;
-    }
-
-    return 0;
+    // Higher comprehensive score wins
+    return bScore - aScore;
   });
+}
+
+/**
+ * Calculate comprehensive relevance score including multiple factors
+ */
+function calculateComprehensiveRelevanceScore(
+  urlInfo: URLInfo,
+  prompt?: string
+): number {
+  let totalScore = 0;
+
+  // Factor 1: Keyword relevance (highest weight)
+  const keywordScore = calculateKeywordRelevance(urlInfo.url, prompt);
+  totalScore += keywordScore * 3; // High weight multiplier
+
+  // Factor 2: API pattern recognition
+  const apiPatternScore = calculateApiPatternScore(urlInfo.url);
+  totalScore += apiPatternScore * 2;
+
+  // Factor 3: Parameter complexity (more parameters = likely main endpoint)
+  const parameterScore = calculateParameterComplexityScore(urlInfo.url);
+  totalScore += parameterScore * 1.5;
+
+  // Factor 4: HTTP method appropriateness
+  const methodScore = calculateMethodScore(urlInfo.method, prompt);
+  totalScore += methodScore;
+
+  // Factor 5: Response type preference
+  const responseScore = calculateResponseTypeScore(urlInfo.responseType);
+  totalScore += responseScore * 0.8;
+
+  return totalScore;
+}
+
+/**
+ * Calculate API pattern recognition score
+ */
+export function calculateApiPatternScore(url: string): number {
+  const urlLower = url.toLowerCase();
+  let score = 0;
+
+  // API path patterns (higher score for more specific API patterns)
+  const apiPatterns = [
+    { pattern: /\/api\/v\d+\//, score: 15 }, // Versioned API
+    { pattern: /\/api\/[^/]*\/\w+/, score: 12 }, // API with resource
+    { pattern: /\/api\//, score: 8 }, // Basic API path
+    { pattern: /\/rest\//, score: 10 }, // REST API
+    { pattern: /\/graphql/, score: 8 }, // GraphQL
+    { pattern: /\/rpc\//, score: 6 }, // RPC style
+    { pattern: /\/service\//, score: 6 }, // Service endpoint
+    { pattern: /\/v\d+\//, score: 5 }, // Versioned endpoint
+  ];
+
+  for (const { pattern, score: patternScore } of apiPatterns) {
+    if (pattern.test(urlLower)) {
+      score += patternScore;
+      break; // Use highest matching pattern
+    }
+  }
+
+  // Specific patterns for common endpoints
+  const endpointPatterns = [
+    { pattern: /\/no-auth\//, score: 10 }, // Public API
+    { pattern: /\/public\//, score: 8 }, // Public endpoint
+    { pattern: /\/search/, score: 12 }, // Search endpoint
+    { pattern: /\/pesquisa/, score: 15 }, // Portuguese search (critical!)
+    { pattern: /\/query/, score: 10 }, // Query endpoint
+    { pattern: /\/find/, score: 8 }, // Find endpoint
+  ];
+
+  for (const { pattern, score: patternScore } of endpointPatterns) {
+    if (pattern.test(urlLower)) {
+      score += patternScore;
+      // Don't break - can have multiple matches
+    }
+  }
+
+  return score;
+}
+
+/**
+ * Calculate parameter complexity score
+ */
+export function calculateParameterComplexityScore(url: string): number {
+  const urlParts = url.split("?");
+  if (urlParts.length < 2) {
+    return 0; // No query parameters
+  }
+
+  const queryString = urlParts[1] || "";
+  const parameters = queryString.split("&").filter((param) => param.length > 0);
+
+  // More parameters generally indicate a main action endpoint
+  let score = Math.min(parameters.length * 2, 20); // Cap at 20 points
+
+  // Boost score for parameters that suggest main functionality
+  const importantParams = [
+    "query",
+    "search",
+    "term",
+    "pesquisa",
+    "buscar",
+    "consulta",
+  ];
+  for (const param of parameters) {
+    const paramName = param.split("=")[0]?.toLowerCase() || "";
+    if (importantParams.some((important) => paramName.includes(important))) {
+      score += 5;
+    }
+  }
+
+  return score;
+}
+
+/**
+ * Calculate HTTP method score based on prompt context
+ */
+export function calculateMethodScore(method: string, prompt?: string): number {
+  const methodUpper = method.toUpperCase();
+  const promptLower = prompt?.toLowerCase() || "";
+
+  // Base method priorities
+  const baseScores: Record<string, number> = {
+    POST: 8,
+    GET: 7,
+    PUT: 6,
+    PATCH: 5,
+    DELETE: 4,
+    OPTIONS: 2,
+    HEAD: 1,
+  };
+
+  let score = baseScores[methodUpper] || 0;
+
+  // Context-aware adjustments
+  if (
+    promptLower.includes("search") ||
+    promptLower.includes("pesquisa") ||
+    promptLower.includes("find") ||
+    promptLower.includes("consulta")
+  ) {
+    if (methodUpper === "GET") {
+      score += 8; // GET is often appropriate for search
+    } else if (methodUpper === "POST") {
+      score += 6; // POST also common for complex searches
+    }
+  }
+
+  if (
+    promptLower.includes("create") ||
+    promptLower.includes("add") ||
+    promptLower.includes("criar") ||
+    promptLower.includes("novo")
+  ) {
+    if (methodUpper === "POST") {
+      score += 10; // POST perfect for creation
+    }
+  }
+
+  return score;
+}
+
+/**
+ * Calculate response type score
+ */
+export function calculateResponseTypeScore(responseType: string): number {
+  const typeLower = responseType.toLowerCase();
+
+  if (typeLower.includes("json")) {
+    return 10; // JSON responses are preferred for APIs
+  }
+  if (typeLower.includes("xml")) {
+    return 6; // XML is still structured data
+  }
+  if (typeLower.includes("html")) {
+    return 2; // HTML is less likely to be a pure API
+  }
+  return 4; // Unknown type, neutral score
 }
 
 /**
  * Calculate keyword relevance score for URL based on user prompt
  * Higher scores indicate better semantic match with the user's intent
  */
-function calculateKeywordRelevance(url: string, prompt?: string): number {
+export function calculateKeywordRelevance(
+  url: string,
+  prompt?: string
+): number {
   if (!prompt) {
     return 0;
   }
@@ -388,15 +526,26 @@ function calculateKeywordRelevance(url: string, prompt?: string): number {
   const urlLower = url.toLowerCase();
   const promptLower = prompt.toLowerCase();
 
-  // Multi-language action keywords with weighted scores
+  // Multi-language action keywords with weighted scores (enhanced for international support)
   const actionKeywords = {
-    // Search/Query actions (high weight for GET endpoints)
-    search: 10,
-    pesquisa: 10,
-    buscar: 10,
-    consulta: 10,
-    query: 10,
-    find: 10,
+    // Search/Query actions (high weight for GET endpoints) - Enhanced multi-language
+    search: 15, // English
+    pesquisa: 15, // Portuguese - CRITICAL for Brazilian sites
+    buscar: 15, // Spanish/Portuguese
+    consulta: 15, // Portuguese/Spanish - CRITICAL for legal sites
+    query: 12, // English
+    find: 12, // English
+    recherche: 12, // French
+    suche: 12, // German
+    cerca: 12, // Italian
+    // Legal/Jurisprudence specific terms (high weight)
+    jurisprudencia: 18, // Very high weight for legal sites
+    decisao: 15, // Portuguese legal term
+    acordao: 15, // Portuguese legal term
+    sentenca: 15, // Portuguese legal term
+    julgamento: 12, // Portuguese legal term
+    tribunal: 12, // Legal term
+    processo: 10, // Legal process
     // CRUD operations
     create: 8,
     criar: 8,
