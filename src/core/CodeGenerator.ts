@@ -140,7 +140,7 @@ export function generateWrapperScript(session: HarvestSession): string {
   parts.push("");
 
   // 2. TypeScript imports and type definitions
-  parts.push(generateImports());
+  parts.push(generateImports(session));
   parts.push("");
 
   // 3. Generate functions for each node in dependency order
@@ -155,7 +155,7 @@ export function generateWrapperScript(session: HarvestSession): string {
       const node = session.dagManager.getNode(nodeId);
       if (node) {
         const functionName = generateNodeFunctionName(node, session);
-        const nodeCode = generateNodeCode(node, functionName);
+        const nodeCode = generateNodeCode(node, functionName, session);
         if (nodeCode.trim()) {
           parts.push(nodeCode);
           parts.push("");
@@ -171,9 +171,33 @@ export function generateWrapperScript(session: HarvestSession): string {
 }
 
 /**
+ * Get the appropriate response type for a node based on its URL
+ */
+function getResponseTypeForNode(
+  node: DAGNode,
+  inferredTypes: InferredResponseType[]
+): string {
+  if (!node.content.key || inferredTypes.length === 0) {
+    return "any";
+  }
+
+  const request = node.content.key as RequestModel;
+  const interfaceName = generateResponseInterfaceName(request.url);
+
+  const matchingType = inferredTypes.find(
+    (type) => type.interfaceName === interfaceName
+  );
+  return matchingType ? matchingType.interfaceName : "any";
+}
+
+/**
  * Generate code for a specific DAG node
  */
-export function generateNodeCode(node: DAGNode, functionName: string): string {
+export function generateNodeCode(
+  node: DAGNode,
+  functionName: string,
+  session?: HarvestSession
+): string {
   try {
     if (!node) {
       throw new Error("Node is null or undefined");
@@ -186,7 +210,7 @@ export function generateNodeCode(node: DAGNode, functionName: string): string {
     switch (node.nodeType) {
       case "master_curl":
       case "curl":
-        return generateRequestNodeCode(node, functionName);
+        return generateRequestNodeCode(node, functionName, session);
       case "cookie":
         return generateCookieNodeCode(node, functionName);
       case "not_found":
@@ -204,7 +228,11 @@ export function generateNodeCode(node: DAGNode, functionName: string): string {
 /**
  * Generate code for request-based nodes (curl, master_curl)
  */
-function generateRequestNodeCode(node: DAGNode, functionName: string): string {
+function generateRequestNodeCode(
+  node: DAGNode,
+  functionName: string,
+  session?: HarvestSession
+): string {
   if (
     node.nodeType !== "curl" &&
     node.nodeType !== "master_curl" &&
@@ -230,10 +258,14 @@ function generateRequestNodeCode(node: DAGNode, functionName: string): string {
 
   const lines: string[] = [];
 
+  // Determine response type
+  const inferredTypes = session ? inferResponseTypes(session) : [];
+  const responseType = getResponseTypeForNode(node, inferredTypes);
+
   // Generate function documentation and signature
   lines.push(...generateFunctionDocumentation(node, request));
   lines.push(
-    `async function ${functionName}(${generateFunctionParameters(node)}): Promise<ApiResponse> {`
+    `async function ${functionName}(${generateFunctionParameters(node)}): Promise<ApiResponse<${responseType}>> {`
   );
   lines.push("  try {");
 
@@ -303,26 +335,150 @@ function generateNotFoundNodeCode(node: DAGNode, functionName: string): string {
 }
 
 /**
- * Generate function parameters based on node requirements
+ * Generate function parameters based on node requirements and classified parameters
  */
 function generateFunctionParameters(node: DAGNode): string {
   const params: string[] = [];
 
-  // Always include authConfig as first parameter
-  params.push("authConfig?: AuthConfig");
+  // Check if authentication is needed based on classified parameters or request analysis
+  const needsAuth = checkIfAuthenticationRequired(node);
 
-  // Add input variables as parameters
-  if (node.inputVariables && Object.keys(node.inputVariables).length > 0) {
+  if (needsAuth) {
+    params.push("authConfig?: AuthConfig");
+  }
+
+  // Add parameters based on classification
+  if (node.classifiedParameters) {
+    const userInputParams = node.classifiedParameters.filter(
+      (p) => p.classification === "userInput"
+    );
+
+    for (const param of userInputParams) {
+      const paramType = inferParameterType(param.name, param.value);
+      const defaultValue = formatDefaultValue(param.value, paramType);
+
+      // Create clean parameter name
+      const cleanParamName = toCamelCase(param.name);
+      params.push(
+        `${cleanParamName}${paramType === "number" || paramType === "boolean" ? "" : "?"}: ${paramType}${defaultValue ? ` = ${defaultValue}` : ""}`
+      );
+    }
+  } else if (
+    node.inputVariables &&
+    Object.keys(node.inputVariables).length > 0
+  ) {
+    // Fallback: use input variables if no classification available
     for (const [key, defaultValue] of Object.entries(node.inputVariables)) {
-      params.push(`${key}: string = '${defaultValue}'`);
+      const cleanKey = toCamelCase(key);
+      params.push(`${cleanKey}?: string = '${defaultValue}'`);
     }
   }
 
-  // Add dependencies as parameters (placeholder for now)
-  // In a more sophisticated implementation, we would analyze the dependency graph
-  // to determine which variables need to be passed down
-
   return params.join(", ");
+}
+
+/**
+ * Check if the node requires authentication
+ */
+function checkIfAuthenticationRequired(node: DAGNode): boolean {
+  // Check if any session constants or auth headers are present
+  if (node.classifiedParameters) {
+    return node.classifiedParameters.some(
+      (p) =>
+        p.classification === "sessionConstant" &&
+        (p.name.toLowerCase().includes("auth") ||
+          p.name.toLowerCase().includes("token") ||
+          p.name.toLowerCase().includes("key"))
+    );
+  }
+
+  // Check if the request has authentication headers
+  if (node.nodeType === "curl" || node.nodeType === "master_curl") {
+    const request = node.content.key as RequestModel;
+    const authHeaders = ["authorization", "cookie", "x-api-key", "auth-token"];
+
+    return Object.keys(request.headers).some((header) =>
+      authHeaders.some((authHeader) =>
+        header.toLowerCase().includes(authHeader)
+      )
+    );
+  }
+
+  return false;
+}
+
+/**
+ * Infer TypeScript type from parameter name and value
+ */
+function inferParameterType(name: string, value: string): string {
+  const nameLower = name.toLowerCase();
+
+  // Numeric parameters
+  if (
+    ["page", "size", "limit", "offset", "count", "number"].some((term) =>
+      nameLower.includes(term)
+    )
+  ) {
+    return "number";
+  }
+
+  // Boolean parameters
+  if (
+    ["true", "false"].includes(value.toLowerCase()) ||
+    ["enable", "disable", "show", "hide", "include", "exclude"].some((term) =>
+      nameLower.includes(term)
+    )
+  ) {
+    return "boolean";
+  }
+
+  // Date parameters
+  if (
+    ["date", "time", "inicio", "fim", "start", "end"].some((term) =>
+      nameLower.includes(term)
+    )
+  ) {
+    return "string | Date";
+  }
+
+  // Array parameters (like tribunal filters)
+  if (
+    ["tribunais", "filters", "categories", "tags"].some((term) =>
+      nameLower.includes(term)
+    )
+  ) {
+    return "string[]";
+  }
+
+  return "string";
+}
+
+/**
+ * Format default value based on type
+ */
+function formatDefaultValue(value: string, type: string): string | null {
+  switch (type) {
+    case "number": {
+      const numValue = Number.parseInt(value, 10);
+      return Number.isNaN(numValue) ? "0" : numValue.toString();
+    }
+
+    case "boolean":
+      return value.toLowerCase() === "true" ? "true" : "false";
+
+    case "string[]":
+      if (value) {
+        return `["${value}"]`;
+      }
+      return "[]";
+
+    case "string":
+    case "string | Date":
+      return value ? `"${value}"` : '""';
+
+    default:
+      return value ? `"${value}"` : null;
+  }
 }
 
 /**
@@ -376,27 +532,120 @@ export function generateFunctionName(request: RequestModel): string {
 }
 
 /**
- * Generate master function name from prompt
+ * Generate master function name from prompt using AI-powered naming
  */
 export function generateMasterFunctionName(prompt: string): string {
-  // Extract action from prompt and convert to camelCase
-  const cleanPrompt = prompt
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, "")
-    .trim();
+  // Try to extract a meaningful action from the prompt
+  const actionKeywords = extractActionKeywords(prompt);
 
-  const words = cleanPrompt.split(/\s+/).filter((word) => word.length > 0);
+  if (actionKeywords.length > 0) {
+    // Create concise function name from action keywords
+    const functionName = actionKeywords
+      .slice(0, 3) // Limit to 3 keywords max
+      .map((word, index) =>
+        index === 0 ? word.toLowerCase() : capitalize(word)
+      )
+      .join("");
 
-  if (words.length === 0) {
-    return "mainAction";
+    // Ensure reasonable length (max 50 characters as per bug report)
+    if (functionName.length <= 50) {
+      return functionName;
+    }
   }
 
-  // Convert to camelCase
-  const functionName = words
-    .map((word, index) => (index === 0 ? word : capitalize(word)))
-    .join("");
+  // Fallback: Use domain-specific patterns
+  const domainName = detectDomainFromPrompt(prompt);
+  return domainName || "performAction";
+}
 
-  return functionName;
+/**
+ * Extract meaningful action keywords from a prompt
+ */
+function extractActionKeywords(prompt: string): string[] {
+  const keywords: string[] = [];
+  const promptLower = prompt.toLowerCase();
+
+  // Common action patterns
+  const actionPatterns = [
+    // Search/Query actions
+    {
+      pattern: /\b(search|pesquisa|query|find|buscar|consulta)\b/i,
+      keyword: "search",
+    },
+    { pattern: /\bjurisprudencia\b/i, keyword: "jurisprudence" },
+    { pattern: /\btribunal\b/i, keyword: "court" },
+
+    // CRUD actions
+    { pattern: /\b(create|add|new|criar|novo)\b/i, keyword: "create" },
+    { pattern: /\b(update|edit|modify|atualizar)\b/i, keyword: "update" },
+    { pattern: /\b(delete|remove|deletar|remover)\b/i, keyword: "delete" },
+    { pattern: /\b(get|fetch|retrieve|obter)\b/i, keyword: "get" },
+
+    // Domain-specific terms
+    { pattern: /\b(login|signin|auth)\b/i, keyword: "authenticate" },
+    { pattern: /\b(checkout|purchase|buy)\b/i, keyword: "checkout" },
+    { pattern: /\b(upload|download)\b/i, keyword: "transfer" },
+    { pattern: /\b(analyze|process|parse)\b/i, keyword: "analyze" },
+
+    // Data operations
+    { pattern: /\b(list|browse|explore)\b/i, keyword: "list" },
+    { pattern: /\b(filter|sort|organize)\b/i, keyword: "filter" },
+    { pattern: /\b(export|import|save)\b/i, keyword: "export" },
+  ];
+
+  // Extract matched keywords
+  for (const { pattern, keyword } of actionPatterns) {
+    if (pattern.test(promptLower)) {
+      keywords.push(keyword);
+    }
+  }
+
+  // If no specific patterns, try to extract meaningful nouns/verbs
+  if (keywords.length === 0) {
+    const words = promptLower
+      .replace(/[^a-z0-9\s]/g, " ")
+      .split(/\s+/)
+      .filter((word) => word.length > 3 && word.length < 15); // Reasonable word length
+
+    // Take first few meaningful words
+    keywords.push(...words.slice(0, 2));
+  }
+
+  return keywords;
+}
+
+/**
+ * Detect domain context from prompt for better naming
+ */
+function detectDomainFromPrompt(prompt: string): string | null {
+  const promptLower = prompt.toLowerCase();
+
+  if (
+    promptLower.includes("jurisprudencia") ||
+    promptLower.includes("legal") ||
+    promptLower.includes("tribunal")
+  ) {
+    return "searchLegalCases";
+  }
+  if (
+    promptLower.includes("ecommerce") ||
+    promptLower.includes("shop") ||
+    promptLower.includes("cart")
+  ) {
+    return "performCheckout";
+  }
+  if (
+    promptLower.includes("user") ||
+    promptLower.includes("account") ||
+    promptLower.includes("profile")
+  ) {
+    return "manageUser";
+  }
+  if (promptLower.includes("api") || promptLower.includes("service")) {
+    return "callService";
+  }
+
+  return null;
 }
 
 /**
@@ -425,16 +674,238 @@ export function generateHeader(session: HarvestSession): string {
 }
 
 /**
+ * Interface for inferred response types
+ */
+interface InferredResponseType {
+  interfaceName: string;
+  fields: Array<{
+    name: string;
+    type: string;
+    optional: boolean;
+  }>;
+  sourceUrl: string;
+}
+
+/**
+ * Infer TypeScript types from response data in the session
+ */
+function inferResponseTypes(session: HarvestSession): InferredResponseType[] {
+  const responseTypes: InferredResponseType[] = [];
+  const seen = new Set<string>();
+
+  try {
+    // Get all nodes from the DAG to analyze their response data
+    const allNodes = session.dagManager.getAllNodes();
+
+    for (const [, node] of allNodes) {
+      if (!node || !node.content.key) continue;
+
+      const request = node.content.key as RequestModel;
+
+      // Check if we have response data for this request
+      const responseData = extractResponseData(request);
+      if (!responseData) continue;
+
+      // Generate a unique interface name based on the endpoint
+      const interfaceName = generateResponseInterfaceName(request.url);
+
+      // Avoid duplicates
+      if (seen.has(interfaceName)) continue;
+      seen.add(interfaceName);
+
+      // Infer fields from response data
+      const fields = inferFieldsFromData(responseData);
+
+      if (fields.length > 0) {
+        responseTypes.push({
+          interfaceName,
+          fields,
+          sourceUrl: request.url,
+        });
+      }
+    }
+  } catch (error) {
+    // If inference fails, return empty array - the code will still work with generic types
+    console.warn("Response type inference failed:", error);
+  }
+
+  return responseTypes;
+}
+
+/**
+ * Extract response data from a request model
+ */
+function extractResponseData(request: RequestModel): any {
+  // Try to extract response data from various possible sources
+  if (request.response?.json) {
+    return request.response.json;
+  }
+
+  if (request.response?.text) {
+    try {
+      return JSON.parse(request.response.text);
+    } catch {
+      // Not JSON, return null
+      return null;
+    }
+  }
+
+  // Could also check other properties where response data might be stored
+  return null;
+}
+
+/**
+ * Generate a TypeScript interface name from a URL
+ */
+function generateResponseInterfaceName(url: string): string {
+  try {
+    const urlObj = new URL(url);
+    const pathParts = urlObj.pathname
+      .split("/")
+      .filter((part) => part && part !== "api" && !part.startsWith("v"))
+      .map((part) => {
+        // Convert kebab-case and snake_case to PascalCase
+        return part
+          .split(/[-_]/)
+          .map(
+            (word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
+          )
+          .join("");
+      });
+
+    let baseName = pathParts.length > 0 ? pathParts.join("") : "Api";
+
+    // Ensure it starts with uppercase and ends with Response
+    baseName = baseName.charAt(0).toUpperCase() + baseName.slice(1);
+    if (!baseName.endsWith("Response")) {
+      baseName += "Response";
+    }
+
+    return baseName;
+  } catch {
+    return "ApiResponse";
+  }
+}
+
+/**
+ * Infer TypeScript field types from response data
+ */
+function inferFieldsFromData(
+  data: any
+): Array<{ name: string; type: string; optional: boolean }> {
+  const fields: Array<{ name: string; type: string; optional: boolean }> = [];
+
+  if (!data || typeof data !== "object") {
+    return fields;
+  }
+
+  for (const [key, value] of Object.entries(data)) {
+    if (key.startsWith("_") || key.length > 50) {
+      // Skip internal fields and overly long keys
+      continue;
+    }
+
+    const fieldType = inferTypeScriptType(value);
+    const isOptional = value === null || value === undefined;
+
+    fields.push({
+      name: key,
+      type: fieldType,
+      optional: isOptional,
+    });
+
+    // Limit to avoid overly complex interfaces
+    if (fields.length >= 20) break;
+  }
+
+  return fields;
+}
+
+/**
+ * Infer TypeScript type from a JavaScript value
+ */
+function inferTypeScriptType(value: any): string {
+  if (value === null || value === undefined) {
+    return "any";
+  }
+
+  if (typeof value === "string") {
+    // Check for common patterns
+    if (value.match(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/)) {
+      return "string"; // ISO date string
+    }
+    if (
+      value.match(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+      )
+    ) {
+      return "string"; // UUID
+    }
+    return "string";
+  }
+
+  if (typeof value === "number") {
+    return Number.isInteger(value) ? "number" : "number";
+  }
+
+  if (typeof value === "boolean") {
+    return "boolean";
+  }
+
+  if (Array.isArray(value)) {
+    if (value.length === 0) {
+      return "any[]";
+    }
+
+    // Infer array element type from first few elements
+    const elementTypes = new Set<string>();
+    for (let i = 0; i < Math.min(value.length, 3); i++) {
+      elementTypes.add(inferTypeScriptType(value[i]));
+    }
+
+    if (elementTypes.size === 1) {
+      return `${Array.from(elementTypes)[0]}[]`;
+    }
+    return "any[]";
+  }
+
+  if (typeof value === "object") {
+    return "object";
+  }
+
+  return "any";
+}
+
+/**
  * Generate TypeScript imports and type definitions with authentication support
  */
-export function generateImports(): string {
+export function generateImports(session?: HarvestSession): string {
   const lines: string[] = [];
 
-  // Type definitions
+  // Type definitions with inferred response types
   lines.push("// Type definitions");
-  lines.push("interface ApiResponse {");
+
+  if (session) {
+    const responseTypes = inferResponseTypes(session);
+
+    if (responseTypes.length > 0) {
+      lines.push("// Inferred response data types");
+      for (const responseType of responseTypes) {
+        lines.push(`interface ${responseType.interfaceName} {`);
+        for (const field of responseType.fields) {
+          lines.push(
+            `  ${field.name}${field.optional ? "?" : ""}: ${field.type};`
+          );
+        }
+        lines.push("}");
+        lines.push("");
+      }
+    }
+  }
+
+  lines.push("interface ApiResponse<T = any> {");
   lines.push("  success: boolean;");
-  lines.push("  data: any;");
+  lines.push("  data: T;");
   lines.push("  status: number;");
   lines.push("  headers: Record<string, string>;");
   lines.push("}");
@@ -567,28 +1038,181 @@ function generateFunctionDocumentation(
 }
 
 /**
- * Generate URL construction code with query parameters
+ * Generate URL construction code with proper parameterization
  */
 function generateUrlConstruction(
   request: RequestModel,
   node: DAGNode,
   lines: string[]
 ): string {
-  let urlExpression = `'${request.url}'`;
-  if (request.queryParams && Object.keys(request.queryParams).length > 0) {
-    lines.push("    const params = new URLSearchParams({");
-    for (const [key, value] of Object.entries(request.queryParams)) {
-      // Check if this is a dynamic value that needs substitution
-      if (node.inputVariables && Object.hasOwn(node.inputVariables, value)) {
-        lines.push(`      '${key}': ${value},`);
-      } else {
-        lines.push(`      '${key}': '${value}',`);
+  const baseUrl = request.url.split("?")[0];
+
+  if (!request.queryParams || Object.keys(request.queryParams).length === 0) {
+    return `'${request.url}'`;
+  }
+
+  // Analyze parameters to determine which should be configurable
+  const configurableParams: string[] = [];
+  const staticParams: string[] = [];
+  const dynamicParams: string[] = [];
+
+  for (const [key, value] of Object.entries(request.queryParams)) {
+    // Use parameter classification if available
+    if (node.classifiedParameters) {
+      const classified = node.classifiedParameters.find((p) => p.name === key);
+      if (classified) {
+        switch (classified.classification) {
+          case "userInput":
+            configurableParams.push(key);
+            break;
+          case "staticConstant":
+            staticParams.push(key);
+            break;
+          case "dynamic":
+            dynamicParams.push(key);
+            break;
+          case "sessionConstant":
+            // Session constants are handled separately
+            staticParams.push(key);
+            break;
+        }
+        continue;
       }
     }
-    lines.push("    });");
-    urlExpression = `'${request.url.split("?")[0]}?' + params.toString()`;
+
+    // Fallback classification based on input variables and heuristics
+    if (node.inputVariables && Object.hasOwn(node.inputVariables, value)) {
+      configurableParams.push(key);
+    } else if (isLikelyUserInput(key, value)) {
+      configurableParams.push(key);
+    } else if (isLikelyStatic(key, value)) {
+      staticParams.push(key);
+    } else {
+      dynamicParams.push(key);
+    }
   }
-  return urlExpression;
+
+  // Generate URL construction based on parameter types
+  lines.push(`    const url = new URL('${baseUrl}');`);
+  lines.push("");
+
+  // Add static parameters first
+  if (staticParams.length > 0) {
+    lines.push("    // Static parameters");
+    for (const key of staticParams) {
+      const value = request.queryParams[key];
+      lines.push(`    url.searchParams.set('${key}', '${value}');`);
+    }
+    lines.push("");
+  }
+
+  // Add configurable parameters
+  if (configurableParams.length > 0) {
+    lines.push("    // Configurable parameters");
+    for (const key of configurableParams) {
+      const defaultValue = request.queryParams[key];
+      // Check if this parameter should come from function arguments
+      const paramName =
+        node.inputVariables &&
+        defaultValue &&
+        Object.values(node.inputVariables).includes(defaultValue)
+          ? Object.keys(node.inputVariables).find(
+              (k) => node.inputVariables?.[k] === defaultValue
+            ) || key
+          : key;
+
+      lines.push(
+        `    if (${paramName} !== undefined && ${paramName} !== null) {`
+      );
+      lines.push(`      url.searchParams.set('${key}', String(${paramName}));`);
+      lines.push("    }");
+    }
+    lines.push("");
+  }
+
+  // Add dynamic parameters (these need to be resolved from previous responses)
+  if (dynamicParams.length > 0) {
+    lines.push("    // Dynamic parameters (resolved from previous requests)");
+    for (const key of dynamicParams) {
+      const value = request.queryParams[key];
+      lines.push(`    // TODO: Resolve '${key}' from previous API response`);
+      lines.push(
+        `    url.searchParams.set('${key}', '${value}'); // Placeholder value`
+      );
+    }
+    lines.push("");
+  }
+
+  return "url.toString()";
+}
+
+/**
+ * Check if a parameter is likely user input
+ */
+function isLikelyUserInput(key: string, value: string): boolean {
+  const keyLower = key.toLowerCase();
+
+  // Search and query parameters
+  if (
+    ["search", "query", "q", "text", "texto", "term", "keyword"].some((term) =>
+      keyLower.includes(term)
+    )
+  ) {
+    return true;
+  }
+
+  // Pagination parameters
+  if (["page", "size", "limit", "offset", "per_page"].includes(keyLower)) {
+    return true;
+  }
+
+  // Date parameters with actual dates
+  if (
+    ["date", "inicio", "fim", "start", "end", "from", "to"].some((term) =>
+      keyLower.includes(term)
+    )
+  ) {
+    return /^\d{4}-\d{2}-\d{2}/.test(value) || /^\d{10,13}$/.test(value);
+  }
+
+  // Filter parameters
+  if (
+    ["filter", "filtro", "category", "type", "tribunal"].some((term) =>
+      keyLower.includes(term)
+    )
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Check if a parameter is likely static
+ */
+function isLikelyStatic(key: string, value: string): boolean {
+  const keyLower = key.toLowerCase();
+
+  // Coordinates that are zero
+  if ((keyLower === "latitude" || keyLower === "longitude") && value === "0") {
+    return true;
+  }
+
+  // Boolean flags
+  if (["true", "false"].includes(value.toLowerCase())) {
+    return true;
+  }
+
+  // API versions or configuration
+  if (
+    ["version", "api_version", "format", "output"].some((term) =>
+      keyLower.includes(term)
+    )
+  ) {
+    return true;
+  }
+
+  return false;
 }
 
 /**
@@ -917,6 +1541,17 @@ function generateAuthenticationSetup(
   authInfo: ReturnType<typeof detectRequestAuthentication>,
   lines: string[]
 ): void {
+  // Check if this is a public endpoint (addresses the main bug report issue)
+  const isPublicEndpoint =
+    authInfo.authType === "none" ||
+    (authInfo.authHeaders.length === 0 && authInfo.authCookies.length === 0);
+
+  if (isPublicEndpoint) {
+    lines.push("    // No authentication required - this is a public endpoint");
+    lines.push("");
+    return;
+  }
+
   lines.push(
     "    // Authentication setup - IMPORTANT: Configure authConfig before using"
   );
@@ -1005,11 +1640,13 @@ function generateAuthenticationSetup(
       lines.push("    }");
       lines.push("    Object.assign(headers, authConfig.customHeaders);");
       break;
+
+    case "none":
+      // Already handled above, but include for completeness
+      lines.push("    // No authentication required for this endpoint");
+      lines.push("");
+      return;
   }
 
   lines.push("");
-  lines.push("    // Add authentication validation logging");
-  lines.push(
-    '    console.log("Making request with " + authInfo.authType + " authentication");'
-  );
 }
