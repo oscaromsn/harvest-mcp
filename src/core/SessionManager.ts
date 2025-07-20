@@ -4,6 +4,7 @@ import {
   type AuthenticationAnalysis,
   type CookieData,
   type DAGNode,
+  HARQualityError,
   type HarvestSession,
   type LogEntry,
   type SessionInfo,
@@ -116,6 +117,53 @@ export class SessionManager {
         if (validation.issues.length > 0) {
           logger.warn(
             `HAR issues for session ${sessionId}: ${validation.issues.join(", ")}`
+          );
+        }
+
+        // Phase 2.1: Enforce quality gates before analysis conversion
+        if (validation.quality === "empty") {
+          throw new HARQualityError(
+            validation.quality,
+            validation.issues,
+            [
+              ...validation.recommendations,
+              "Please capture more meaningful network activity before analysis.",
+            ],
+            {
+              harPath: params.harPath,
+              sessionId,
+              stats: validation.stats,
+            }
+          );
+        }
+
+        if (
+          validation.quality === "poor" &&
+          validation.stats.relevantEntries < 3
+        ) {
+          throw new HARQualityError(
+            validation.quality,
+            [
+              ...validation.issues,
+              `Insufficient meaningful requests: ${validation.stats.relevantEntries} entries`,
+            ],
+            [
+              ...validation.recommendations,
+              "Please interact more with the application to generate API requests.",
+            ],
+            {
+              harPath: params.harPath,
+              sessionId,
+              stats: validation.stats,
+            }
+          );
+        }
+
+        // Warn but allow "poor" quality with some minimal content
+        if (validation.quality === "poor") {
+          logger.warn(
+            "HAR file has poor quality but sufficient content to proceed with analysis. " +
+              "Quality issues may affect code generation accuracy."
           );
         }
       }
