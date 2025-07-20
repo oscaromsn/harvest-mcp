@@ -157,6 +157,8 @@ export interface BootstrapParameterSource {
     cookieName?: string;
     // e.g., for 'dedicated-auth-request', this is the JSON path.
     jsonPath?: string;
+    // Indicates this is a synthetic source for testing/mid-session HAR captures
+    syntheticSource?: boolean;
   };
 }
 
