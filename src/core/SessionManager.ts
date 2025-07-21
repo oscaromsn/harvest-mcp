@@ -886,10 +886,10 @@ export class SessionManager {
       // Check if HAR validation detected authentication issues
       const harAuthAnalysis = harValidation.authAnalysis;
 
-      if (harAuthAnalysis.authErrors > 0) {
-        analysis.errorCount = harAuthAnalysis.authErrors;
+      if (harAuthAnalysis.failedAuthRequests.length > 0) {
+        analysis.errorCount = harAuthAnalysis.failedAuthRequests.length;
         analysis.blockers.push(
-          `Found ${harAuthAnalysis.authErrors} authentication errors in HAR data`
+          `Found ${harAuthAnalysis.failedAuthRequests.length} authentication errors in HAR data`
         );
         analysis.recommendations.push(
           "Verify authentication tokens are valid and not expired"
@@ -899,20 +899,13 @@ export class SessionManager {
         );
       }
 
-      if (
-        harAuthAnalysis.hasTokens &&
-        harAuthAnalysis.tokenPatterns.length > 0
-      ) {
+      if (harAuthAnalysis.tokens.length > 0) {
         analysis.warnings.push(
           "Authentication tokens detected in requests - ensure they are handled dynamically"
         );
       }
 
-      if (
-        !harAuthAnalysis.hasAuthHeaders &&
-        !harAuthAnalysis.hasCookies &&
-        !harAuthAnalysis.hasTokens
-      ) {
+      if (!harAuthAnalysis.hasAuthentication) {
         analysis.warnings.push(
           "No authentication mechanisms detected - API may be public or authentication was not captured"
         );
