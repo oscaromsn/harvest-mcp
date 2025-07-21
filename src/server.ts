@@ -31,16 +31,18 @@ import {
 import { registerSystemTools } from "./tools/systemTools.js";
 import { registerWorkflowTools } from "./tools/workflowTools.js";
 import {
-  CompletedSessionManagerAdapter,
   createAnalysisToolContext,
+  createAuthToolContext,
   createCodegenToolContext,
   createDebugToolContext,
+  createManualSessionToolContext,
   createSessionToolContext,
   createSystemToolContext,
+  createUnifiedToolContext,
+  createWorkflowToolContext,
   HarvestError,
   type RequestModel,
-  SessionManagerAdapter,
-  type ToolHandlerContext,
+  type UnifiedToolContext,
   type URLInfo,
 } from "./types/index.js";
 import { serverLogger } from "./utils/logger.js";
@@ -166,13 +168,45 @@ export class HarvestMCPServer {
   public server: McpServer;
   public sessionManager: SessionManager;
   public completedSessionManager: CompletedSessionManager;
-  private readonly context: ToolHandlerContext;
+  private readonly sessionToolContext: ReturnType<
+    typeof createSessionToolContext
+  >;
+  private readonly analysisToolContext: ReturnType<
+    typeof createAnalysisToolContext
+  >;
+  private readonly codegenToolContext: ReturnType<
+    typeof createCodegenToolContext
+  >;
+  private readonly unifiedContext: UnifiedToolContext;
 
   /**
-   * Get the tool handler context for direct tool access in tests
+   * Get the session tool context for direct tool access in tests
    */
-  public getContext(): ToolHandlerContext {
-    return this.context;
+  public getSessionToolContext(): ReturnType<typeof createSessionToolContext> {
+    return this.sessionToolContext;
+  }
+
+  /**
+   * Get the analysis tool context for direct tool access in tests
+   */
+  public getAnalysisToolContext(): ReturnType<
+    typeof createAnalysisToolContext
+  > {
+    return this.analysisToolContext;
+  }
+
+  /**
+   * Get the codegen tool context for direct tool access in tests
+   */
+  public getCodegenToolContext(): ReturnType<typeof createCodegenToolContext> {
+    return this.codegenToolContext;
+  }
+
+  /**
+   * Get a universal context for test compatibility only
+   */
+  public getContext(): UnifiedToolContext {
+    return this.unifiedContext;
   }
   private cliConfig: CLIArgs;
 
@@ -181,13 +215,23 @@ export class HarvestMCPServer {
     this.sessionManager = new SessionManager();
     this.completedSessionManager = CompletedSessionManager.getInstance();
 
-    // Create legacy context for backward compatibility
-    this.context = {
-      sessionManager: new SessionManagerAdapter(this.sessionManager),
-      completedSessionManager: new CompletedSessionManagerAdapter(
-        this.completedSessionManager
-      ),
-    };
+    // Create focused contexts
+    this.sessionToolContext = createSessionToolContext(
+      this.sessionManager,
+      this.completedSessionManager
+    );
+    this.analysisToolContext = createAnalysisToolContext(
+      this.sessionManager,
+      this.completedSessionManager
+    );
+    this.codegenToolContext = createCodegenToolContext(
+      this.sessionManager,
+      this.completedSessionManager
+    );
+    this.unifiedContext = createUnifiedToolContext(
+      this.sessionManager,
+      this.completedSessionManager
+    );
 
     // Set global CLI config for access by other modules
     setGlobalCLIConfig(cliConfig);
@@ -290,6 +334,18 @@ export class HarvestMCPServer {
       this.sessionManager,
       this.completedSessionManager
     );
+    const manualSessionToolContext = createManualSessionToolContext(
+      this.sessionManager,
+      this.completedSessionManager
+    );
+    const workflowToolContext = createWorkflowToolContext(
+      this.sessionManager,
+      this.completedSessionManager
+    );
+    const authToolContext = createAuthToolContext(
+      this.sessionManager,
+      this.completedSessionManager
+    );
 
     // Session Management Tools
     registerSessionTools(this.server, sessionToolContext);
@@ -303,17 +359,17 @@ export class HarvestMCPServer {
     // Code Generation Tools
     registerCodegenTools(this.server, codegenToolContext);
 
-    // Manual Session Tools (still using legacy context for now)
-    registerManualSessionTools(this.server, this.context);
+    // Manual Session Tools
+    registerManualSessionTools(this.server, manualSessionToolContext);
 
-    // Workflow Tools (still using legacy context for now)
-    registerWorkflowTools(this.server, this.context);
+    // Workflow Tools
+    registerWorkflowTools(this.server, workflowToolContext);
 
     // System Tools
     registerSystemTools(this.server, systemToolContext, this.cliConfig);
 
     // Authentication Tools
-    registerAuthTools(this.server, this.context);
+    registerAuthTools(this.server, authToolContext);
   }
 
   /**
@@ -1616,7 +1672,7 @@ export class HarvestMCPServer {
           ? JSON.parse(params.input_variables as string)
           : undefined,
       },
-      this.context
+      this.sessionToolContext
     );
 
     const sessionContent = sessionResult.content?.[0]?.text;
@@ -1713,13 +1769,10 @@ export class HarvestMCPServer {
    * Check if analysis is complete
    */
   private async checkAnalysisComplete(sessionId: string): Promise<boolean> {
-    const context: ToolHandlerContext = {
-      sessionManager: new SessionManagerAdapter(this.sessionManager),
-      completedSessionManager: new CompletedSessionManagerAdapter(
-        this.completedSessionManager
-      ),
-    };
-    const completeResult = handleIsComplete({ sessionId }, context);
+    const completeResult = handleIsComplete(
+      { sessionId },
+      this.analysisToolContext
+    );
     const completeContent = completeResult.content?.[0]?.text;
     if (typeof completeContent !== "string") {
       throw new Error("Invalid completion result format");
@@ -1732,13 +1785,10 @@ export class HarvestMCPServer {
    * Process next node in workflow
    */
   private async processNextNodeInWorkflow(sessionId: string): Promise<boolean> {
-    const context: ToolHandlerContext = {
-      sessionManager: new SessionManagerAdapter(this.sessionManager),
-      completedSessionManager: new CompletedSessionManagerAdapter(
-        this.completedSessionManager
-      ),
-    };
-    const processResult = await handleProcessNextNode({ sessionId }, context);
+    const processResult = await handleProcessNextNode(
+      { sessionId },
+      this.analysisToolContext
+    );
     const processContent = processResult.content?.[0]?.text;
     if (typeof processContent !== "string") {
       throw new Error("Invalid process result format");
@@ -1766,7 +1816,7 @@ export class HarvestMCPServer {
     try {
       const codeResult = await handleGenerateWrapperScript(
         { sessionId },
-        this.context
+        this.codegenToolContext
       );
       const codeContent = codeResult.content?.[0]?.text;
       if (typeof codeContent !== "string") {
