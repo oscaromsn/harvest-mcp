@@ -3,6 +3,12 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { SessionManager } from "../../src/core/SessionManager.js";
 import type { HarvestMCPServer } from "../../src/server.js";
 import {
+  handleIsComplete,
+  handleProcessNextNode,
+  handleRunInitialAnalysisWithConfig,
+} from "../../src/tools/analysisTools.js";
+import { handleSessionList } from "../../src/tools/sessionTools.js";
+import {
   cleanupE2EContext,
   createTestSession,
   type E2ETestContext,
@@ -52,7 +58,7 @@ describe("Performance Benchmarking", () => {
 
       for (let i = 0; i < maxIterations; i++) {
         try {
-          await server.handleProcessNextNode({ sessionId });
+          await handleProcessNextNode({ sessionId }, server.getContext());
           iterations++;
         } catch (_error) {
           // Expected to fail at some point with mock data
@@ -99,7 +105,7 @@ describe("Performance Benchmarking", () => {
 
       // Test session list response time
       const startTime = Date.now();
-      const listResult = await server.handleSessionList();
+      const listResult = await handleSessionList(server.getContext());
       const responseTime = Date.now() - startTime;
 
       expect(responseTime).toBeLessThan(200);
@@ -117,7 +123,7 @@ describe("Performance Benchmarking", () => {
       const sessionId = await createTestSession(server);
 
       const startTime = Date.now();
-      const result = await server.handleIsComplete({ sessionId });
+      const result = await handleIsComplete({ sessionId }, server.getContext());
       const responseTime = Date.now() - startTime;
 
       expect(responseTime).toBeLessThan(200);
@@ -261,8 +267,19 @@ describe("Performance Benchmarking", () => {
       const operations: Promise<CallToolResult>[] = [];
       for (let i = 0; i < 10; i++) {
         const sessionId = sessionIds[i];
-        operations.push(server.handleIsComplete({ sessionId }));
-        operations.push(server.handleRunInitialAnalysis({ sessionId }));
+        if (sessionId) {
+          operations.push(
+            Promise.resolve(
+              handleIsComplete({ sessionId }, server.getContext())
+            )
+          );
+          operations.push(
+            handleRunInitialAnalysisWithConfig(
+              { sessionId },
+              server.getContext()
+            )
+          );
+        }
       }
 
       await Promise.all(operations);
@@ -325,7 +342,7 @@ describe("Performance Benchmarking", () => {
       // Measure multiple identical operations
       for (let i = 0; i < 10; i++) {
         const startTime = Date.now();
-        await server.handleIsComplete({ sessionId });
+        await handleIsComplete({ sessionId }, server.getContext());
         measurements.push(Date.now() - startTime);
       }
 

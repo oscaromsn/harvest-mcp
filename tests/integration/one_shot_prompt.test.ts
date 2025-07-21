@@ -2,6 +2,9 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { SessionManager } from "../../src/core/SessionManager.js";
 import { Request } from "../../src/models/Request.js";
 import { HarvestMCPServer } from "../../src/server.js";
+import { handleGenerateWrapperScript } from "../../src/tools/codegenTools.js";
+import { handleGetUnresolvedNodes } from "../../src/tools/debugTools.js";
+import { handleSessionStart } from "../../src/tools/sessionTools.js";
 
 /**
  * One-Shot Prompt Integration Tests
@@ -23,11 +26,14 @@ describe("One-Shot Prompt Integration Tests", () => {
       // Create a session and manually set up a DAG for testing
       // (This simulates what would happen in a successful automated run)
 
-      const sessionResult = await server.handleSessionStart({
-        harPath: "tests/fixtures/test-data/pangea_search.har",
-        cookiePath: "tests/fixtures/test-data/pangea_cookies.json",
-        prompt: "Search and download documents",
-      });
+      const sessionResult = await handleSessionStart(
+        {
+          harPath: "tests/fixtures/test-data/pangea_search.har",
+          cookiePath: "tests/fixtures/test-data/pangea_cookies.json",
+          prompt: "Search and download documents",
+        },
+        server.getContext()
+      );
 
       const sessionId = JSON.parse(
         sessionResult.content?.[0]?.text as string
@@ -84,7 +90,10 @@ describe("One-Shot Prompt Integration Tests", () => {
       // (The actual prompt would be called by MCP client)
 
       // Simulate what would happen in a successful automated analysis
-      const result = await server.handleGenerateWrapperScript({ sessionId });
+      const result = await handleGenerateWrapperScript(
+        { sessionId },
+        server.getContext()
+      );
       const generatedCode = result.content?.[0]?.text as string;
       if (!generatedCode) {
         throw new Error("No generated code");
@@ -110,10 +119,13 @@ describe("One-Shot Prompt Integration Tests", () => {
 
       // This would typically be called by MCP client, simulating the error flow
       try {
-        await server.handleSessionStart({
-          harPath: invalidParams.har_path,
-          prompt: invalidParams.prompt,
-        });
+        await handleSessionStart(
+          {
+            harPath: invalidParams.har_path,
+            prompt: invalidParams.prompt,
+          },
+          server.getContext()
+        );
       } catch (error) {
         expect(error).toBeDefined();
         expect(error instanceof Error).toBe(true);
@@ -123,11 +135,14 @@ describe("One-Shot Prompt Integration Tests", () => {
 
     it("should provide progress tracking in one-shot mode", async () => {
       // Create a session for testing progress tracking
-      const sessionResult = await server.handleSessionStart({
-        harPath: "tests/fixtures/test-data/pangea_search.har",
-        cookiePath: "tests/fixtures/test-data/pangea_cookies.json",
-        prompt: "Progress tracking test",
-      });
+      const sessionResult = await handleSessionStart(
+        {
+          harPath: "tests/fixtures/test-data/pangea_search.har",
+          cookiePath: "tests/fixtures/test-data/pangea_cookies.json",
+          prompt: "Progress tracking test",
+        },
+        server.getContext()
+      );
 
       const sessionId = JSON.parse(
         sessionResult.content?.[0]?.text as string
@@ -156,11 +171,14 @@ describe("One-Shot Prompt Integration Tests", () => {
 
     it("should generate comprehensive results summary", async () => {
       // Test the result formatting that would be returned by the one-shot prompt
-      const sessionResult = await server.handleSessionStart({
-        harPath: "tests/fixtures/test-data/pangea_search.har",
-        cookiePath: "tests/fixtures/test-data/pangea_cookies.json",
-        prompt: "Results summary test",
-      });
+      const sessionResult = await handleSessionStart(
+        {
+          harPath: "tests/fixtures/test-data/pangea_search.har",
+          cookiePath: "tests/fixtures/test-data/pangea_cookies.json",
+          prompt: "Results summary test",
+        },
+        server.getContext()
+      );
 
       const sessionId = JSON.parse(
         sessionResult.content?.[0]?.text as string
@@ -196,9 +214,12 @@ describe("One-Shot Prompt Integration Tests", () => {
       session.state.masterNodeId = nodeId;
 
       // Generate code and verify result structure
-      const codeResult = await server.handleGenerateWrapperScript({
-        sessionId,
-      });
+      const codeResult = await handleGenerateWrapperScript(
+        {
+          sessionId,
+        },
+        server.getContext()
+      );
       const generatedCode = codeResult.content?.[0]?.text as string;
       if (!generatedCode) {
         throw new Error("No generated code");
@@ -240,11 +261,14 @@ ${generatedCode}
 
     it("should handle incomplete analysis with debug information", async () => {
       // Test the debug information flow for incomplete analysis
-      const sessionResult = await server.handleSessionStart({
-        harPath: "tests/fixtures/test-data/pangea_search.har",
-        cookiePath: "tests/fixtures/test-data/pangea_cookies.json",
-        prompt: "Debug information test",
-      });
+      const sessionResult = await handleSessionStart(
+        {
+          harPath: "tests/fixtures/test-data/pangea_search.har",
+          cookiePath: "tests/fixtures/test-data/pangea_cookies.json",
+          prompt: "Debug information test",
+        },
+        server.getContext()
+      );
 
       const sessionId = JSON.parse(
         sessionResult.content?.[0]?.text as string
@@ -281,16 +305,19 @@ ${generatedCode}
 
       // Try to generate code - should fail
       try {
-        await server.handleGenerateWrapperScript({ sessionId });
+        await handleGenerateWrapperScript({ sessionId }, server.getContext());
       } catch (error) {
         expect(error).toBeDefined();
         expect((error as Error).message).toContain("analysis not complete");
       }
 
       // Test the debug information retrieval
-      const unresolvedResult = await server.handleGetUnresolvedNodes({
-        sessionId,
-      });
+      const unresolvedResult = await handleGetUnresolvedNodes(
+        {
+          sessionId,
+        },
+        server.getContext()
+      );
       const unresolvedData = JSON.parse(
         unresolvedResult.content?.[0]?.text as string
       );
@@ -307,10 +334,13 @@ ${generatedCode}
       // Test the parameter handling that would be used by the one-shot prompt
 
       // Test with minimal parameters (no cookie file)
-      const minimalResult = await server.handleSessionStart({
-        harPath: "tests/fixtures/test-data/pangea_search.har",
-        prompt: "Minimal parameters test",
-      });
+      const minimalResult = await handleSessionStart(
+        {
+          harPath: "tests/fixtures/test-data/pangea_search.har",
+          prompt: "Minimal parameters test",
+        },
+        server.getContext()
+      );
 
       const minimalSessionId = JSON.parse(
         minimalResult.content?.[0]?.text as string
@@ -318,12 +348,15 @@ ${generatedCode}
       expect(minimalSessionId).toBeDefined();
 
       // Test with input variables
-      const variablesResult = await server.handleSessionStart({
-        harPath: "tests/fixtures/test-data/pangea_search.har",
-        cookiePath: "tests/fixtures/test-data/pangea_cookies.json",
-        prompt: "Variables test",
-        inputVariables: { user_id: "12345", api_key: "test_key" },
-      });
+      const variablesResult = await handleSessionStart(
+        {
+          harPath: "tests/fixtures/test-data/pangea_search.har",
+          cookiePath: "tests/fixtures/test-data/pangea_cookies.json",
+          prompt: "Variables test",
+          inputVariables: { user_id: "12345", api_key: "test_key" },
+        },
+        server.getContext()
+      );
 
       const variablesSessionId = JSON.parse(
         variablesResult.content?.[0]?.text as string
@@ -352,11 +385,14 @@ ${generatedCode}
       const startTime = Date.now();
 
       // Step 1: Session creation
-      const sessionResult = await server.handleSessionStart({
-        harPath: "tests/fixtures/test-data/pangea_search.har",
-        cookiePath: "tests/fixtures/test-data/pangea_cookies.json",
-        prompt: "Complete workflow demonstration",
-      });
+      const sessionResult = await handleSessionStart(
+        {
+          harPath: "tests/fixtures/test-data/pangea_search.har",
+          cookiePath: "tests/fixtures/test-data/pangea_cookies.json",
+          prompt: "Complete workflow demonstration",
+        },
+        server.getContext()
+      );
 
       const sessionId = JSON.parse(
         sessionResult.content?.[0]?.text as string
@@ -411,9 +447,12 @@ ${generatedCode}
       session.state.toBeProcessedNodes = [];
 
       // Step 3: Code generation
-      const codeResult = await server.handleGenerateWrapperScript({
-        sessionId,
-      });
+      const codeResult = await handleGenerateWrapperScript(
+        {
+          sessionId,
+        },
+        server.getContext()
+      );
       const generatedCode = codeResult.content?.[0]?.text as string;
       if (!generatedCode) {
         throw new Error("No generated code");

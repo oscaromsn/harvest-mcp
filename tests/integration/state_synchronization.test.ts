@@ -3,6 +3,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { SessionManager } from "../../src/core/SessionManager.js";
 import { Request } from "../../src/models/Request.js";
 import { HarvestMCPServer } from "../../src/server.js";
+import { handleGenerateWrapperScript } from "../../src/tools/codegenTools.js";
+import { handleGetCompletionBlockers } from "../../src/tools/debugTools.js";
+import { handleSessionStart } from "../../src/tools/sessionTools.js";
 
 describe("State Synchronization", () => {
   let sessionManager: SessionManager;
@@ -18,10 +21,13 @@ describe("State Synchronization", () => {
       process.cwd(),
       "tests/fixtures/test-data/pangea_search.har"
     );
-    const sessionResponse = await server.handleSessionStart({
-      harPath: testHarPath,
-      prompt: "Test session for state synchronization",
-    });
+    const sessionResponse = await handleSessionStart(
+      {
+        harPath: testHarPath,
+        prompt: "Test session for state synchronization",
+      },
+      server.getContext()
+    );
 
     // Extract session ID from server response
     const sessionData = JSON.parse(sessionResponse.content[0]?.text as string);
@@ -158,9 +164,12 @@ describe("State Synchronization", () => {
     });
 
     it("should provide completion blocker analysis", async () => {
-      const result = await server.handleGetCompletionBlockers({
-        sessionId: testSessionId,
-      });
+      const result = await handleGetCompletionBlockers(
+        {
+          sessionId: testSessionId,
+        },
+        server.getContext()
+      );
 
       expect(result).toHaveProperty("content");
       expect(result.content).toBeInstanceOf(Array);
@@ -202,9 +211,12 @@ describe("State Synchronization", () => {
 
       // Code generation should now work (using DAG as primary check)
       try {
-        const result = await server.handleGenerateWrapperScript({
-          sessionId: testSessionId,
-        });
+        const result = await handleGenerateWrapperScript(
+          {
+            sessionId: testSessionId,
+          },
+          server.getContext()
+        );
 
         // Should not throw and return valid code
         expect(result).toHaveProperty("content");
@@ -249,7 +261,10 @@ describe("State Synchronization", () => {
       expect(session.dagManager.isComplete()).toBe(false);
 
       try {
-        await server.handleGenerateWrapperScript({ sessionId: testSessionId });
+        await handleGenerateWrapperScript(
+          { sessionId: testSessionId },
+          server.getContext()
+        );
         // Should not reach here
         expect(true).toBe(false);
       } catch (error) {

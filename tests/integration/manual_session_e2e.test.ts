@@ -14,6 +14,15 @@ import { join } from "node:path";
 import { parseHARFile } from "../../src/core/HARParser.js";
 import { manualSessionManager } from "../../src/core/ManualSessionManager.js";
 import { HarvestMCPServer } from "../../src/server.js";
+import {
+  handleListManualSessions,
+  handleStartManualSession,
+  handleStopManualSession,
+} from "../../src/tools/manualSessionTools.js";
+import {
+  handleSessionDelete,
+  handleSessionStart,
+} from "../../src/tools/sessionTools.js";
 import type { SessionConfig } from "../../src/types/index.js";
 import { SMALL_VIEWPORT } from "../setup/browser-defaults.js";
 
@@ -48,22 +57,25 @@ describe("Sprint 5.4: End-to-End Manual Session Workflow", () => {
   describe("Manual Session to HAR Generation", () => {
     test("should create a manual session, collect artifacts, and generate valid HAR files", async () => {
       // Step 1: Start a manual session
-      const startResponse = await server.handleStartManualSession({
-        config: {
-          artifactConfig: {
-            enabled: true,
-            outputDir: testOutputDir,
-            saveHar: true,
-            saveCookies: true,
-            saveScreenshots: true,
+      const startResponse = await handleStartManualSession(
+        {
+          config: {
+            artifactConfig: {
+              enabled: true,
+              outputDir: testOutputDir,
+              saveHar: true,
+              saveCookies: true,
+              saveScreenshots: true,
+            },
+            browserOptions: {
+              headless: true, // Use headless for testing
+              viewport: SMALL_VIEWPORT,
+            },
+            timeout: 2, // 2 minute timeout for testing
           },
-          browserOptions: {
-            headless: true, // Use headless for testing
-            viewport: SMALL_VIEWPORT,
-          },
-          timeout: 2, // 2 minute timeout for testing
         },
-      });
+        server.getContext()
+      );
 
       expect(startResponse.content).toHaveLength(1);
       const startData = parseToolResponse(startResponse);
@@ -76,7 +88,7 @@ describe("Sprint 5.4: End-to-End Manual Session Workflow", () => {
       const sessionId = startData.sessionId;
 
       // Step 2: Verify session is active
-      const listResponse = await server.handleListManualSessions();
+      const listResponse = await handleListManualSessions(server.getContext());
       const listData = parseToolResponse(listResponse);
       expect(listData.success).toBe(true);
       expect(listData.totalSessions).toBe(1);
@@ -86,11 +98,14 @@ describe("Sprint 5.4: End-to-End Manual Session Workflow", () => {
       await new Promise((resolve) => setTimeout(resolve, 1000));
 
       // Step 4: Stop the session and collect artifacts
-      const stopResponse = await server.handleStopManualSession({
-        sessionId,
-        takeScreenshot: true,
-        reason: "test_completion",
-      });
+      const stopResponse = await handleStopManualSession(
+        {
+          sessionId,
+          takeScreenshot: true,
+          reason: "test_completion",
+        },
+        server.getContext()
+      );
 
       expect(stopResponse.content).toHaveLength(1);
       const stopData = parseToolResponse(stopResponse);
@@ -145,7 +160,9 @@ describe("Sprint 5.4: End-to-End Manual Session Workflow", () => {
       expect(Array.isArray(cookieData.cookies)).toBe(true);
 
       // Step 8: Verify no active sessions remain
-      const finalListResponse = await server.handleListManualSessions();
+      const finalListResponse = await handleListManualSessions(
+        server.getContext()
+      );
       const finalListData = parseToolResponse(finalListResponse);
       expect(finalListData.totalSessions).toBe(0);
     }, 30000); // 30 second timeout for the full test
@@ -153,20 +170,23 @@ describe("Sprint 5.4: End-to-End Manual Session Workflow", () => {
     test("should handle session with specific URL navigation", async () => {
       const testUrl = "https://example.com";
 
-      const startResponse = await server.handleStartManualSession({
-        url: testUrl,
-        config: {
-          artifactConfig: {
-            enabled: true,
-            outputDir: testOutputDir,
-            saveHar: true,
+      const startResponse = await handleStartManualSession(
+        {
+          url: testUrl,
+          config: {
+            artifactConfig: {
+              enabled: true,
+              outputDir: testOutputDir,
+              saveHar: true,
+            },
+            browserOptions: {
+              headless: true,
+            },
+            timeout: 2, // Increased timeout
           },
-          browserOptions: {
-            headless: true,
-          },
-          timeout: 2, // Increased timeout
         },
-      });
+        server.getContext()
+      );
 
       const startData = parseToolResponse(startResponse);
       expect(startData.success).toBe(true);
@@ -179,10 +199,13 @@ describe("Sprint 5.4: End-to-End Manual Session Workflow", () => {
 
       let stopResponse: any;
       try {
-        stopResponse = await server.handleStopManualSession({
-          sessionId,
-          reason: "url_test_completion",
-        });
+        stopResponse = await handleStopManualSession(
+          {
+            sessionId,
+            reason: "url_test_completion",
+          },
+          server.getContext()
+        );
       } catch (error) {
         // If we get an execution context error, the session might have been terminated
         if (
@@ -320,19 +343,25 @@ describe("Sprint 5.4: End-to-End Manual Session Workflow", () => {
       // Try to create a harvest analysis session only if the HAR looks good
       if (harData.log.entries && harData.log.entries.length > 0) {
         try {
-          const analysisResponse = await server.handleSessionStart({
-            harPath: harArtifact?.path ?? "",
-            prompt: "Test analysis of manual session generated HAR file",
-          });
+          const analysisResponse = await handleSessionStart(
+            {
+              harPath: harArtifact?.path ?? "",
+              prompt: "Test analysis of manual session generated HAR file",
+            },
+            server.getContext()
+          );
 
           expect(analysisResponse.content).toHaveLength(1);
           const analysisData = parseToolResponse(analysisResponse);
           expect(analysisData.sessionId).toBeDefined();
 
           // Clean up analysis session
-          await server.handleSessionDelete({
-            sessionId: analysisData.sessionId,
-          });
+          await handleSessionDelete(
+            {
+              sessionId: analysisData.sessionId,
+            },
+            server.getContext()
+          );
         } catch (_error) {
           // Analysis may fail due to various reasons, but HAR validation above should pass
           console.log("Analysis failed, but HAR structure is valid");
@@ -358,17 +387,20 @@ describe("Sprint 5.4: End-to-End Manual Session Workflow", () => {
   describe("Error Handling and Edge Cases", () => {
     test("should handle invalid session configuration gracefully", async () => {
       await expect(async () => {
-        await server.handleStartManualSession({
-          config: {
-            timeout: -1, // Invalid timeout
-            browserOptions: {
-              viewport: {
-                width: 100, // Too small
-                height: 100, // Too small
+        await handleStartManualSession(
+          {
+            config: {
+              timeout: -1, // Invalid timeout
+              browserOptions: {
+                viewport: {
+                  width: 100, // Too small
+                  height: 100, // Too small
+                },
               },
             },
           },
-        });
+          server.getContext()
+        );
       }).toThrow(/Invalid parameters for manual session start/);
     });
 
@@ -376,9 +408,12 @@ describe("Sprint 5.4: End-to-End Manual Session Workflow", () => {
       const fakeSessionId = randomUUID();
 
       await expect(async () => {
-        await server.handleStopManualSession({
-          sessionId: fakeSessionId,
-        });
+        await handleStopManualSession(
+          {
+            sessionId: fakeSessionId,
+          },
+          server.getContext()
+        );
       }).toThrow(/Manual session not found/);
     });
 
@@ -396,11 +431,14 @@ describe("Sprint 5.4: End-to-End Manual Session Workflow", () => {
       const sessionId = sessionInfo.id;
 
       // Stop with specific artifact types
-      const stopResponse = await server.handleStopManualSession({
-        sessionId,
-        artifactTypes: ["cookies"], // Only request cookies
-        reason: "artifact_filter_test",
-      });
+      const stopResponse = await handleStopManualSession(
+        {
+          sessionId,
+          artifactTypes: ["cookies"], // Only request cookies
+          reason: "artifact_filter_test",
+        },
+        server.getContext()
+      );
 
       const stopData = parseToolResponse(stopResponse);
       expect(stopData.success).toBe(true);

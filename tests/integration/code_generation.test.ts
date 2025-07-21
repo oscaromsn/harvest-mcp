@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { SessionManager } from "../../src/core/SessionManager.js";
 import { Request } from "../../src/models/Request.js";
 import { HarvestMCPServer } from "../../src/server.js";
+import { handleGenerateWrapperScript } from "../../src/tools/codegenTools.js";
 import type { HarvestSession } from "../../src/types/index.js";
 
 describe("Code Generation Integration Tests", () => {
@@ -97,7 +98,10 @@ describe("Code Generation Integration Tests", () => {
   describe("codegen.generate_wrapper_script tool", () => {
     it("should generate complete TypeScript code for a finished analysis", async () => {
       // Call the code generation tool
-      const result = await server.handleGenerateWrapperScript({ sessionId });
+      const result = await handleGenerateWrapperScript(
+        { sessionId },
+        server.getContext()
+      );
 
       const generatedCode = result.content?.[0]?.text as string;
       if (!generatedCode) {
@@ -135,7 +139,7 @@ describe("Code Generation Integration Tests", () => {
     it("should store generated code in session state", async () => {
       expect(session.state.generatedCode).toBeUndefined();
 
-      await server.handleGenerateWrapperScript({ sessionId });
+      await handleGenerateWrapperScript({ sessionId }, server.getContext());
 
       expect(session.state.generatedCode).toBeDefined();
       expect(session.state.generatedCode).toContain("async function");
@@ -154,14 +158,17 @@ describe("Code Generation Integration Tests", () => {
       }
 
       await expect(
-        server.handleGenerateWrapperScript({ sessionId })
+        handleGenerateWrapperScript({ sessionId }, server.getContext())
       ).rejects.toThrow(
         "Code generation failed - analysis prerequisites not met"
       );
     });
 
     it("should include proper session metadata in generated code", async () => {
-      const result = await server.handleGenerateWrapperScript({ sessionId });
+      const result = await handleGenerateWrapperScript(
+        { sessionId },
+        server.getContext()
+      );
       const generatedCode = result.content?.[0]?.text as string;
       if (!generatedCode) {
         throw new Error("No generated code");
@@ -178,7 +185,7 @@ describe("Code Generation Integration Tests", () => {
   describe("harvest://{sessionId}/generated_code.ts resource", () => {
     it("should return generated code after generation", async () => {
       // Generate code first
-      await server.handleGenerateWrapperScript({ sessionId });
+      await handleGenerateWrapperScript({ sessionId }, server.getContext());
 
       // Check that generated code is stored in session
       expect(session.state.generatedCode).toBeDefined();
@@ -192,7 +199,7 @@ describe("Code Generation Integration Tests", () => {
 
     it("should provide access to generated code via session state", async () => {
       // Generate code
-      await server.handleGenerateWrapperScript({ sessionId });
+      await handleGenerateWrapperScript({ sessionId }, server.getContext());
 
       // Verify code is accessible
       const generatedCode = session.state.generatedCode;
@@ -203,7 +210,10 @@ describe("Code Generation Integration Tests", () => {
 
   describe("Complete workflow integration", () => {
     it("should generate executable TypeScript code", async () => {
-      const result = await server.handleGenerateWrapperScript({ sessionId });
+      const result = await handleGenerateWrapperScript(
+        { sessionId },
+        server.getContext()
+      );
       const generatedCode = result.content?.[0]?.text as string;
       if (!generatedCode) {
         throw new Error("No generated code");
@@ -264,7 +274,10 @@ describe("Code Generation Integration Tests", () => {
         session.dagManager.addEdge(tokenNodeId, authNodeId);
       }
 
-      const result = await server.handleGenerateWrapperScript({ sessionId });
+      const result = await handleGenerateWrapperScript(
+        { sessionId },
+        server.getContext()
+      );
       const generatedCode = result.content?.[0]?.text as string;
       if (!generatedCode) {
         throw new Error("No generated code");
@@ -301,7 +314,10 @@ describe("Code Generation Integration Tests", () => {
         }
       );
 
-      const result = await server.handleGenerateWrapperScript({ sessionId });
+      const result = await handleGenerateWrapperScript(
+        { sessionId },
+        server.getContext()
+      );
       const generatedCode = result.content?.[0]?.text as string;
       if (!generatedCode) {
         throw new Error("No generated code");
@@ -317,7 +333,10 @@ describe("Code Generation Integration Tests", () => {
         key: "missing_api_key",
       });
 
-      const result = await server.handleGenerateWrapperScript({ sessionId });
+      const result = await handleGenerateWrapperScript(
+        { sessionId },
+        server.getContext()
+      );
       const generatedCode = result.content?.[0]?.text as string;
       if (!generatedCode) {
         throw new Error("No generated code");
@@ -335,21 +354,27 @@ describe("Code Generation Integration Tests", () => {
     it("should generate code quickly for typical sessions", async () => {
       const startTime = Date.now();
 
-      await server.handleGenerateWrapperScript({ sessionId });
+      await handleGenerateWrapperScript({ sessionId }, server.getContext());
 
       const duration = Date.now() - startTime;
       expect(duration).toBeLessThan(1000); // Should complete in under 1 second
     });
 
     it("should generate consistent code for the same session", async () => {
-      const result1 = await server.handleGenerateWrapperScript({ sessionId });
+      const result1 = await handleGenerateWrapperScript(
+        { sessionId },
+        server.getContext()
+      );
       const code1 = result1.content?.[0]?.text as string;
       if (!code1) {
         throw new Error("No generated code");
       }
 
       // Generate again
-      const result2 = await server.handleGenerateWrapperScript({ sessionId });
+      const result2 = await handleGenerateWrapperScript(
+        { sessionId },
+        server.getContext()
+      );
       const code2 = result2.content?.[0]?.text as string;
       if (!code2) {
         throw new Error("No generated code");
@@ -381,7 +406,10 @@ describe("Code Generation Integration Tests", () => {
       }
 
       const startTime = Date.now();
-      const result = await server.handleGenerateWrapperScript({ sessionId });
+      const result = await handleGenerateWrapperScript(
+        { sessionId },
+        server.getContext()
+      );
       const duration = Date.now() - startTime;
 
       expect(duration).toBeLessThan(2000); // Should handle large graphs efficiently
