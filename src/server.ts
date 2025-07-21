@@ -5,10 +5,11 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { identifyEndUrl } from "./agents/URLIdentificationAgent.js";
+import { type CLIArgs, initializeConfig } from "./config/index.js";
 // AuthenticationAnalyzer replaced with AuthenticationAgent
 import { CompletedSessionManager } from "./core/CompletedSessionManager.js";
 import { manualSessionManager } from "./core/ManualSessionManager.js";
-import { validateConfiguration } from "./core/providers/ProviderFactory.js";
+// validateConfiguration no longer needed - centralized config handles validation
 import { SessionManager } from "./core/SessionManager.js";
 import { registerTypeSafeDebugTools } from "./core/SimpleToolRegistry.js";
 import {
@@ -47,17 +48,7 @@ import {
 } from "./types/index.js";
 import { serverLogger } from "./utils/logger.js";
 
-/**
- * Command-line arguments interface
- */
-interface CLIArgs {
-  provider?: string;
-  apiKey?: string;
-  openaiApiKey?: string;
-  googleApiKey?: string;
-  model?: string;
-  help?: boolean;
-}
+// CLIArgs interface is now imported from config module
 
 /**
  * Parse command-line arguments
@@ -93,7 +84,7 @@ function parseArgument(arg: string, result: CLIArgs): void {
     if (arg.startsWith(prefix)) {
       const value = arg.split("=")[1];
       if (value) {
-        result[key] = value;
+        result[key as keyof CLIArgs] = value as never;
       }
       return;
     }
@@ -138,24 +129,7 @@ MCP Client Configuration:
 `);
 }
 
-/**
- * Global CLI configuration
- */
-let globalCLIConfig: CLIArgs = {};
-
-/**
- * Set global CLI configuration
- */
-export function setGlobalCLIConfig(config: CLIArgs): void {
-  globalCLIConfig = config;
-}
-
-/**
- * Get global CLI configuration
- */
-export function getGlobalCLIConfig(): CLIArgs {
-  return globalCLIConfig;
-}
+// Global CLI configuration functions removed - use centralized config instead
 
 /**
  * Harvest MCP Server
@@ -208,10 +182,7 @@ export class HarvestMCPServer {
   public getContext(): UnifiedToolContext {
     return this.unifiedContext;
   }
-  private cliConfig: CLIArgs;
-
-  constructor(cliConfig: CLIArgs = {}) {
-    this.cliConfig = cliConfig;
+  constructor() {
     this.sessionManager = new SessionManager();
     this.completedSessionManager = CompletedSessionManager.getInstance();
 
@@ -233,16 +204,8 @@ export class HarvestMCPServer {
       this.completedSessionManager
     );
 
-    // Set global CLI config for access by other modules
-    setGlobalCLIConfig(cliConfig);
-
-    // Also set on globalThis for LLMClient access
-    (
-      globalThis as typeof globalThis & { __harvestCLIConfig?: CLIArgs }
-    ).__harvestCLIConfig = cliConfig;
-
-    // Validate LLM configuration at startup (now includes CLI args)
-    this.validateEnvironmentOnStartup();
+    // Configuration is now centrally managed and already validated
+    // No need for global state pollution or manual validation
 
     this.server = new McpServer(
       {
@@ -273,41 +236,7 @@ export class HarvestMCPServer {
     this.setupErrorHandling();
   }
 
-  /**
-   * Validate environment configuration at startup and log warnings
-   */
-  private validateEnvironmentOnStartup(): void {
-    const config = validateConfiguration(this.cliConfig);
-
-    if (config.isConfigured) {
-      serverLogger.info(
-        {
-          configuredProviders: config.configuredProviders,
-          configurationSource: config.configurationSource,
-          warnings: config.warnings,
-        },
-        `LLM provider configuration validated (source: ${config.configurationSource})`
-      );
-
-      // Log any warnings about configuration
-      for (const warning of config.warnings) {
-        serverLogger.warn(warning);
-      }
-    } else {
-      serverLogger.warn(
-        {
-          availableProviders: config.availableProviders,
-          configuredProviders: config.configuredProviders,
-        },
-        "LLM provider not configured - AI-powered analysis features will be unavailable"
-      );
-
-      // Log setup instructions
-      config.recommendations.forEach((rec, index) => {
-        serverLogger.info(`Setup step ${index + 1}: ${rec}`);
-      });
-    }
-  }
+  // validateEnvironmentOnStartup removed - centralized config handles validation
 
   /**
    * Set up MCP tools
@@ -366,7 +295,7 @@ export class HarvestMCPServer {
     registerWorkflowTools(this.server, workflowToolContext);
 
     // System Tools
-    registerSystemTools(this.server, systemToolContext, this.cliConfig);
+    registerSystemTools(this.server, systemToolContext, {});
 
     // Authentication Tools
     registerAuthTools(this.server, authToolContext);
@@ -2060,7 +1989,7 @@ export class HarvestMCPServer {
   }
 }
 
-// Parse command-line arguments and start the server
+// Parse command-line arguments and initialize configuration
 const cliArgs = parseArgs(process.argv.slice(2));
 
 // Show help if requested
@@ -2069,40 +1998,32 @@ if (cliArgs.help) {
   process.exit(0);
 }
 
-// Validate and normalize CLI arguments
-if (cliArgs.provider) {
-  // Allow "google" as alias for "gemini"
-  if (cliArgs.provider === "google") {
-    cliArgs.provider = "gemini";
-  }
+// Initialize centralized configuration system
+try {
+  const config = initializeConfig({ cliArgs });
 
-  if (!["openai", "gemini"].includes(cliArgs.provider)) {
-    console.error(
-      `Error: Invalid provider "${cliArgs.provider}". Supported: openai, gemini (or google)`
-    );
-    process.exit(1);
-  }
-}
-
-// Log startup configuration
-if (Object.keys(cliArgs).length > 0) {
+  // Log startup configuration summary
   const configSummary = {
-    provider: cliArgs.provider,
+    provider: config.llm.provider,
     hasApiKey: !!(
-      cliArgs.apiKey ||
-      cliArgs.openaiApiKey ||
-      cliArgs.googleApiKey
+      config.llm.providers.openai.apiKey || config.llm.providers.gemini.apiKey
     ),
-    model: cliArgs.model,
+    model: config.llm.model,
+    maxSessions: config.session.maxSessions,
+    logLevel: config.logging.level,
   };
+
   serverLogger.info(
     { config: configSummary },
-    "Starting with CLI configuration"
+    "Starting Harvest MCP Server with validated configuration"
   );
+} catch (error) {
+  serverLogger.error({ error }, "Failed to initialize configuration");
+  process.exit(1);
 }
 
 // Start the server
-const server = new HarvestMCPServer(cliArgs);
+const server = new HarvestMCPServer();
 server.start().catch((error) => {
   serverLogger.error({ error }, "Failed to start server");
   process.exit(1);
