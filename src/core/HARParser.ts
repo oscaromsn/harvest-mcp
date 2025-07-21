@@ -22,6 +22,42 @@ import { expandTilde } from "../utils/pathUtils.js";
 
 const logger = createComponentLogger("har-parser");
 
+/**
+ * Create an empty AuthenticationAnalysis object
+ */
+function createEmptyAuthAnalysis(
+  recommendations: string[] = []
+): AuthenticationAnalysis {
+  return {
+    hasAuthentication: false,
+    primaryAuthType: "none",
+    authTypes: [],
+    authenticatedRequests: [],
+    unauthenticatedRequests: [],
+    failedAuthRequests: [],
+    tokens: [],
+    tokenLifecycle: {
+      isStatic: false,
+    },
+    authEndpoints: [],
+    authFlow: {
+      hasLoginFlow: false,
+      hasRefreshFlow: false,
+      hasLogoutFlow: false,
+      flowComplexity: "simple",
+    },
+    securityIssues: [],
+    recommendations,
+    codeGeneration: {
+      isReady: false,
+      requiredSetup: [],
+      supportedPatterns: [],
+      hardcodedTokens: [],
+      dynamicTokens: [],
+    },
+  };
+}
+
 // Default keywords to exclude from requests (analytics, tracking, etc.)
 const DEFAULT_EXCLUDED_KEYWORDS = [
   "google",
@@ -132,175 +168,20 @@ interface HARStats {
   authErrors: number;
 }
 
-// Local authentication analysis interface for HAR validation (legacy format)
-// DEPRECATED: LocalAuthenticationAnalysis is replaced by AuthenticationAnalysis from AuthenticationAgent
-// Kept for backward compatibility during migration
-interface LocalAuthenticationAnalysis {
-  hasAuthHeaders: boolean;
-  hasCookies: boolean;
-  hasTokens: boolean;
-  authErrors: number;
-  tokenPatterns: string[];
-  authTypes: string[];
-  issues: string[];
-  recommendations: string[];
-}
-
-// DEPRECATED: Old authentication analysis function - replaced by AuthenticationAgent
-/*
-function analyzeAuthentication(
-  entries: Array<{ request: unknown; response: unknown }>
-): LocalAuthenticationAnalysis {
-  const analysis: LocalAuthenticationAnalysis = {
-    hasAuthHeaders: false,
-    hasCookies: false,
-    hasTokens: false,
-    authErrors: 0,
-    tokenPatterns: [],
-    authTypes: [],
-    issues: [],
-    recommendations: [],
-  };
-
-  for (const entry of entries) {
-    const request = entry.request;
-    const response = entry.response;
-
-    if (!request || typeof request !== "object") {
-      continue;
-    }
-
-    const requestObj = request as { headers?: unknown[] };
-    if (!requestObj.headers) {
-      continue;
-    }
-
-    // Check for authentication headers
-    for (const header of requestObj.headers) {
-      if (!header || typeof header !== "object") {
-        continue;
-      }
-
-      const headerObj = header as { name?: string; value?: string };
-      const headerName = headerObj.name?.toLowerCase() || "";
-      const headerValue = headerObj.value || "";
-
-      if (headerName === "authorization") {
-        analysis.hasAuthHeaders = true;
-        if (headerValue.toLowerCase().startsWith("bearer")) {
-          analysis.authTypes.push("Bearer Token");
-          const token = headerValue.substring(7).trim();
-          if (token.length > 10) {
-            analysis.tokenPatterns.push(`${token.substring(0, 20)}...`);
-          }
-        } else if (headerValue.toLowerCase().startsWith("basic")) {
-          analysis.authTypes.push("Basic Auth");
-        }
-      } else if (headerName === "cookie") {
-        analysis.hasCookies = true;
-        analysis.authTypes.push("Session Cookies");
-      } else if (
-        headerName.includes("api-key") ||
-        headerName.includes("auth-token")
-      ) {
-        analysis.hasTokens = true;
-        analysis.authTypes.push("API Key");
-      }
-    }
-
-    // Check for authentication errors
-    if (response && typeof response === "object") {
-      const responseObj = response as { status?: number };
-      if (responseObj.status === 401 || responseObj.status === 403) {
-        analysis.authErrors++;
-      }
-    }
-
-    // Check for token-like parameters in URL
-    const requestObjWithUrl = requestObj as { url?: string };
-    if (requestObjWithUrl.url) {
-      const tokenParamPatterns = [
-        /[?&]token=([^&]+)/,
-        /[?&]api[_-]?key=([^&]+)/,
-        /[?&]auth=([^&]+)/,
-      ];
-      for (const pattern of tokenParamPatterns) {
-        const match = requestObjWithUrl.url.match(pattern);
-        if (match?.[1] && match[1].length > 10) {
-          analysis.hasTokens = true;
-          analysis.tokenPatterns.push(`${match[1].substring(0, 20)}...`);
-        }
-      }
-    }
-  }
-
-  // Remove duplicates
-  analysis.authTypes = [...new Set(analysis.authTypes)];
-  analysis.tokenPatterns = [...new Set(analysis.tokenPatterns)];
-
-  // Generate authentication-specific issues and recommendations
-  if (analysis.authErrors > 0) {
-    analysis.issues.push(
-      `Found ${analysis.authErrors} authentication errors (401/403 responses)`
-    );
-    analysis.recommendations.push(
-      "Generated code may fail due to authentication issues - verify token validity"
-    );
-  }
-
-  if (analysis.hasTokens && analysis.authErrors === 0) {
-    analysis.recommendations.push(
-      "Tokens detected in URLs - ensure these are not expired in generated code"
-    );
-  }
-
-  if (!analysis.hasAuthHeaders && !analysis.hasCookies && !analysis.hasTokens) {
-    // Check if these are likely public API endpoints before warning about authentication
-    const hasPublicApiPatterns = entries.some((entry) => {
-      const request = entry.request as { url?: string };
-      if (request.url) {
-        const url = request.url.toLowerCase();
-        return (
-          url.includes("/no-auth/") ||
-          url.includes("/public/") ||
-          url.includes("/open/") ||
-          // Legal/jurisprudence APIs are often public
-          (url.includes("jurisprudencia") && url.includes("/api/"))
-        );
-      }
-      return false;
-    });
-
-    if (hasPublicApiPatterns) {
-      // For public APIs, provide informational note instead of warning
-      analysis.recommendations.push(
-        "Public API endpoints detected - no authentication required for code generation"
-      );
-    } else {
-      analysis.issues.push("No authentication mechanisms detected");
-      analysis.recommendations.push(
-        "If API requires authentication, capture requests while authenticated"
-      );
-    }
-  }
-
-  return analysis;
-}
-*/
 
 /**
  * Assess quality based on captured statistics with authentication awareness
  */
 function assessQuality(
   stats: HARStats,
-  authAnalysis: LocalAuthenticationAnalysis
+  authErrors: number
 ): "excellent" | "good" | "poor" | "empty" {
   if (stats.relevantEntries === 0) {
     return "empty";
   }
 
   // Downgrade quality if there are authentication errors
-  if (authAnalysis.authErrors > 0) {
+  if (authErrors > 0) {
     return "poor";
   }
 
@@ -373,19 +254,6 @@ function addSpecificRecommendations(
   }
 }
 
-// DEPRECATED: LocalAuthenticationAnalysis is replaced by AuthenticationAnalysis from AuthenticationAgent
-// Kept for backward compatibility during migration
-interface LocalAuthenticationAnalysis {
-  hasAuthHeaders: boolean;
-  hasCookies: boolean;
-  hasTokens: boolean;
-  authErrors: number;
-  tokenPatterns: string[];
-  authTypes: string[];
-  issues: string[];
-  recommendations: string[];
-}
-
 /**
  * Create a temporary session object for authentication analysis
  * This allows the AuthenticationAgent to work with raw HAR data
@@ -454,16 +322,7 @@ function createTemporarySessionForAuth(
           tokenRequests: 0,
           authErrors: 0,
         },
-        authAnalysis: {
-          hasAuthHeaders: false,
-          hasCookies: false,
-          hasTokens: false,
-          authErrors: 0,
-          tokenPatterns: [],
-          authTypes: [],
-          issues: [],
-          recommendations: [],
-        },
+        authAnalysis: createEmptyAuthAnalysis(),
       },
     },
     state: {
@@ -477,113 +336,6 @@ function createTemporarySessionForAuth(
     createdAt: new Date(),
     lastActivity: new Date(),
   };
-}
-
-/**
- * Convert AuthenticationAnalysis to legacy format for backward compatibility
- */
-function convertToLegacyAuthAnalysis(
-  authAnalysis: AuthenticationAnalysis
-): LocalAuthenticationAnalysis {
-  const hasAuthHeaders =
-    authAnalysis.authTypes.includes("bearer_token") ||
-    authAnalysis.authTypes.includes("api_key") ||
-    authAnalysis.authTypes.includes("custom_header");
-
-  const hasCookies = authAnalysis.authTypes.includes("session_cookie");
-
-  const hasTokens = authAnalysis.tokens.length > 0;
-
-  return {
-    hasAuthHeaders,
-    hasCookies,
-    hasTokens,
-    authErrors: authAnalysis.failedAuthRequests.length,
-    tokenPatterns: authAnalysis.tokens
-      .map((t) => t.value)
-      .filter((v, i, arr) => arr.indexOf(v) === i),
-    authTypes: authAnalysis.authTypes,
-    issues: authAnalysis.securityIssues,
-    recommendations: authAnalysis.codeGeneration.requiredSetup,
-  };
-}
-
-/**
- * DEPRECATED: Legacy authentication analysis function
- * Kept for fallback purposes only
- */
-function analyzeAuthenticationLegacy(
-  entries: Array<{ request: unknown; response: unknown }>
-): LocalAuthenticationAnalysis {
-  const analysis: LocalAuthenticationAnalysis = {
-    hasAuthHeaders: false,
-    hasCookies: false,
-    hasTokens: false,
-    authErrors: 0,
-    tokenPatterns: [],
-    authTypes: [],
-    issues: [],
-    recommendations: [],
-  };
-
-  for (const entry of entries) {
-    const request = entry.request;
-    const response = entry.response;
-
-    if (!request || typeof request !== "object") {
-      continue;
-    }
-
-    const requestObj = request as { headers?: unknown[] };
-    if (!requestObj.headers) {
-      continue;
-    }
-
-    // Check for authentication headers
-    for (const header of requestObj.headers) {
-      if (!header || typeof header !== "object") {
-        continue;
-      }
-
-      const headerObj = header as { name?: string; value?: string };
-      const name = headerObj.name?.toLowerCase();
-
-      if (name === "authorization") {
-        analysis.hasAuthHeaders = true;
-        analysis.authTypes.push("bearer_token");
-      } else if (name === "cookie") {
-        analysis.hasCookies = true;
-        analysis.authTypes.push("cookie_based");
-      } else if (name?.includes("api-key") || name?.includes("token")) {
-        analysis.hasTokens = true;
-        analysis.authTypes.push("api_key_header");
-        if (headerObj.value) {
-          analysis.tokenPatterns.push(headerObj.value);
-        }
-      }
-    }
-
-    // Check response for authentication errors
-    if (typeof response === "object" && response) {
-      const responseObj = response as { status?: number };
-      if (responseObj.status === 401 || responseObj.status === 403) {
-        analysis.authErrors++;
-      }
-    }
-  }
-
-  // Add recommendations based on findings
-  if (!analysis.hasAuthHeaders && !analysis.hasCookies && !analysis.hasTokens) {
-    analysis.recommendations.push(
-      "Public API endpoints detected - no authentication required for code generation"
-    );
-  } else {
-    analysis.recommendations.push(
-      "Authentication detected - ensure tokens are handled dynamically in generated code"
-    );
-  }
-
-  return analysis;
 }
 
 /**
@@ -607,7 +359,7 @@ export async function validateHARContent(
     tokenRequests: number;
     authErrors: number;
   };
-  authAnalysis: LocalAuthenticationAnalysis;
+  authAnalysis: AuthenticationAnalysis;
 }> {
   const issues: string[] = [];
   const recommendations: string[] = [];
@@ -627,16 +379,9 @@ export async function validateHARContent(
   // Basic structure validation
   if (!harData.log) {
     issues.push("HAR file is missing 'log' property");
-    const emptyAuthAnalysis: LocalAuthenticationAnalysis = {
-      hasAuthHeaders: false,
-      hasCookies: false,
-      hasTokens: false,
-      authErrors: 0,
-      tokenPatterns: [],
-      authTypes: [],
-      issues: [],
-      recommendations: [],
-    };
+    const emptyAuthAnalysis = createEmptyAuthAnalysis([
+      "Please ensure you're exporting a valid HAR file from browser dev tools",
+    ]);
     return {
       isValid: false,
       quality: "empty",
@@ -657,16 +402,7 @@ export async function validateHARContent(
     recommendations.push(
       "Check that network recording was enabled in browser dev tools"
     );
-    const emptyAuthAnalysis: LocalAuthenticationAnalysis = {
-      hasAuthHeaders: false,
-      hasCookies: false,
-      hasTokens: false,
-      authErrors: 0,
-      tokenPatterns: [],
-      authTypes: [],
-      issues: [],
-      recommendations: [],
-    };
+    const emptyAuthAnalysis = createEmptyAuthAnalysis();
     return {
       isValid: false,
       quality: "empty",
@@ -737,19 +473,15 @@ export async function validateHARContent(
     }
   }
 
-  // Perform unified authentication analysis using AuthenticationAgent
-  let authAnalysis: AuthenticationAnalysis | null = null;
-  let legacyAuthAnalysis: LocalAuthenticationAnalysis;
+  // Perform authentication analysis using AuthenticationAgent
+  let authAnalysis: AuthenticationAnalysis;
 
   try {
     // Create a temporary session for authentication analysis
     const tempSession = createTemporarySessionForAuth(entries);
     authAnalysis = await analyzeAuthenticationAgent(tempSession);
 
-    // Convert to legacy format for backward compatibility
-    legacyAuthAnalysis = convertToLegacyAuthAnalysis(authAnalysis);
-
-    logger.debug("Unified authentication analysis completed", {
+    logger.debug("Authentication analysis completed", {
       hasAuthentication: authAnalysis.hasAuthentication,
       primaryAuthType: authAnalysis.primaryAuthType,
       authTypesCount: authAnalysis.authTypes.length,
@@ -757,15 +489,19 @@ export async function validateHARContent(
       failedAuthRequestsCount: authAnalysis.failedAuthRequests.length,
     });
   } catch (error) {
-    // Fallback to legacy authentication analysis if agent fails
-    logger.warn("AuthenticationAgent failed, falling back to legacy analysis", {
+    logger.warn("AuthenticationAgent failed, using default analysis", {
       error: error instanceof Error ? error.message : "Unknown error",
+      entriesCount: entries.length,
     });
-    legacyAuthAnalysis = analyzeAuthenticationLegacy(entries);
+
+    // Provide default analysis if agent fails
+    authAnalysis = createEmptyAuthAnalysis([
+      "Authentication analysis failed - review HAR file manually",
+    ]);
   }
 
   // Quality assessment with authentication awareness
-  const quality = assessQuality(stats, legacyAuthAnalysis);
+  const quality = assessQuality(stats, authAnalysis.failedAuthRequests.length);
 
   // Add quality-specific recommendations
   addQualityRecommendations(quality, stats, issues, recommendations);
@@ -773,14 +509,13 @@ export async function validateHARContent(
   // Add specific recommendations based on findings
   addSpecificRecommendations(stats, quality, recommendations);
 
-  // Add authentication-specific issues and recommendations
-  issues.push(...legacyAuthAnalysis.issues);
-  recommendations.push(...legacyAuthAnalysis.recommendations);
+  // Add authentication-specific recommendations
+  recommendations.push(...authAnalysis.recommendations);
 
   // Add authentication summary to recommendations if auth detected
-  if (legacyAuthAnalysis.authTypes.length > 0) {
+  if (authAnalysis.hasAuthentication && authAnalysis.authTypes.length > 0) {
     recommendations.push(
-      `Authentication detected: ${legacyAuthAnalysis.authTypes.join(", ")}`
+      `Authentication detected: ${authAnalysis.authTypes.join(", ")}`
     );
   }
 
@@ -790,7 +525,7 @@ export async function validateHARContent(
     issues,
     recommendations,
     stats,
-    authAnalysis: legacyAuthAnalysis,
+    authAnalysis,
   };
 }
 
