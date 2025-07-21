@@ -1005,6 +1005,88 @@ export type {
   SessionStopResult,
 } from "../browser/types.js";
 
+// ========== Tool Handler Context Types ==========
+
+// Forward declarations to avoid circular dependencies
+export interface SessionManager {
+  createSession(params: SessionStartParams): Promise<string>;
+  getSession(sessionId: string): HarvestSession | undefined;
+  listSessions(): SessionInfo[];
+  deleteSession(sessionId: string): boolean;
+  isComplete(sessionId: string): boolean;
+  setActionUrl(sessionId: string, url: string): void;
+  setMasterNodeId(sessionId: string, nodeId: string): void;
+  addLog(
+    sessionId: string,
+    level: "info" | "debug" | "error" | "warn",
+    message: string,
+    data?: unknown
+  ): void;
+  updateSessionState(sessionId: string, updates: Partial<SessionState>): void;
+  syncCompletionState(sessionId: string): void;
+  analyzeCompletionState(sessionId: string): {
+    isComplete: boolean;
+    blockers: string[];
+    recommendations: string[];
+    diagnostics: {
+      hasMasterNode: boolean;
+      hasActionUrl: boolean;
+      dagComplete: boolean;
+      queueEmpty: boolean;
+      totalNodes: number;
+      unresolvedNodes: number;
+      pendingInQueue: number;
+    };
+  };
+  getStats(): {
+    total: number;
+    complete: number;
+    processing: number;
+    failed: number;
+  };
+}
+
+export interface CompletedSessionManager {
+  getSession(sessionId: string): HarvestSession | undefined;
+  listSessions(): SessionInfo[];
+  deleteSession(sessionId: string): boolean;
+  getGeneratedCode(sessionId: string): string | undefined;
+  setGeneratedCode(sessionId: string, code: string): void;
+  getInstance(): CompletedSessionManager;
+  cacheCompletedSession(
+    session: HarvestSession,
+    analysis: {
+      isComplete: boolean;
+      blockers: string[];
+      recommendations: string[];
+      diagnostics: {
+        hasMasterNode: boolean;
+        hasActionUrl: boolean;
+        dagComplete: boolean;
+        queueEmpty: boolean;
+        totalNodes: number;
+        unresolvedNodes: number;
+        pendingInQueue: number;
+      };
+    }
+  ): Promise<{
+    sessionId: string;
+    completedAt: string;
+    prompt: string;
+    artifacts: Record<string, unknown>;
+    metadata: Record<string, unknown>;
+  }>;
+}
+
+/**
+ * Shared context for MCP tool handlers to access server dependencies
+ * without tight coupling to the HarvestMCPServer class
+ */
+export interface ToolHandlerContext {
+  sessionManager: SessionManager;
+  completedSessionManager: CompletedSessionManager;
+}
+
 // ========== Internal Tool Communication Types ==========
 
 /**
