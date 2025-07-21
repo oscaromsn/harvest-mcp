@@ -170,10 +170,11 @@ export async function classifyParameters(
       return [];
     }
 
-    // Phase 1: Consistency analysis across session (run first to inform heuristics)
-    const consistencyResults = analyzeParameterConsistency(
+    // Phase 1: Enhanced workflow-aware consistency analysis
+    const consistencyResults = analyzeParameterConsistencyWithWorkflows(
       allParameters,
-      session
+      session,
+      request
     );
 
     // Phase 2: Heuristic analysis with consistency metrics
@@ -669,13 +670,203 @@ function analyzeParameterConsistency(
 }
 
 /**
- * Merge heuristic and consistency analysis results
+ * Enhanced workflow-aware parameter consistency analysis
+ * This considers workflow context to improve classification accuracy
+ */
+function analyzeParameterConsistencyWithWorkflows(
+  parameters: Array<{ name: string; value: string; location: string }>,
+  session: HarvestSession,
+  currentRequest: RequestModel
+): Map<
+  string,
+  {
+    occurrenceCount: number;
+    totalRequests: number;
+    consistencyScore: number;
+    workflowContext?: {
+      workflowId?: string;
+      workflowRequests: number;
+      crossWorkflowConsistency: number;
+      workflowSpecific: boolean;
+    };
+  }
+> {
+  // First, get basic consistency results
+  const basicConsistency = analyzeParameterConsistency(parameters, session);
+
+  // If no workflow groups available, return basic results with empty workflow context
+  if (
+    !session.state.workflowGroups ||
+    session.state.workflowGroups.size === 0
+  ) {
+    const enhancedResults = new Map();
+    for (const [key, value] of basicConsistency) {
+      enhancedResults.set(key, {
+        ...value,
+        workflowContext: {
+          workflowRequests: 0,
+          crossWorkflowConsistency: 0,
+          workflowSpecific: false,
+        },
+      });
+    }
+    return enhancedResults;
+  }
+
+  // Find which workflow this request belongs to
+  const currentRequestKey = `${currentRequest.method.toUpperCase()}:${currentRequest.url}`;
+  let currentWorkflowId: string | undefined;
+
+  for (const [workflowId, workflow] of session.state.workflowGroups) {
+    if (workflow.nodeIds.has(currentRequestKey)) {
+      currentWorkflowId = workflowId;
+      break;
+    }
+  }
+
+  const enhancedResults = new Map();
+
+  for (const param of parameters) {
+    const basicResult = basicConsistency.get(param.name);
+    if (!basicResult) continue;
+
+    let workflowContext = {
+      workflowId: currentWorkflowId,
+      workflowRequests: 0,
+      crossWorkflowConsistency: 0,
+      workflowSpecific: false,
+    };
+
+    if (currentWorkflowId) {
+      const currentWorkflow =
+        session.state.workflowGroups.get(currentWorkflowId);
+      if (currentWorkflow) {
+        // Analyze parameter usage within this specific workflow
+        const workflowAnalysis = analyzeParameterInWorkflow(
+          param,
+          currentWorkflow,
+          session
+        );
+
+        workflowContext = {
+          workflowId: currentWorkflowId,
+          workflowRequests: workflowAnalysis.workflowRequests,
+          crossWorkflowConsistency: workflowAnalysis.crossWorkflowConsistency,
+          workflowSpecific: workflowAnalysis.isWorkflowSpecific,
+        };
+      }
+    }
+
+    enhancedResults.set(param.name, {
+      ...basicResult,
+      workflowContext,
+    });
+
+    logger.debug("Workflow-aware parameter analysis", {
+      parameterName: param.name,
+      workflowId: currentWorkflowId,
+      workflowSpecific: workflowContext.workflowSpecific,
+      crossWorkflowConsistency: workflowContext.crossWorkflowConsistency,
+    });
+  }
+
+  return enhancedResults;
+}
+
+/**
+ * Analyze how a parameter behaves within a specific workflow
+ */
+function analyzeParameterInWorkflow(
+  parameter: { name: string; value: string; location: string },
+  workflow: import("../types/index.js").WorkflowGroup,
+  session: HarvestSession
+): {
+  workflowRequests: number;
+  crossWorkflowConsistency: number;
+  isWorkflowSpecific: boolean;
+} {
+  let workflowRequests = 0;
+  let totalWorkflowOccurrences = 0;
+  let crossWorkflowOccurrences = 0;
+  let totalSessionOccurrences = 0;
+
+  // Count parameter usage within this workflow
+  for (const nodeId of workflow.nodeIds) {
+    // Find requests matching this workflow node
+    const matchingRequests = session.harData.requests.filter(
+      (req) => `${req.method.toUpperCase()}:${req.url}` === nodeId
+    );
+
+    for (const request of matchingRequests) {
+      workflowRequests++;
+      const requestParams = extractAllParameters(request);
+
+      const hasParameter = requestParams.some(
+        (p) => p.name === parameter.name && p.value === parameter.value
+      );
+
+      if (hasParameter) {
+        totalWorkflowOccurrences++;
+      }
+    }
+  }
+
+  // Count parameter usage across all workflows
+  for (const request of session.harData.requests) {
+    const requestParams = extractAllParameters(request);
+    const hasParameter = requestParams.some(
+      (p) => p.name === parameter.name && p.value === parameter.value
+    );
+
+    if (hasParameter) {
+      totalSessionOccurrences++;
+
+      // Check if this request belongs to a different workflow
+      const requestKey = `${request.method.toUpperCase()}:${request.url}`;
+      const belongsToCurrentWorkflow = workflow.nodeIds.has(requestKey);
+
+      if (!belongsToCurrentWorkflow) {
+        crossWorkflowOccurrences++;
+      }
+    }
+  }
+
+  // Calculate cross-workflow consistency
+  const crossWorkflowConsistency =
+    totalSessionOccurrences > 0
+      ? (totalSessionOccurrences - crossWorkflowOccurrences) /
+        totalSessionOccurrences
+      : 0;
+
+  // Determine if parameter is workflow-specific
+  const isWorkflowSpecific =
+    crossWorkflowOccurrences === 0 && totalWorkflowOccurrences > 0;
+
+  return {
+    workflowRequests,
+    crossWorkflowConsistency,
+    isWorkflowSpecific,
+  };
+}
+
+/**
+ * Merge heuristic and consistency analysis results with workflow awareness
  */
 function mergeAnalysisResults(
   heuristicResults: ClassifiedParameter[],
   consistencyResults: Map<
     string,
-    { occurrenceCount: number; totalRequests: number; consistencyScore: number }
+    {
+      occurrenceCount: number;
+      totalRequests: number;
+      consistencyScore: number;
+      workflowContext?: {
+        workflowId?: string;
+        workflowRequests: number;
+        crossWorkflowConsistency: number;
+        workflowSpecific: boolean;
+      };
+    }
   >
 ): ClassifiedParameter[] {
   return heuristicResults.map((result) => {
@@ -685,32 +876,83 @@ function mergeAnalysisResults(
       result.metadata.totalRequests = consistency.totalRequests;
       result.metadata.consistencyScore = consistency.consistencyScore;
 
-      // High-priority rule: If parameter is highly consistent and occurs frequently,
-      // it's likely a session constant or static constant
+      // Enhanced workflow-aware classification
+      const workflowContext = consistency.workflowContext;
+
+      // High-priority rule: Use workflow context to improve classification accuracy
       if (consistency.consistencyScore > 0.9 && consistency.totalRequests > 2) {
         const nameLower = result.name.toLowerCase();
 
-        // Check if it's a session-related parameter
+        // Workflow-specific parameters are likely user inputs for that specific workflow
         if (
-          nameLower.includes("session") ||
-          nameLower.includes("token") ||
-          nameLower.includes("juristkn") ||
-          nameLower.includes("csrf")
+          workflowContext?.workflowSpecific &&
+          workflowContext.crossWorkflowConsistency < 0.3
         ) {
-          result.classification = "sessionConstant";
-          result.confidence = 0.95;
-          result.source = "consistency_analysis";
-          logger.info(
-            "Parameter reclassified as sessionConstant due to high consistency",
-            {
-              parameterName: result.name,
-              consistencyScore: consistency.consistencyScore,
-              totalRequests: consistency.totalRequests,
-            }
-          );
+          // Parameter only appears in one workflow - likely user input for that workflow
+          result.classification = "userInput";
+          result.confidence = Math.min(result.confidence + 0.2, 1.0);
+          result.metadata.domainContext = `workflow-specific:${workflowContext.workflowId}`;
+
+          logger.debug("Workflow-specific parameter classified as userInput", {
+            parameterName: result.name,
+            workflowId: workflowContext.workflowId,
+            confidence: result.confidence,
+          });
         }
-        // Check if it's static coordinate or configuration parameter
+        // Parameters consistent across multiple workflows are likely session constants
         else if (
+          workflowContext &&
+          workflowContext.crossWorkflowConsistency > 0.8
+        ) {
+          // Check if it's a session-related parameter
+          if (
+            nameLower.includes("session") ||
+            nameLower.includes("token") ||
+            nameLower.includes("juristkn") ||
+            nameLower.includes("csrf")
+          ) {
+            result.classification = "sessionConstant";
+            result.confidence = Math.min(result.confidence + 0.3, 1.0);
+            result.metadata.domainContext = "cross-workflow-session";
+
+            logger.debug(
+              "Cross-workflow parameter classified as sessionConstant",
+              {
+                parameterName: result.name,
+                crossWorkflowConsistency:
+                  workflowContext.crossWorkflowConsistency,
+                confidence: result.confidence,
+              }
+            );
+          }
+        }
+        // Fallback to legacy classification
+        else {
+          // Check if it's a session-related parameter
+          if (
+            nameLower.includes("session") ||
+            nameLower.includes("token") ||
+            nameLower.includes("juristkn") ||
+            nameLower.includes("csrf")
+          ) {
+            result.classification = "sessionConstant";
+            result.confidence = 0.95;
+            result.source = "consistency_analysis";
+            result.metadata.domainContext = "legacy-session";
+
+            logger.info(
+              "Parameter reclassified as sessionConstant due to high consistency",
+              {
+                parameterName: result.name,
+                consistencyScore: consistency.consistencyScore,
+                totalRequests: consistency.totalRequests,
+              }
+            );
+          }
+        }
+
+        // Check if it's static coordinate or configuration parameter (legacy fallback)
+        if (
           (nameLower === "latitude" && result.value === "0") ||
           (nameLower === "longitude" && result.value === "0") ||
           nameLower.includes("version") ||
