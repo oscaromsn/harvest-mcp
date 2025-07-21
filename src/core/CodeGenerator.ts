@@ -1977,7 +1977,7 @@ function generateWorkflowAPIClientClass(
       `        result = await this.execute${toPascalCase(workflow.id)}(params);`
     );
     parts.push(
-      "        requestCount = 1; // TODO: Count actual requests in workflow"
+      `        requestCount = ${workflow.endpoints.length}; // Number of endpoints in workflow`
     );
     parts.push("        break;");
     parts.push("");
