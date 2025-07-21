@@ -1,6 +1,4 @@
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { z } from "zod";
 import {
   calculateApiPatternScore,
   calculateKeywordRelevance,
@@ -1480,7 +1478,9 @@ function findRequestByFlexibleUrl(
 ): RequestModel | undefined {
   // Try exact match first
   let match = requests.find((r) => r.url === targetUrl);
-  if (match) return match;
+  if (match) {
+    return match;
+  }
 
   // Try URL without query parameters
   try {
@@ -1496,7 +1496,9 @@ function findRequestByFlexibleUrl(
         return false;
       }
     });
-    if (match) return match;
+    if (match) {
+      return match;
+    }
   } catch {
     // If URL parsing fails, fall back to partial matching
   }
@@ -1504,270 +1506,5 @@ function findRequestByFlexibleUrl(
   // Try partial matching
   return requests.find(
     (r) => r.url.includes(targetUrl) || targetUrl.includes(r.url)
-  );
-}
-
-/**
- * Register debug tools with the MCP server
- */
-export function registerDebugTools(
-  server: McpServer,
-  harvestServer: any
-): void {
-  server.tool(
-    "debug_get_unresolved_nodes",
-    "Get a list of all nodes in the dependency graph that still have unresolved dynamic parts. Useful for debugging analysis issues.",
-    {
-      sessionId: z
-        .string()
-        .uuid()
-        .describe(
-          "UUID of the session to inspect. Shows which nodes still need processing and why analysis isn't complete."
-        ),
-    },
-    async (params) => harvestServer.handleGetUnresolvedNodes(params)
-  );
-
-  server.tool(
-    "debug_get_node_details",
-    "Get detailed information about a specific node in the dependency graph. Shows request details, dependencies, and processing status.",
-    {
-      sessionId: z
-        .string()
-        .uuid()
-        .describe("UUID of the session containing the node to inspect."),
-      nodeId: z
-        .string()
-        .uuid()
-        .describe(
-          "UUID of the specific node to examine. Use debug_get_unresolved_nodes to find node IDs."
-        ),
-    },
-    async (params) => harvestServer.handleGetNodeDetails(params)
-  );
-
-  server.tool(
-    "debug_list_all_requests",
-    "Get the filtered list of all requests from the HAR file available for analysis. Shows URLs, methods, and basic metadata.",
-    {
-      sessionId: z
-        .string()
-        .uuid()
-        .describe(
-          "UUID of the session to inspect. Lists all HTTP requests found in the HAR file that are available for analysis."
-        ),
-    },
-    async (params) => harvestServer.handleListAllRequests(params)
-  );
-
-  server.tool(
-    "debug_force_dependency",
-    "Manually create a dependency link between two nodes in the DAG to override automatic analysis. Use when automatic dependency detection fails.",
-    {
-      sessionId: z
-        .string()
-        .uuid()
-        .describe("UUID of the session containing the nodes to link."),
-      consumerNodeId: z
-        .string()
-        .uuid()
-        .describe(
-          "UUID of the node that depends on data from another node. This node will consume the provided dynamic part."
-        ),
-      providerNodeId: z
-        .string()
-        .uuid()
-        .describe(
-          "UUID of the node that provides data to the consumer node. This node's response will be analyzed for the dynamic part."
-        ),
-      providedPart: z
-        .string()
-        .describe(
-          "Name of the dynamic part that the provider node resolves for the consumer."
-        ),
-    },
-    async (params) => harvestServer.handleForceDependency(params)
-  );
-
-  server.tool(
-    "debug_set_master_node",
-    "Manually set the master node and action URL when automatic URL identification fails. This unblocks stuck analysis workflows by allowing manual specification of the target endpoint.",
-    {
-      sessionId: z
-        .string()
-        .uuid()
-        .describe("UUID of the session to configure."),
-      url: z
-        .string()
-        .describe(
-          "The target URL to use as the main action endpoint. Must exist in the HAR data."
-        ),
-    },
-    async (params) => harvestServer.handleSetMasterNode(params)
-  );
-
-  server.tool(
-    "debug_get_completion_blockers",
-    "Get detailed information about what's preventing analysis completion or code generation. Provides actionable recommendations for resolving blockers.",
-    {
-      sessionId: z
-        .string()
-        .uuid()
-        .describe(
-          "UUID of the session to analyze for completion blockers. Provides specific reasons and recommendations for resolving issues."
-        ),
-    },
-    async (params) => harvestServer.handleGetCompletionBlockers(params)
-  );
-
-  server.tool(
-    "debug_preview_har",
-    "Preview and analyze a HAR file without starting a session. Shows quality metrics, validation issues, and basic statistics.",
-    {
-      harPath: z.string().describe("Path to the HAR file to preview"),
-      showUrls: z
-        .boolean()
-        .optional()
-        .describe("Whether to include detailed URL information"),
-      showAuth: z
-        .boolean()
-        .optional()
-        .describe("Whether to include authentication analysis"),
-    },
-    async (params) => harvestServer.handlePreviewHar(params)
-  );
-
-  server.tool(
-    "debug_test_url_identification",
-    "Test URL identification heuristics against a HAR file with a given prompt. Useful for debugging automatic URL selection.",
-    {
-      harPath: z.string().describe("Path to the HAR file to analyze"),
-      prompt: z
-        .string()
-        .describe("Description of the target action to find URLs for"),
-      topN: z
-        .number()
-        .optional()
-        .describe("Number of top candidates to return (default: 5)"),
-    },
-    async (params) => harvestServer.handleTestUrlIdentification(params)
-  );
-
-  server.tool(
-    "debug_analyze_parameters",
-    "Analyze parameters from HAR file requests to understand their patterns and predict classifications.",
-    {
-      harPath: z.string().describe("Path to the HAR file to analyze"),
-      url: z
-        .string()
-        .optional()
-        .describe("Optional specific URL to focus analysis on"),
-    },
-    async (params) => harvestServer.handleAnalyzeParameters(params)
-  );
-
-  server.tool(
-    "debug_override_parameter_classification",
-    "Manually override the classification of a parameter in a session. Useful when automatic classification is incorrect.",
-    {
-      sessionId: z.string().uuid().describe("UUID of the session to modify"),
-      nodeId: z
-        .string()
-        .uuid()
-        .describe("UUID of the node containing the parameter"),
-      parameterValue: z.string().describe("The parameter value to reclassify"),
-      newClassification: z
-        .enum([
-          "userInput",
-          "sessionConstant",
-          "staticConstant",
-          "dynamic",
-          "optional",
-        ])
-        .describe("The new classification for the parameter"),
-      reasoning: z
-        .string()
-        .optional()
-        .describe("Optional explanation for the override"),
-    },
-    async (params) =>
-      harvestServer.handleOverrideParameterClassification(params)
-  );
-
-  server.tool(
-    "debug_batch_classify_parameters",
-    "Manually classify multiple parameters at once using pattern matching.",
-    {
-      sessionId: z.string().uuid().describe("UUID of the session to modify"),
-      classifications: z
-        .array(
-          z.object({
-            pattern: z
-              .string()
-              .describe("Regex pattern to match parameter names or values"),
-            classification: z
-              .enum([
-                "userInput",
-                "sessionConstant",
-                "staticConstant",
-                "dynamic",
-                "optional",
-              ])
-              .describe("Classification to apply to matching parameters"),
-            reasoning: z
-              .string()
-              .optional()
-              .describe("Optional reasoning for this classification"),
-          })
-        )
-        .describe("List of classification rules to apply"),
-    },
-    async (params) => harvestServer.handleBatchClassifyParameters(params)
-  );
-
-  server.tool(
-    "debug_skip_node",
-    "Mark a node as optional/skippable in the dependency graph. Useful for bypassing problematic nodes.",
-    {
-      sessionId: z.string().uuid().describe("UUID of the session"),
-      nodeId: z.string().uuid().describe("UUID of the node to skip"),
-      reason: z.string().describe("Reason for skipping this node"),
-    },
-    async (params) => harvestServer.handleSkipNode(params)
-  );
-
-  server.tool(
-    "debug_inject_response",
-    "Manually inject a response for a node to unblock analysis. Useful for nodes that cannot be resolved automatically.",
-    {
-      sessionId: z.string().uuid().describe("UUID of the session"),
-      nodeId: z
-        .string()
-        .uuid()
-        .describe("UUID of the node to inject response for"),
-      responseData: z
-        .record(z.unknown())
-        .describe("Response data to inject (as JSON object)"),
-      extractedParts: z
-        .record(z.string())
-        .optional()
-        .describe("Optional mapping of extracted variable names to values"),
-    },
-    async (params) => harvestServer.handleInjectResponse(params)
-  );
-
-  server.tool(
-    "debug_reset_analysis",
-    "Reset the analysis state for a session while preserving the HAR data. Allows restarting analysis with different parameters.",
-    {
-      sessionId: z.string().uuid().describe("UUID of the session to reset"),
-      preserveManualOverrides: z
-        .boolean()
-        .optional()
-        .describe(
-          "Whether to preserve manual parameter classifications (default: true)"
-        ),
-    },
-    async (params) => harvestServer.handleResetAnalysis(params)
   );
 }
