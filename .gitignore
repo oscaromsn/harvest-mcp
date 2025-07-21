@@ -39,7 +39,9 @@ html/**
 # docs & dev artifacts
 **/todo.md
 tests/fixtures/test-data/**
+tests/investigation/**
 issues/**
+root_cause_analysis_report.md
 
 # others
 *.local.json
