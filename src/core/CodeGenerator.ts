@@ -10,6 +10,8 @@ import {
   type TokenInfo,
 } from "../types/index.js";
 import { createComponentLogger } from "../utils/logger.js";
+import { ErrorCodeGenerator } from "./ErrorHandlingTemplate.js";
+import { FetchCodeGenerator } from "./FetchTemplate.js";
 
 const logger = createComponentLogger("code-generator");
 
@@ -1958,7 +1960,7 @@ function generateWorkflowAPIClientClass(
   parts.push("");
   parts.push("    if (!workflow) {");
   parts.push(
-    "      throw new Error(`Workflow '${workflowId}' not found. Available: ${Array.from(this.workflows.keys()).join(', ')}`);"
+    `      throw new Error(\`Workflow '\${workflowId}' not found. Available: \${Array.from(this.workflows.keys()).join(', ')}\`);`
   );
   parts.push("    }");
   parts.push("");
@@ -1982,9 +1984,7 @@ function generateWorkflowAPIClientClass(
   }
 
   parts.push("      default:");
-  parts.push(
-    "        throw new Error(`Workflow implementation not found: ${workflowId}`);"
-  );
+  parts.push(`        ${ErrorCodeGenerator.workflowNotFound("workflowId")}`);
   parts.push("    }");
   parts.push("");
   parts.push("    const executionTime = Date.now() - startTime;");
@@ -2041,7 +2041,7 @@ function generateWorkflowMethod(
   // Get the master node for this workflow
   const masterNode = session.dagManager.getNode(workflow.masterNodeId);
 
-  if (masterNode && masterNode.content.key) {
+  if (masterNode?.content.key) {
     const request = masterNode.content.key as RequestModel;
 
     // Generate URL construction
@@ -2070,7 +2070,12 @@ function generateWorkflowMethod(
 
     parts.push("");
     parts.push(
-      "    const response = await fetch(`${baseUrl}?${searchParams.toString()}`, {"
+      "    " +
+        FetchCodeGenerator.withQueryParams(
+          "response",
+          "baseUrl",
+          "searchParams.toString()"
+        )
     );
     parts.push(`      method: '${request.method}',`);
     parts.push("      headers: {");
@@ -2090,9 +2095,7 @@ function generateWorkflowMethod(
     parts.push("    });");
     parts.push("");
     parts.push("    if (!response.ok) {");
-    parts.push(
-      "      throw new Error(`${workflow.name} failed: ${response.status} ${response.statusText}`);"
-    );
+    parts.push(`      ${ErrorCodeGenerator.workflowFailed("workflow")}`);
     parts.push("    }");
     parts.push("");
     parts.push("    return await response.json();");
@@ -2438,7 +2441,12 @@ function generateSessionAwareAPIMethods(
   parts.push("");
   parts.push("    // Make the request");
   parts.push(
-    "    const response = await fetch(`${baseUrl}?${searchParams.toString()}`, {"
+    "    " +
+      FetchCodeGenerator.withQueryParams(
+        "response",
+        "baseUrl",
+        "searchParams.toString()"
+      )
   );
   parts.push(`      method: '${request.method}',`);
   parts.push("      headers: {");
@@ -2463,9 +2471,7 @@ function generateSessionAwareAPIMethods(
   parts.push("    });");
   parts.push("");
   parts.push("    if (!response.ok) {");
-  parts.push(
-    "      throw new Error(`API request failed: ${response.status} ${response.statusText}`);"
-  );
+  parts.push(`      ${ErrorCodeGenerator.apiRequestFailed()}`);
   parts.push("    }");
   parts.push("");
   parts.push("    return await response.json();");
