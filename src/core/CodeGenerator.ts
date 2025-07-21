@@ -10,8 +10,8 @@ import {
   type TokenInfo,
 } from "../types/index.js";
 import { createComponentLogger } from "../utils/logger.js";
-import { ErrorCodeGenerator } from "./ErrorHandlingTemplate.js";
-import { FetchCodeGenerator } from "./FetchTemplate.js";
+import { workflowNotFound, workflowFailed, apiRequestFailed } from "./ErrorHandlingTemplate.js";
+import { fetchWithQueryParams } from "./FetchTemplate.js";
 
 const logger = createComponentLogger("code-generator");
 
@@ -1984,7 +1984,7 @@ function generateWorkflowAPIClientClass(
   }
 
   parts.push("      default:");
-  parts.push(`        ${ErrorCodeGenerator.workflowNotFound("workflowId")}`);
+  parts.push(`        ${workflowNotFound("workflowId")}`);
   parts.push("    }");
   parts.push("");
   parts.push("    const executionTime = Date.now() - startTime;");
@@ -2071,7 +2071,7 @@ function generateWorkflowMethod(
     parts.push("");
     parts.push(
       "    " +
-        FetchCodeGenerator.withQueryParams(
+        fetchWithQueryParams(
           "response",
           "baseUrl",
           "searchParams.toString()"
@@ -2095,7 +2095,7 @@ function generateWorkflowMethod(
     parts.push("    });");
     parts.push("");
     parts.push("    if (!response.ok) {");
-    parts.push(`      ${ErrorCodeGenerator.workflowFailed("workflow")}`);
+    parts.push(`      ${workflowFailed("workflow")}`);
     parts.push("    }");
     parts.push("");
     parts.push("    return await response.json();");
@@ -2442,7 +2442,7 @@ function generateSessionAwareAPIMethods(
   parts.push("    // Make the request");
   parts.push(
     "    " +
-      FetchCodeGenerator.withQueryParams(
+      fetchWithQueryParams(
         "response",
         "baseUrl",
         "searchParams.toString()"
@@ -2471,7 +2471,7 @@ function generateSessionAwareAPIMethods(
   parts.push("    });");
   parts.push("");
   parts.push("    if (!response.ok) {");
-  parts.push(`      ${ErrorCodeGenerator.apiRequestFailed()}`);
+  parts.push(`      ${apiRequestFailed()}`);
   parts.push("    }");
   parts.push("");
   parts.push("    return await response.json();");

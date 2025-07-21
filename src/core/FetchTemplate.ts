@@ -172,18 +172,5 @@ export function fetchComplete(options: {
   return parts;
 }
 
-/**
- * Legacy class-based interface for backward compatibility
- * @deprecated Use the named functions instead
- */
-export const FetchCodeGenerator = {
-  withQueryParams: fetchWithQueryParams,
-  simple: fetchSimple,
-  method: fetchMethod,
-  headers: fetchHeaders,
-  body: fetchBody,
-  complete: fetchComplete,
-};
-
 // Auto-register templates when module is imported
 registerFetchTemplates();

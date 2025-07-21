@@ -103,16 +103,5 @@ export function genericError(message: string, contextVar: string): string {
   });
 }
 
-/**
- * Legacy class-based interface for backward compatibility
- * @deprecated Use the named functions instead
- */
-export const ErrorCodeGenerator = {
-  workflowNotFound,
-  workflowFailed,
-  apiRequestFailed,
-  genericError,
-};
-
 // Auto-register templates when module is imported
 registerErrorHandlingTemplates();
