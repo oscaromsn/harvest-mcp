@@ -9,6 +9,9 @@ import {
   type RequestModel,
   type TokenInfo,
 } from "../types/index.js";
+import { createComponentLogger } from "../utils/logger.js";
+
+const logger = createComponentLogger("code-generator");
 
 /**
  * Generate a complete TypeScript wrapper script from a completed analysis session
@@ -126,12 +129,24 @@ export function generateWrapperScript(session: HarvestSession): string {
 
   // Warn if session state is out of sync (should not happen with new synchronization)
   if (!session.state.isComplete) {
-    console.warn(
-      "Warning: Session state completion flag is out of sync with DAG completion. This should not happen."
+    logger.warn(
+      "Session state completion flag out of sync with DAG completion",
+      {
+        sessionComplete: session.state.isComplete,
+        dagComplete: session.dagManager.isComplete(),
+      }
     );
   }
 
   // Note: Empty DAGs are allowed for testing purposes and edge cases
+
+  // Check for multi-workflow architecture to determine generation strategy
+  const workflowInfo = analyzeWorkflowRequirements(session);
+
+  if (workflowInfo.hasMultipleWorkflows) {
+    // Generate structured workflow-based client for complex multi-workflow APIs
+    return generateWorkflowBasedClient(session, workflowInfo);
+  }
 
   // Check for session-awareness (bootstrap parameters) to determine generation strategy
   const sessionInfo = analyzeSessionRequirements(session);
@@ -761,7 +776,9 @@ function inferResponseTypes(session: HarvestSession): InferredResponseType[] {
     }
   } catch (error) {
     // If inference fails, return empty array - the code will still work with generic types
-    console.warn("Response type inference failed:", error);
+    logger.warn("Response type inference failed", {
+      error: error instanceof Error ? error.message : "Unknown error",
+    });
   }
 
   return responseTypes;
@@ -1701,6 +1718,400 @@ function generateAuthenticationSetup(
   }
 
   lines.push("");
+}
+
+// ========== Multi-Workflow Code Generation ==========
+
+/**
+ * Analyze workflow requirements to determine if multi-workflow client is needed
+ */
+function analyzeWorkflowRequirements(session: HarvestSession): {
+  hasMultipleWorkflows: boolean;
+  workflows: Array<{
+    id: string;
+    name: string;
+    description: string;
+    category: string;
+    priority: number;
+    complexity: number;
+    requiresUserInput: boolean;
+    masterNodeId: string;
+    nodeIds: string[];
+  }>;
+  workflowCount: number;
+} {
+  const workflows = Array.from(session.state.workflowGroups?.values() || []);
+
+  const workflowInfo = workflows.map((workflow) => ({
+    id: workflow.id,
+    name: workflow.name,
+    description: workflow.description,
+    category: workflow.category,
+    priority: workflow.priority,
+    complexity: workflow.complexity,
+    requiresUserInput: workflow.requiresUserInput,
+    masterNodeId: workflow.masterNodeId,
+    nodeIds: Array.from(workflow.nodeIds),
+  }));
+
+  return {
+    hasMultipleWorkflows: workflows.length > 1,
+    workflows: workflowInfo,
+    workflowCount: workflows.length,
+  };
+}
+
+/**
+ * Generate workflow-based client for multi-workflow APIs
+ */
+function generateWorkflowBasedClient(
+  session: HarvestSession,
+  workflowInfo: ReturnType<typeof analyzeWorkflowRequirements>
+): string {
+  const parts: string[] = [];
+
+  // 1. File header with workflow metadata
+  parts.push(generateWorkflowHeader(session, workflowInfo));
+  parts.push("");
+
+  // 2. Imports and types
+  parts.push(generateWorkflowImports(session));
+  parts.push("");
+
+  // 3. Workflow interfaces
+  parts.push(generateWorkflowInterfaces(workflowInfo));
+  parts.push("");
+
+  // 4. Main API client class with workflow methods
+  parts.push(generateWorkflowAPIClientClass(session, workflowInfo));
+  parts.push("");
+
+  // 5. Export statement
+  parts.push(generateWorkflowExportStatement(session));
+
+  return parts.join("\n");
+}
+
+/**
+ * Generate header for workflow-based clients
+ */
+function generateWorkflowHeader(
+  session: HarvestSession,
+  workflowInfo: ReturnType<typeof analyzeWorkflowRequirements>
+): string {
+  const parts: string[] = [];
+
+  parts.push("/**");
+  parts.push(" * Generated Multi-Workflow API Client");
+  parts.push(` * Source: ${session.prompt}`);
+  parts.push(` * Generated: ${new Date().toISOString()}`);
+  parts.push(" * ");
+  parts.push(
+    ` * This client provides ${workflowInfo.workflowCount} distinct workflows:`
+  );
+
+  for (const workflow of workflowInfo.workflows) {
+    parts.push(
+      ` * - ${workflow.name}: ${workflow.description} (${workflow.category})`
+    );
+  }
+
+  parts.push(" * ");
+  parts.push(" * Usage:");
+  parts.push(" *   const client = new APIClient();");
+  parts.push(" *   const workflows = client.getAvailableWorkflows();");
+  parts.push(
+    " *   const result = await client.executeWorkflow('workflow-id', params);"
+  );
+  parts.push(" */");
+
+  return parts.join("\n");
+}
+
+/**
+ * Generate imports for workflow-based clients
+ */
+function generateWorkflowImports(session: HarvestSession): string {
+  const parts: string[] = [];
+
+  parts.push("// HTTP client and type definitions");
+  parts.push("");
+
+  // Add the standard API response types
+  parts.push(generateImports(session));
+
+  return parts.join("\n");
+}
+
+/**
+ * Generate workflow-specific interfaces
+ */
+function generateWorkflowInterfaces(
+  _workflowInfo: ReturnType<typeof analyzeWorkflowRequirements>
+): string {
+  const parts: string[] = [];
+
+  parts.push("/**");
+  parts.push(" * Workflow metadata interface");
+  parts.push(" */");
+  parts.push("interface WorkflowInfo {");
+  parts.push("  id: string;");
+  parts.push("  name: string;");
+  parts.push("  description: string;");
+  parts.push("  category: string;");
+  parts.push("  priority: number;");
+  parts.push("  complexity: number;");
+  parts.push("  requiresUserInput: boolean;");
+  parts.push("}");
+  parts.push("");
+
+  parts.push("/**");
+  parts.push(" * Workflow execution result");
+  parts.push(" */");
+  parts.push("interface WorkflowResult<T = any> {");
+  parts.push("  workflowId: string;");
+  parts.push("  success: boolean;");
+  parts.push("  data: T;");
+  parts.push("  executionTime: number;");
+  parts.push("  metadata: {");
+  parts.push("    requestCount: number;");
+  parts.push("    workflow: WorkflowInfo;");
+  parts.push("  };");
+  parts.push("}");
+
+  return parts.join("\n");
+}
+
+/**
+ * Generate the main workflow API client class
+ */
+function generateWorkflowAPIClientClass(
+  session: HarvestSession,
+  workflowInfo: ReturnType<typeof analyzeWorkflowRequirements>
+): string {
+  const parts: string[] = [];
+
+  // Class definition
+  parts.push("export class APIClient {");
+  parts.push("  private workflows: Map<string, WorkflowInfo> = new Map();");
+  parts.push("");
+
+  // Constructor to initialize workflows
+  parts.push("  constructor() {");
+  parts.push("    this.initializeWorkflows();");
+  parts.push("  }");
+  parts.push("");
+
+  // Initialize workflows method
+  parts.push("  /**");
+  parts.push("   * Initialize available workflows");
+  parts.push("   */");
+  parts.push("  private initializeWorkflows(): void {");
+
+  for (const workflow of workflowInfo.workflows) {
+    parts.push("    this.workflows.set(");
+    parts.push(`      '${workflow.id}',`);
+    parts.push("      {");
+    parts.push(`        id: '${workflow.id}',`);
+    parts.push(`        name: '${workflow.name}',`);
+    parts.push(`        description: '${workflow.description}',`);
+    parts.push(`        category: '${workflow.category}',`);
+    parts.push(`        priority: ${workflow.priority},`);
+    parts.push(`        complexity: ${workflow.complexity},`);
+    parts.push(`        requiresUserInput: ${workflow.requiresUserInput},`);
+    parts.push("      }");
+    parts.push("    );");
+  }
+
+  parts.push("  }");
+  parts.push("");
+
+  // Get available workflows method
+  parts.push("  /**");
+  parts.push("   * Get all available workflows");
+  parts.push("   */");
+  parts.push("  getAvailableWorkflows(): WorkflowInfo[] {");
+  parts.push("    return Array.from(this.workflows.values())");
+  parts.push("      .sort((a, b) => b.priority - a.priority);");
+  parts.push("  }");
+  parts.push("");
+
+  // Get workflow by category
+  parts.push("  /**");
+  parts.push("   * Get workflows by category");
+  parts.push("   */");
+  parts.push("  getWorkflowsByCategory(category: string): WorkflowInfo[] {");
+  parts.push("    return this.getAvailableWorkflows()");
+  parts.push("      .filter(w => w.category === category);");
+  parts.push("  }");
+  parts.push("");
+
+  // Execute workflow method
+  parts.push("  /**");
+  parts.push("   * Execute a specific workflow");
+  parts.push("   */");
+  parts.push(
+    "  async executeWorkflow(workflowId: string, params: any = {}): Promise<WorkflowResult> {"
+  );
+  parts.push("    const startTime = Date.now();");
+  parts.push("    const workflow = this.workflows.get(workflowId);");
+  parts.push("");
+  parts.push("    if (!workflow) {");
+  parts.push(
+    "      throw new Error(`Workflow '${workflowId}' not found. Available: ${Array.from(this.workflows.keys()).join(', ')}`);"
+  );
+  parts.push("    }");
+  parts.push("");
+
+  // Generate switch statement for different workflows
+  parts.push("    let result: any;");
+  parts.push("    let requestCount = 0;");
+  parts.push("");
+  parts.push("    switch (workflowId) {");
+
+  for (const workflow of workflowInfo.workflows) {
+    parts.push(`      case '${workflow.id}':`);
+    parts.push(
+      `        result = await this.execute${toPascalCase(workflow.id)}(params);`
+    );
+    parts.push(
+      "        requestCount = 1; // TODO: Count actual requests in workflow"
+    );
+    parts.push("        break;");
+    parts.push("");
+  }
+
+  parts.push("      default:");
+  parts.push(
+    "        throw new Error(`Workflow implementation not found: ${workflowId}`);"
+  );
+  parts.push("    }");
+  parts.push("");
+  parts.push("    const executionTime = Date.now() - startTime;");
+  parts.push("");
+  parts.push("    return {");
+  parts.push("      workflowId,");
+  parts.push("      success: true,");
+  parts.push("      data: result,");
+  parts.push("      executionTime,");
+  parts.push("      metadata: {");
+  parts.push("        requestCount,");
+  parts.push("        workflow,");
+  parts.push("      },");
+  parts.push("    };");
+  parts.push("  }");
+  parts.push("");
+
+  // Generate individual workflow methods
+  for (const workflow of workflowInfo.workflows) {
+    parts.push(...generateWorkflowMethod(session, workflow));
+    parts.push("");
+  }
+
+  parts.push("}");
+
+  return parts.join("\n");
+}
+
+/**
+ * Generate individual workflow execution method
+ */
+function generateWorkflowMethod(
+  session: HarvestSession,
+  workflow: {
+    id: string;
+    name: string;
+    description: string;
+    masterNodeId: string;
+    nodeIds: string[];
+    requiresUserInput: boolean;
+  }
+): string[] {
+  const parts: string[] = [];
+  const methodName = `execute${toPascalCase(workflow.id)}`;
+
+  parts.push("  /**");
+  parts.push(`   * ${workflow.name}: ${workflow.description}`);
+  if (workflow.requiresUserInput) {
+    parts.push("   * Requires user input parameters");
+  }
+  parts.push("   */");
+  parts.push(`  private async ${methodName}(params: any = {}): Promise<any> {`);
+
+  // Get the master node for this workflow
+  const masterNode = session.dagManager.getNode(workflow.masterNodeId);
+
+  if (masterNode && masterNode.content.key) {
+    const request = masterNode.content.key as RequestModel;
+
+    // Generate URL construction
+    parts.push(`    const baseUrl = '${getBaseUrl(request.url)}';`);
+    parts.push("    const searchParams = new URLSearchParams();");
+    parts.push("");
+
+    // Add parameters
+    if (request.queryParams) {
+      for (const [key, value] of Object.entries(request.queryParams)) {
+        if (workflow.requiresUserInput && isLikelyUserInput(key, value)) {
+          parts.push(`    if (params.${toCamelCase(key)} !== undefined) {`);
+          parts.push(
+            `      searchParams.set('${key}', String(params.${toCamelCase(key)}));`
+          );
+          parts.push("    } else {");
+          parts.push(
+            `      searchParams.set('${key}', '${value}'); // Default value`
+          );
+          parts.push("    }");
+        } else {
+          parts.push(`    searchParams.set('${key}', '${value}');`);
+        }
+      }
+    }
+
+    parts.push("");
+    parts.push(
+      "    const response = await fetch(`${baseUrl}?${searchParams.toString()}`, {"
+    );
+    parts.push(`      method: '${request.method}',`);
+    parts.push("      headers: {");
+
+    for (const [key, value] of Object.entries(request.headers)) {
+      parts.push(`        '${key}': '${value}',`);
+    }
+
+    parts.push("      },");
+
+    if (request.body) {
+      parts.push(
+        `      body: JSON.stringify(params.body || ${JSON.stringify(request.body)}),`
+      );
+    }
+
+    parts.push("    });");
+    parts.push("");
+    parts.push("    if (!response.ok) {");
+    parts.push(
+      "      throw new Error(`${workflow.name} failed: ${response.status} ${response.statusText}`);"
+    );
+    parts.push("    }");
+    parts.push("");
+    parts.push("    return await response.json();");
+  } else {
+    // Fallback for missing master node
+    parts.push("    // TODO: Implement workflow logic");
+    parts.push("    throw new Error('Workflow implementation not available');");
+  }
+
+  parts.push("  }");
+
+  return parts;
+}
+
+/**
+ * Generate export statement for workflow client
+ */
+function generateWorkflowExportStatement(_session: HarvestSession): string {
+  return "// Export the workflow-based client\nexport default APIClient;";
 }
 
 // ========== Session-Aware Code Generation ==========
