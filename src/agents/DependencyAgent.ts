@@ -12,6 +12,9 @@ import type {
   SimplestRequestResponse,
 } from "../types/index.js";
 import { HarvestError } from "../types/index.js";
+import { createComponentLogger } from "../utils/logger.js";
+
+const logger = createComponentLogger("dependency-agent");
 
 /**
  * Find dependencies for dynamic parts across cookies and requests
@@ -153,9 +156,10 @@ function createSyntheticBootstrapSources(
         },
       });
 
-      console.log(
-        `Created synthetic bootstrap source for session constant: ${part}`
-      );
+      logger.debug("Created synthetic bootstrap source for session constant", {
+        parameter: part,
+        source: "synthetic",
+      });
     }
   }
 
@@ -227,7 +231,10 @@ async function analyzeBootstrapSource(
     return null;
   } catch (error) {
     // Log error but don't fail the entire analysis
-    console.error(`Error analyzing bootstrap source for ${parameter}:`, error);
+    logger.error("Error analyzing bootstrap source", {
+      parameter,
+      error: error instanceof Error ? error.message : "Unknown error",
+    });
     return null;
   }
 }
@@ -257,26 +264,369 @@ function searchInHtmlContent(htmlContent: string, parameter: string): boolean {
 }
 
 /**
+ * Advanced HTML analysis to find the best extraction pattern for a parameter
+ */
+function analyzeParameterInHTML(
+  parameter: string,
+  htmlContent: string
+): {
+  pattern?: string;
+  confidence: number;
+  context: string;
+  location: "script" | "meta" | "input" | "data-attribute" | "inline" | "none";
+} {
+  let bestPattern: string | undefined;
+  let confidence = 0;
+  let context = "none";
+  let location:
+    | "script"
+    | "meta"
+    | "input"
+    | "data-attribute"
+    | "inline"
+    | "none" = "none";
+
+  // 1. Check in script tags (highest confidence)
+  const scriptAnalysis = analyzeInScriptTags(parameter, htmlContent);
+  if (scriptAnalysis.found && scriptAnalysis.confidence > confidence) {
+    bestPattern = scriptAnalysis.pattern;
+    confidence = scriptAnalysis.confidence;
+    context = scriptAnalysis.context;
+    location = "script";
+  }
+
+  // 2. Check in meta tags
+  const metaAnalysis = analyzeInMetaTags(parameter, htmlContent);
+  if (metaAnalysis.found && metaAnalysis.confidence > confidence) {
+    bestPattern = metaAnalysis.pattern;
+    confidence = metaAnalysis.confidence;
+    context = metaAnalysis.context;
+    location = "meta";
+  }
+
+  // 3. Check in input hidden fields
+  const inputAnalysis = analyzeInInputFields(parameter, htmlContent);
+  if (inputAnalysis.found && inputAnalysis.confidence > confidence) {
+    bestPattern = inputAnalysis.pattern;
+    confidence = inputAnalysis.confidence;
+    context = inputAnalysis.context;
+    location = "input";
+  }
+
+  // 4. Check in data attributes
+  const dataAnalysis = analyzeInDataAttributes(parameter, htmlContent);
+  if (dataAnalysis.found && dataAnalysis.confidence > confidence) {
+    bestPattern = dataAnalysis.pattern;
+    confidence = dataAnalysis.confidence;
+    context = dataAnalysis.context;
+    location = "data-attribute";
+  }
+
+  // 5. Check inline (direct text)
+  const inlineAnalysis = analyzeInlineContent(parameter, htmlContent);
+  if (inlineAnalysis.found && inlineAnalysis.confidence > confidence) {
+    bestPattern = inlineAnalysis.pattern;
+    confidence = inlineAnalysis.confidence;
+    context = inlineAnalysis.context;
+    location = "inline";
+  }
+
+  return {
+    ...(bestPattern && { pattern: bestPattern }),
+    confidence,
+    context,
+    location,
+  };
+}
+
+/**
+ * Analyze parameter extraction within script tags
+ */
+function analyzeInScriptTags(
+  parameter: string,
+  htmlContent: string
+): {
+  found: boolean;
+  pattern?: string;
+  confidence: number;
+  context: string;
+} {
+  const scriptTagRegex = /<script[^>]*>([\s\S]*?)<\/script>/gi;
+  const escapedParam = escapeRegex(parameter);
+
+  let match: RegExpExecArray | null;
+  while ((match = scriptTagRegex.exec(htmlContent)) !== null) {
+    const scriptContent = match[1] || "";
+
+    // Check for various JavaScript patterns
+    const patterns = [
+      // Variable assignment: var sessionId = "value"
+      {
+        regex: new RegExp(
+          `(?:var|let|const)\\s+(${escapedParam})\\s*=\\s*["']([^"']+)["']`,
+          "i"
+        ),
+        pattern: `(?:var|let|const)\\s+(${escapedParam})\\s*=\\s*["']([^"']+)["']`,
+        confidence: 0.9,
+        context: "variable_declaration",
+      },
+      // Object property: window.sessionId = "value"
+      {
+        regex: new RegExp(
+          `(?:window|global|this)\\.(${escapedParam})\\s*=\\s*["']([^"']+)["']`,
+          "i"
+        ),
+        pattern: `(?:window|global|this)\\.(${escapedParam})\\s*=\\s*["']([^"']+)["']`,
+        confidence: 0.85,
+        context: "global_assignment",
+      },
+      // JSON configuration: "sessionId": "value"
+      {
+        regex: new RegExp(
+          `["'](${escapedParam})["']\\s*:\\s*["']([^"']+)["']`,
+          "i"
+        ),
+        pattern: `["'](${escapedParam})["']\\s*:\\s*["']([^"']+)["']`,
+        confidence: 0.8,
+        context: "json_config",
+      },
+      // Direct assignment: sessionId = "value"
+      {
+        regex: new RegExp(`\\b(${escapedParam})\\s*=\\s*["']([^"']+)["']`, "i"),
+        pattern: `\\b(${escapedParam})\\s*=\\s*["']([^"']+)["']`,
+        confidence: 0.75,
+        context: "direct_assignment",
+      },
+    ];
+
+    for (const { regex, pattern, confidence, context } of patterns) {
+      if (regex.test(scriptContent)) {
+        return {
+          found: true,
+          pattern,
+          confidence,
+          context: `script_${context}`,
+        };
+      }
+    }
+  }
+
+  return { found: false, confidence: 0, context: "none" };
+}
+
+/**
+ * Analyze parameter extraction from meta tags
+ */
+function analyzeInMetaTags(
+  parameter: string,
+  htmlContent: string
+): {
+  found: boolean;
+  pattern?: string;
+  confidence: number;
+  context: string;
+} {
+  const escapedParam = escapeRegex(parameter);
+
+  // Meta tag patterns
+  const patterns = [
+    {
+      regex: new RegExp(
+        `<meta[^>]*name\\s*=\\s*["']${escapedParam}["'][^>]*content\\s*=\\s*["']([^"']+)["'][^>]*>`,
+        "i"
+      ),
+      pattern: `<meta[^>]*name\\s*=\\s*["']${escapedParam}["'][^>]*content\\s*=\\s*["']([^"']+)["'][^>]*>`,
+      confidence: 0.9,
+    },
+    {
+      regex: new RegExp(
+        `<meta[^>]*content\\s*=\\s*["']([^"']+)["'][^>]*name\\s*=\\s*["']${escapedParam}["'][^>]*>`,
+        "i"
+      ),
+      pattern: `<meta[^>]*content\\s*=\\s*["']([^"']+)["'][^>]*name\\s*=\\s*["']${escapedParam}["'][^>]*>`,
+      confidence: 0.9,
+    },
+  ];
+
+  for (const { regex, pattern, confidence } of patterns) {
+    if (regex.test(htmlContent)) {
+      return {
+        found: true,
+        pattern,
+        confidence,
+        context: "meta_tag",
+      };
+    }
+  }
+
+  return { found: false, confidence: 0, context: "none" };
+}
+
+/**
+ * Analyze parameter extraction from input hidden fields
+ */
+function analyzeInInputFields(
+  parameter: string,
+  htmlContent: string
+): {
+  found: boolean;
+  pattern?: string;
+  confidence: number;
+  context: string;
+} {
+  const escapedParam = escapeRegex(parameter);
+
+  const patterns = [
+    {
+      regex: new RegExp(
+        `<input[^>]*name\\s*=\\s*["']${escapedParam}["'][^>]*value\\s*=\\s*["']([^"']+)["'][^>]*>`,
+        "i"
+      ),
+      pattern: `<input[^>]*name\\s*=\\s*["']${escapedParam}["'][^>]*value\\s*=\\s*["']([^"']+)["'][^>]*>`,
+      confidence: 0.85,
+    },
+    {
+      regex: new RegExp(
+        `<input[^>]*value\\s*=\\s*["']([^"']+)["'][^>]*name\\s*=\\s*["']${escapedParam}["'][^>]*>`,
+        "i"
+      ),
+      pattern: `<input[^>]*value\\s*=\\s*["']([^"']+)["'][^>]*name\\s*=\\s*["']${escapedParam}["'][^>]*>`,
+      confidence: 0.85,
+    },
+  ];
+
+  for (const { regex, pattern, confidence } of patterns) {
+    if (regex.test(htmlContent)) {
+      return {
+        found: true,
+        pattern,
+        confidence,
+        context: "input_field",
+      };
+    }
+  }
+
+  return { found: false, confidence: 0, context: "none" };
+}
+
+/**
+ * Analyze parameter extraction from data attributes
+ */
+function analyzeInDataAttributes(
+  parameter: string,
+  htmlContent: string
+): {
+  found: boolean;
+  pattern?: string;
+  confidence: number;
+  context: string;
+} {
+  // Convert camelCase to kebab-case for data attributes
+  const dataAttrName = parameter.toLowerCase().replace(/([A-Z])/g, "-$1");
+  const escapedDataAttr = escapeRegex(dataAttrName);
+
+  const pattern = `data-${escapedDataAttr}\\s*=\\s*["']([^"']+)["']`;
+  const regex = new RegExp(pattern, "i");
+
+  if (regex.test(htmlContent)) {
+    return {
+      found: true,
+      pattern,
+      confidence: 0.7,
+      context: "data_attribute",
+    };
+  }
+
+  return { found: false, confidence: 0, context: "none" };
+}
+
+/**
+ * Analyze parameter extraction from inline content
+ */
+function analyzeInlineContent(
+  parameter: string,
+  htmlContent: string
+): {
+  found: boolean;
+  pattern?: string;
+  confidence: number;
+  context: string;
+} {
+  const escapedParam = escapeRegex(parameter);
+
+  // Look for the parameter value in various inline contexts
+  const patterns = [
+    {
+      regex: new RegExp(`\\b${escapedParam}\\s*[=:]\\s*["']([^"']+)["']`, "i"),
+      pattern: `\\b${escapedParam}\\s*[=:]\\s*["']([^"']+)["']`,
+      confidence: 0.6,
+    },
+    {
+      regex: new RegExp(
+        `["']${escapedParam}["']\\s*[=:]\\s*["']([^"']+)["']`,
+        "i"
+      ),
+      pattern: `["']${escapedParam}["']\\s*[=:]\\s*["']([^"']+)["']`,
+      confidence: 0.5,
+    },
+  ];
+
+  for (const { regex, pattern, confidence } of patterns) {
+    if (regex.test(htmlContent)) {
+      return {
+        found: true,
+        pattern,
+        confidence,
+        context: "inline_content",
+      };
+    }
+  }
+
+  return { found: false, confidence: 0, context: "none" };
+}
+
+/**
  * Generate regex pattern to extract parameter from HTML content
  */
 function generateExtractionPattern(
   parameter: string,
   htmlContent: string
 ): string {
+  // Enhanced pattern generation with multiple strategies
+  const extractionResult = analyzeParameterInHTML(parameter, htmlContent);
+
+  if (extractionResult.pattern) {
+    return extractionResult.pattern;
+  }
+
+  // Fallback to improved generic pattern generation
+  const escapedParam = escapeRegex(parameter);
+
   // Look for common JavaScript variable assignment patterns
   const patterns = [
-    // sessionId = "value"
+    // Direct assignment: sessionId = "value" or sessionId: "value"
+    `(?:${escapedParam})\\s*[=:]\\s*["']([^"']+)["']`,
+    // Window/global assignment: window.sessionId = "value"
+    `(?:window\\.|global\\.|this\\.)(?:${escapedParam})\\s*=\\s*["']([^"']+)["']`,
+    // Variable declaration: var/let/const sessionId = "value"
+    `(?:var|let|const)\\s+(?:${escapedParam})\\s*=\\s*["']([^"']+)["']`,
+    // JSON property: "sessionId":"value"
+    `["'](?:${escapedParam})["']\\s*:\\s*["']([^"']+)["']`,
+    // Data attribute: data-session-id="value"
+    `data-${parameter.toLowerCase().replace(/([A-Z])/g, "-$1")}\\s*=\\s*["']([^"']+)["']`,
+    // Meta tag: <meta name="sessionId" content="value">
+    `<meta[^>]*name\\s*=\\s*["']${escapedParam}["'][^>]*content\\s*=\\s*["']([^"']+)["']`,
+    // Input hidden field: <input type="hidden" name="sessionId" value="value">
+    `<input[^>]*name\\s*=\\s*["']${escapedParam}["'][^>]*value\\s*=\\s*["']([^"']+)["']`,
+    // Legacy sessionId/session_id patterns
     `(?:sessionId|session_id)\\s*[=:]\\s*["']([^"']+)["']`,
-    // window.sessionId = "value"
     `window\\.(?:sessionId|session_id)\\s*=\\s*["']([^"']+)["']`,
-    // var sessionId = "value"
     `(?:var|let|const)\\s+(?:sessionId|session_id)\\s*=\\s*["']([^"']+)["']`,
-    // "sessionId":"value"
     `["'](?:sessionId|session_id)["']\\s*:\\s*["']([^"']+)["']`,
-    // For tokens like juristkn
-    `(?:token|tkn|juristkn)\\s*[=:]\\s*["']([^"']+)["']`,
+    // For tokens like juristkn, API keys, etc.
+    `(?:token|tkn|juristkn|apikey|api_key)\\s*[=:]\\s*["']([^"']+)["']`,
     // Generic pattern for the exact parameter value
-    `["']?${escapeRegex(parameter)}["']?`,
+    `["']?${escapedParam}["']?`,
   ];
 
   // Try to find which pattern matches in the content
@@ -288,7 +638,7 @@ function generateExtractionPattern(
   }
 
   // Fallback: just look for the literal value
-  return escapeRegex(parameter);
+  return escapedParam;
 }
 
 /**
