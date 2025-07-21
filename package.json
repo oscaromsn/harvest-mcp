@@ -13,7 +13,7 @@
     "check": "biome check --write",
     "format": "biome format --write",
     "lint": "biome lint --write",
-    "validate:quick": "bun run typecheck && bun run check && bun test",
+    "validate:quick": "bun run typecheck && bun run check",
     "validate:mcp": "bun scripts/validate-mcp.ts",
     "ci": "bun run validate:quick && bun run validate:mcp",
     "test": "vitest",

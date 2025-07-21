@@ -181,7 +181,7 @@ describe("Issue #3 Regression: JSON Parse Error Fix", () => {
       // Process next node
       try {
         await handleProcessNextNode({ sessionId }, server.getContext());
-      } catch (error) {
+      } catch (_error) {
         // May fail if queue is empty
         break;
       }

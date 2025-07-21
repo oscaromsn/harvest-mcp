@@ -15,7 +15,7 @@ export function safeJsonParse<T>(content: string, context: string): T {
   } catch (error) {
     // Truncate content for logging to avoid overwhelming error messages
     const truncatedContent =
-      content.length > 200 ? content.substring(0, 200) + "..." : content;
+      content.length > 200 ? `${content.substring(0, 200)}...` : content;
 
     throw new HarvestError(
       `JSON Parse error while processing ${context}: ${error instanceof Error ? error.message : "Unknown error"}`,

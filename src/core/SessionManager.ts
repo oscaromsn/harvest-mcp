@@ -2,6 +2,7 @@ import { v4 as uuidv4 } from "uuid";
 import { analyzeAuthentication } from "../agents/AuthenticationAgent.js";
 import {
   type AuthenticationAnalysis,
+  type CompletionAnalysis,
   type CookieData,
   type DAGNode,
   HARQualityError,
@@ -26,32 +27,6 @@ interface ExtendedDAGManager extends DAGManager {
 }
 
 const logger = createComponentLogger("session-manager");
-
-/**
- * Comprehensive analysis completion interface
- */
-export interface CompletionAnalysis {
-  isComplete: boolean;
-  blockers: string[];
-  recommendations: string[];
-  diagnostics: {
-    hasMasterNode: boolean;
-    dagComplete: boolean;
-    queueEmpty: boolean;
-    totalNodes: number;
-    unresolvedNodes: number;
-    pendingInQueue: number;
-    hasActionUrl: boolean;
-    authAnalysisComplete: boolean;
-    authReadiness: boolean;
-    authErrors: number;
-    allNodesClassified: boolean;
-    nodesNeedingClassification: number;
-    bootstrapAnalysisComplete: boolean;
-    sessionConstantsCount: number;
-    unresolvedSessionConstants: number;
-  };
-}
 
 export class SessionManager {
   private sessions = new Map<string, HarvestSession>();
@@ -628,7 +603,9 @@ export class SessionManager {
         );
         if (masterNode) {
           // Get the URL from the master node content
-          const masterNodeUrl = (masterNode.content as any)?.key?.url;
+          const masterNodeUrl = (
+            masterNode.content as { key?: { url?: string } }
+          )?.key?.url;
 
           logger.debug("Master node found, checking for actionUrl recovery", {
             sessionId,
@@ -639,8 +616,9 @@ export class SessionManager {
             nodeType: masterNode.nodeType,
             contentStructure: {
               hasContent: !!masterNode.content,
-              hasKey: !!(masterNode.content as any)?.key,
-              hasUrl: !!(masterNode.content as any)?.key?.url,
+              hasKey: !!(masterNode.content as { key?: unknown })?.key,
+              hasUrl: !!(masterNode.content as { key?: { url?: string } })?.key
+                ?.url,
             },
           });
 

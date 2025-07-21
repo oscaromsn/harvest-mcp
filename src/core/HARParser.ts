@@ -11,6 +11,7 @@ import { analyzeAuthentication as analyzeAuthenticationAgent } from "../agents/A
 import { Request } from "../models/Request.js";
 import type {
   AuthenticationAnalysis,
+  HarvestSession,
   ParsedHARData,
   RequestModel,
   ResponseData,
@@ -391,13 +392,19 @@ interface LocalAuthenticationAnalysis {
  */
 function createTemporarySessionForAuth(
   entries: Array<{ request: unknown; response: unknown }>
-): any {
+): HarvestSession {
   // Convert HAR entries to RequestModel format for the agent
   const requests: RequestModel[] = [];
 
   for (const entry of entries) {
     try {
-      const request = entry.request as any;
+      const request = entry.request as {
+        url?: string;
+        method?: string;
+        headers?: unknown;
+        queryString?: unknown;
+        postData?: { text?: string };
+      };
 
       if (!request?.url || !request?.method) {
         continue;
@@ -407,32 +414,55 @@ function createTemporarySessionForAuth(
       const requestModel: RequestModel = {
         url: request.url,
         method: request.method.toUpperCase(),
-        headers: parseRequestHeaders(request.headers),
-        queryParams: parseQueryParams(request.queryString, request.url),
+        headers: parseRequestHeaders(request.headers as never),
+        queryParams: parseQueryParams(
+          request.queryString as never,
+          request.url
+        ),
         body: request.postData?.text || null,
         timestamp: new Date(),
         toCurlCommand: () =>
-          `curl -X ${request.method.toUpperCase()} "${request.url}"`,
+          `curl -X ${request.method?.toUpperCase() || "GET"} "${request.url}"`,
       };
 
       requests.push(requestModel);
-    } catch (error) {}
+    } catch (_error) {
+      // Skip invalid entries - they're likely malformed HAR data
+    }
   }
 
   // Create minimal session structure
   return {
     id: "temp-auth-session",
     prompt: "Authentication analysis",
+    dagManager: {} as never, // Minimal DAG manager for auth analysis
     harData: {
       requests,
       urls: [],
       validation: {
+        isValid: true,
         quality: "good" as const,
         issues: [],
         recommendations: [],
         stats: {
           totalEntries: entries.length,
           relevantEntries: requests.length,
+          apiRequests: requests.length,
+          postRequests: requests.filter((r) => r.method === "POST").length,
+          responsesWithContent: 0,
+          authRequests: 0,
+          tokenRequests: 0,
+          authErrors: 0,
+        },
+        authAnalysis: {
+          hasAuthHeaders: false,
+          hasCookies: false,
+          hasTokens: false,
+          authErrors: 0,
+          tokenPatterns: [],
+          authTypes: [],
+          issues: [],
+          recommendations: [],
         },
       },
     },
@@ -441,6 +471,8 @@ function createTemporarySessionForAuth(
       toBeProcessedNodes: [],
       inputVariables: {},
       isComplete: false,
+      inProcessNodeDynamicParts: [],
+      workflowGroups: new Map(),
     },
     createdAt: new Date(),
     lastActivity: new Date(),

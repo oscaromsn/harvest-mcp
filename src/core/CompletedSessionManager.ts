@@ -19,47 +19,14 @@ import {
 } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { HarvestSession } from "../types/index.js";
+import type {
+  CompletedSessionArtifacts,
+  CompletionAnalysis,
+  HarvestSession,
+} from "../types/index.js";
 import { createComponentLogger } from "../utils/logger.js";
-import type { CompletionAnalysis } from "./SessionManager.js";
 
 const logger = createComponentLogger("completed-session-manager");
-
-export interface CompletedSessionArtifacts {
-  sessionId: string;
-  completedAt: string;
-  prompt: string;
-  artifacts: {
-    har?: {
-      filename: string;
-      path: string;
-      size: number;
-    };
-    cookies?: {
-      filename: string;
-      path: string;
-      size: number;
-    };
-    generatedCode?: {
-      filename: string;
-      path: string;
-      size: number;
-    };
-    metadata: {
-      filename: string;
-      path: string;
-      size: number;
-    };
-  };
-  metadata: {
-    totalNodes: number;
-    harQuality: string;
-    totalRequests: number;
-    hasAuthCookies: boolean;
-    generatedCodeSize: number;
-    cachePath: string;
-  };
-}
 
 export interface CompletedSessionMetadata {
   sessionId: string;

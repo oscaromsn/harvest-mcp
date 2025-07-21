@@ -64,7 +64,10 @@ describe("Jurisprudencia Analysis Regression Test", () => {
     expect(auxiliaryActions.length).toBeGreaterThan(0);
 
     // Document the issue: Search endpoints use GET, auxiliary actions use POST
-    const searchEndpoint = searchEndpoints[0]!;
+    const searchEndpoint = searchEndpoints[0];
+    if (!searchEndpoint) {
+      throw new Error("No search endpoints found");
+    }
     const auxiliaryAction = auxiliaryActions[0];
 
     expect(searchEndpoint.method).toBe("GET");
@@ -149,37 +152,37 @@ describe("Jurisprudencia Analysis Regression Test", () => {
 
     // Calculate individual scoring components to understand the failure
     const searchMethodScore = calculateMethodScore(
-      searchEndpoint!.method,
+      searchEndpoint?.method || "GET",
       userPrompt
     );
     const copyMethodScore = calculateMethodScore(
-      copyActionEndpoint!.method,
+      copyActionEndpoint?.method || "GET",
       userPrompt
     );
 
     const searchParamScore = calculateParameterComplexityScore(
-      searchEndpoint!.url
+      searchEndpoint?.url || ""
     );
     const copyParamScore = calculateParameterComplexityScore(
-      copyActionEndpoint!.url
+      copyActionEndpoint?.url || ""
     );
 
     const searchKeywordScore = calculateKeywordRelevance(
-      searchEndpoint!.url,
+      searchEndpoint?.url || "",
       userPrompt
     );
     const copyKeywordScore = calculateKeywordRelevance(
-      copyActionEndpoint!.url,
+      copyActionEndpoint?.url || "",
       userPrompt
     );
 
     // Diagnostic information for understanding the scoring issue
     console.log("URL Scoring Analysis:");
-    console.log("Search Endpoint:", searchEndpoint!.url);
+    console.log("Search Endpoint:", searchEndpoint?.url);
     console.log("  Method Score:", searchMethodScore);
     console.log("  Param Score:", searchParamScore);
     console.log("  Keyword Score:", searchKeywordScore);
-    console.log("Copy Action Endpoint:", copyActionEndpoint!.url);
+    console.log("Copy Action Endpoint:", copyActionEndpoint?.url);
     console.log("  Method Score:", copyMethodScore);
     console.log("  Param Score:", copyParamScore);
     console.log("  Keyword Score:", copyKeywordScore);
