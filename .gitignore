@@ -40,6 +40,7 @@ html/**
 **/todo.md
 tests/fixtures/**
 tests/investigation/**
+tests/reproduction/**
 issues/**
 root_cause_analysis_report.md
 
