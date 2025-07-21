@@ -1,3 +1,4 @@
+import { getConfig } from "../../config/index.js";
 import { HarvestError } from "../../types/index.js";
 import { createComponentLogger } from "../../utils/logger.js";
 import { GeminiProvider } from "./GeminiProvider.js";
@@ -310,7 +311,7 @@ export function validateConfiguration(cliConfig?: {
   warnings: string[];
   configurationSource: string;
 } {
-  const envProvider = process.env.LLM_PROVIDER;
+  const centralConfig = getConfig();
   let hasOpenAI = !!process.env.OPENAI_API_KEY;
   let hasGemini = !!process.env.GOOGLE_API_KEY;
   let configurationSource = "environment";
@@ -346,20 +347,20 @@ export function validateConfiguration(cliConfig?: {
   // Generate recommendations
   if (isConfigured) {
     // Check if explicit provider is set but unavailable
-    if (
-      envProvider &&
-      !configuredProviders.includes(envProvider.toLowerCase())
-    ) {
-      warnings.push(
-        `LLM_PROVIDER is set to '${envProvider}' but ${getProviderInfo(envProvider)?.requiredEnvVar} is not configured`
-      );
+    if (centralConfig?.llm.provider) {
+      const configuredProvider = centralConfig.llm.provider;
+      if (!configuredProviders.includes(configuredProvider)) {
+        warnings.push(
+          `Provider is set to '${configuredProvider}' but corresponding API key is not configured`
+        );
+      }
     }
 
     // Provide info about configured providers
     if (configuredProviders.length > 1) {
       recommendations.push(
         `Multiple providers configured: ${configuredProviders.join(", ")}. ` +
-          "Set LLM_PROVIDER to explicitly choose one."
+          "Specify 'provider' in configuration or CLI arguments to explicitly choose one."
       );
     }
   } else {
@@ -367,18 +368,20 @@ export function validateConfiguration(cliConfig?: {
       "No LLM provider is configured. To enable AI-powered analysis features:"
     );
     recommendations.push(
-      "1. PREFERRED: Add CLI arguments to MCP client configuration:"
+      "1. PREFERRED: Add CLI arguments when starting the server:"
     );
     recommendations.push("   --provider=openai --api-key=sk-your-openai-key");
-    recommendations.push("   --provider=google --api-key=AIza-your-google-key");
+    recommendations.push("   --provider=gemini --api-key=AIza-your-google-key");
     recommendations.push("2. Alternative: Set environment variables:");
     recommendations.push(
-      "   OPENAI_API_KEY (get from https://platform.openai.com/account/api-keys)"
+      "   HARVEST_OPENAI_API_KEY (get from https://platform.openai.com/account/api-keys)"
     );
     recommendations.push(
-      "   GOOGLE_API_KEY (get from https://makersuite.google.com/app/apikey)"
+      "   HARVEST_GOOGLE_API_KEY (get from https://makersuite.google.com/app/apikey)"
     );
-    recommendations.push("3. Get API keys from OpenAI or Google AI Studio");
+    recommendations.push(
+      "3. Or create a harvest.config.json file with your configuration"
+    );
   }
 
   return {

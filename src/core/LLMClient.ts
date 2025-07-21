@@ -1,4 +1,5 @@
 import type { z } from "zod";
+import { getConfig } from "../config/index.js";
 import { HarvestError } from "../types/index.js";
 import { createComponentLogger } from "../utils/logger.js";
 import {
@@ -23,7 +24,21 @@ export class LLMClient {
   protected model: string;
 
   constructor(model?: string) {
-    this.model = model || process.env.LLM_MODEL || "";
+    // Use centralized configuration if available, fallback to environment variable
+    this.model = model || this.getConfiguredModel();
+  }
+
+  /**
+   * Get configured model from centralized config or fallback to environment
+   */
+  private getConfiguredModel(): string {
+    try {
+      const config = getConfig();
+      return config.llm.model || "";
+    } catch {
+      // Fallback to environment variable if config not available
+      return process.env.LLM_MODEL || "";
+    }
   }
 
   /**
@@ -38,21 +53,9 @@ export class LLMClient {
       return this.providerPromise;
     }
 
-    // Try to get CLI config from global variable if available
-    let cliConfig: Record<string, unknown> = {};
-    try {
-      // Check if global CLI config is available (will be undefined during testing)
-      const globalThis_ = globalThis as typeof globalThis & {
-        __harvestCLIConfig?: Record<string, unknown>;
-      };
-      cliConfig = globalThis_.__harvestCLIConfig || {};
-    } catch {
-      // Ignore errors during testing or standalone usage
-    }
-
+    // Use centralized configuration system
     this.providerPromise = getDefaultProvider({
       ...(this.model ? { model: this.model } : {}),
-      cliConfig,
     }).then((provider) => {
       this.provider = provider;
       // Update model if not explicitly set
