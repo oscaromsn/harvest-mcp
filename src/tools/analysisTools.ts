@@ -11,7 +11,9 @@ import {
   getPrimaryWorkflow,
 } from "../agents/WorkflowDiscoveryAgent.js";
 import {
+  type ClassifiedParameter,
   HarvestError,
+  type HarvestSession,
   SessionIdSchema,
   type ToolHandlerContext,
   type URLInfo,
@@ -553,7 +555,7 @@ function selectUrlHeuristically(urls: URLInfo[]): string {
   // Simple heuristic: prioritize POST requests, then by URL complexity
   const postUrls = urls.filter((url) => url.method === "POST");
   if (postUrls.length > 0) {
-    return postUrls[0]!.url;
+    return postUrls[0]?.url || "";
   }
 
   // If no POST, take the first non-GET with query params
@@ -561,14 +563,14 @@ function selectUrlHeuristically(urls: URLInfo[]): string {
     (url) => url.method !== "GET" && url.url.includes("?")
   );
   if (nonGetWithParams.length > 0) {
-    return nonGetWithParams[0]!.url;
+    return nonGetWithParams[0]?.url || "";
   }
 
   // Fallback to first URL
   return urls[0]?.url || "";
 }
 
-function checkNoNodesToProcess(session: any): CallToolResult | null {
+function checkNoNodesToProcess(session: HarvestSession): CallToolResult | null {
   if (session.state.toBeProcessedNodes.length === 0) {
     return {
       content: [
@@ -587,23 +589,29 @@ function checkNoNodesToProcess(session: any): CallToolResult | null {
 }
 
 function extractNextNodeForProcessing(
-  session: any,
+  session: HarvestSession,
   sessionId: string,
   context: ToolHandlerContext
 ): { nodeId: string; curlCommand: string } {
   const nodeId = session.state.toBeProcessedNodes.shift();
+  if (!nodeId) {
+    throw new HarvestError("No nodes to process", "ANALYSIS_ERROR");
+  }
   const node = session.dagManager.getNode(nodeId);
 
   if (!node) {
     throw new HarvestError(`Node ${nodeId} not found in DAG`, "NODE_NOT_FOUND");
   }
 
-  const curlCommand = node.content.key.toCurlCommand();
+  const requestContent = node.content as {
+    key: { toCurlCommand(): string; method: string; url: string };
+  };
+  const curlCommand = requestContent.key.toCurlCommand();
 
   context.sessionManager.addLog(
     sessionId,
     "info",
-    `Processing node ${nodeId}: ${node.content.key.method} ${node.content.key.url}`
+    `Processing node ${nodeId}: ${requestContent.key.method} ${requestContent.key.url}`
   );
 
   return { nodeId, curlCommand };
@@ -612,7 +620,7 @@ function extractNextNodeForProcessing(
 function handleJavaScriptFileSkip(
   curlCommand: string,
   nodeId: string,
-  _session: any,
+  _session: HarvestSession,
   sessionId: string,
   context: ToolHandlerContext
 ): CallToolResult | null {
@@ -648,7 +656,7 @@ function handleJavaScriptFileSkip(
 
 async function processDynamicPartsAndInputVariables(
   curlCommand: string,
-  session: any,
+  session: HarvestSession,
   sessionId: string,
   nodeId: string,
   context: ToolHandlerContext
@@ -656,7 +664,7 @@ async function processDynamicPartsAndInputVariables(
   dynamicParts: string[];
   finalDynamicParts: string[];
   identifiedInputVars: Record<string, string>;
-  classifiedParameters: any[];
+  classifiedParameters: ClassifiedParameter[];
 }> {
   const dynamicParts = await identifyDynamicParts(curlCommand);
 
@@ -682,9 +690,12 @@ async function processDynamicPartsAndInputVariables(
   // For classifyParameters, we need the actual RequestModel, not the curl command
   // Get the original request from the node
   const node = session.dagManager.getNode(nodeId);
-  const requestModel = node?.content?.key; // This should be the original RequestModel
+  const requestContent = node?.content as {
+    key?: { toCurlCommand(): string; method: string; url: string };
+  };
+  const requestModel = requestContent?.key;
   const classifiedParameters = requestModel
-    ? await classifyParameters(requestModel, session)
+    ? await classifyParameters(requestModel as never, session)
     : [];
 
   return {
@@ -698,7 +709,7 @@ async function processDynamicPartsAndInputVariables(
 async function processDependenciesAndAddNodes(
   finalDynamicParts: string[],
   nodeId: string,
-  session: any,
+  session: HarvestSession,
   _sessionId: string,
   _context: ToolHandlerContext
 ): Promise<number> {
@@ -707,7 +718,7 @@ async function processDependenciesAndAddNodes(
   if (finalDynamicParts.length > 0) {
     const dependencies = await findDependencies(
       finalDynamicParts,
-      session.harData.requests,
+      session.harData,
       session.cookieData || {}
     );
 
@@ -750,7 +761,7 @@ function generateNodeProcessingResponse(
   identifiedInputVars: Record<string, string>,
   finalDynamicParts: string[],
   newNodesAdded: number,
-  session: any,
+  session: HarvestSession,
   sessionId: string,
   context: ToolHandlerContext
 ): CallToolResult {
