@@ -38,7 +38,7 @@ html/**
 
 # docs & dev artifacts
 **/todo.md
-tests/fixtures/test-data/**
+tests/fixtures/**
 tests/investigation/**
 issues/**
 root_cause_analysis_report.md
