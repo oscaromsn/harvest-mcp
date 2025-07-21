@@ -1301,7 +1301,6 @@ export class CompletedSessionManagerAdapter
       analysis
     );
   }
-
 }
 
 /**

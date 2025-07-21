@@ -10,7 +10,11 @@ import {
   type TokenInfo,
 } from "../types/index.js";
 import { createComponentLogger } from "../utils/logger.js";
-import { workflowNotFound, workflowFailed, apiRequestFailed } from "./ErrorHandlingTemplate.js";
+import {
+  apiRequestFailed,
+  workflowFailed,
+  workflowNotFound,
+} from "./ErrorHandlingTemplate.js";
 import { fetchWithQueryParams } from "./FetchTemplate.js";
 
 const logger = createComponentLogger("code-generator");
@@ -2071,11 +2075,7 @@ function generateWorkflowMethod(
     parts.push("");
     parts.push(
       "    " +
-        fetchWithQueryParams(
-          "response",
-          "baseUrl",
-          "searchParams.toString()"
-        )
+        fetchWithQueryParams("response", "baseUrl", "searchParams.toString()")
     );
     parts.push(`      method: '${request.method}',`);
     parts.push("      headers: {");
@@ -2442,11 +2442,7 @@ function generateSessionAwareAPIMethods(
   parts.push("    // Make the request");
   parts.push(
     "    " +
-      fetchWithQueryParams(
-        "response",
-        "baseUrl",
-        "searchParams.toString()"
-      )
+      fetchWithQueryParams("response", "baseUrl", "searchParams.toString()")
   );
   parts.push(`      method: '${request.method}',`);
   parts.push("      headers: {");
