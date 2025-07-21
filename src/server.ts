@@ -42,10 +42,12 @@ import {
   type BrowserSessionInfo,
   type ClassifiedParameter,
   type CleanupResult,
+  type CodeGenerationData,
   type CookieDependency,
   type HarValidationResult,
   HarvestError,
   type HarvestSession,
+  type InternalToolResult,
   ManualSessionStartSchema,
   ManualSessionStopSchema,
   type ParameterClassification,
@@ -4029,11 +4031,36 @@ export class HarvestMCPServer {
   }
 
   /**
-   * Handle codegen.generate_wrapper_script tool call
+   * Handle codegen.generate_wrapper_script tool call (public MCP interface)
    */
   public async handleGenerateWrapperScript(
     args: unknown
   ): Promise<CallToolResult> {
+    const result = await this._internalHandleGenerateWrapperScript(args);
+
+    if (!result.success) {
+      throw new HarvestError(
+        result.error?.message || "Code generation failed",
+        result.error?.code || "CODE_GENERATION_FAILED"
+      );
+    }
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: result.data.code,
+        },
+      ],
+    };
+  }
+
+  /**
+   * Internal strongly-typed code generation method
+   */
+  private async _internalHandleGenerateWrapperScript(
+    args: unknown
+  ): Promise<InternalToolResult<CodeGenerationData>> {
     try {
       const argsObj = args as { sessionId: string };
       const session = this.sessionManager.getSession(argsObj.sessionId);
@@ -4067,11 +4094,14 @@ ${recommendationsList}
   - Processing queue: ${analysis.diagnostics.pendingInQueue} pending, ${analysis.diagnostics.queueEmpty ? "empty" : "active"}
   - Node resolution: ${analysis.diagnostics.totalNodes - analysis.diagnostics.unresolvedNodes}/${analysis.diagnostics.totalNodes} resolved`;
 
-        throw new HarvestError(detailedMessage, "ANALYSIS_INCOMPLETE", {
-          blockers: analysis.blockers,
-          recommendations: analysis.recommendations,
-          diagnostics: analysis.diagnostics,
-        });
+        return {
+          success: false,
+          data: { code: "", language: "typescript", characterCount: 0 },
+          error: {
+            message: detailedMessage,
+            code: "ANALYSIS_INCOMPLETE",
+          },
+        };
       }
 
       // Sync completion state if needed (should already be synced by workflow)
@@ -4120,33 +4150,37 @@ ${recommendationsList}
       }
 
       return {
-        content: [
-          {
-            type: "text",
-            text: generatedCode,
-          },
-        ],
+        success: true,
+        data: {
+          code: generatedCode,
+          language: "typescript",
+          characterCount: generatedCode.length,
+        },
       };
     } catch (error) {
-      if (error instanceof HarvestError) {
-        throw error;
-      }
-
       // Handle cycle detection errors specifically
       if (
         error instanceof Error &&
         error.message.includes("Graph contains cycles")
       ) {
-        throw new HarvestError(error.message, "GRAPH_CONTAINS_CYCLES", {
-          originalError: error,
-        });
+        return {
+          success: false,
+          data: { code: "", language: "typescript", characterCount: 0 },
+          error: {
+            message: error.message,
+            code: "GRAPH_CONTAINS_CYCLES",
+          },
+        };
       }
 
-      throw new HarvestError(
-        `Code generation failed: ${error instanceof Error ? error.message : "Unknown error"}`,
-        "CODE_GENERATION_FAILED",
-        { originalError: error }
-      );
+      return {
+        success: false,
+        data: { code: "", language: "typescript", characterCount: 0 },
+        error: {
+          message: `Code generation failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+          code: "CODE_GENERATION_FAILED",
+        },
+      };
     }
   }
 
@@ -5295,40 +5329,22 @@ ${recommendationsList}
     if (isComplete) {
       steps.push("📝 Step 3: Generating TypeScript wrapper code");
       try {
-        const codeResult = await this.handleGenerateWrapperScript({
+        // Use the strongly-typed internal method for type safety
+        const codeResult = await this._internalHandleGenerateWrapperScript({
           sessionId: argsObj.sessionId,
         });
-        const codeData = JSON.parse(
-          (codeResult.content?.[0]?.text as string) || '{"code": ""}'
-        );
 
-        if (
-          codeResult.isError ||
-          !codeData.code ||
-          codeData.code.trim().length === 0
-        ) {
-          // Use enhanced completion analysis to understand why code generation failed
-          const analysis = this.sessionManager.analyzeCompletionState(
-            argsObj.sessionId
-          );
-          warnings.push("Code generation failed");
-          codeGenerationSuccess = false;
-
-          if (analysis.isComplete) {
-            warnings.push(
-              "Reason: Unknown code generation error despite complete analysis"
-            );
-          } else {
-            warnings.push(
-              `Reason: Analysis not actually complete - ${analysis.blockers.join("; ")}`
-            );
-          }
-        } else {
-          generatedCode = codeData.code;
+        if (codeResult.success) {
+          generatedCode = codeResult.data.code;
           codeGenerationSuccess = true;
           steps.push(
-            `✅ Code generation complete - ${generatedCode.length} characters generated`
+            `✅ Code generation complete - ${codeResult.data.characterCount} characters generated`
           );
+        } else {
+          warnings.push(
+            `Code generation error: ${codeResult.error?.message || "Unknown error"}`
+          );
+          codeGenerationSuccess = false;
         }
       } catch (error) {
         // Use enhanced completion analysis to provide context for the error
@@ -5355,7 +5371,7 @@ ${recommendationsList}
   }
 
   /**
-   * Create success result for complete analysis
+   * Create success result for complete analysis (using session as single source of truth)
    */
   private createSuccessResult(params: {
     sessionId: string;
@@ -5368,8 +5384,13 @@ ${recommendationsList}
     steps: string[];
     warnings: string[];
   }): CallToolResult {
-    // Overall workflow success requires both analysis completion AND successful code generation
-    const overallSuccess = params.isComplete && params.codeGenerationSuccess;
+    // Single source of truth: Re-fetch session state to ensure accuracy
+    const finalSessionState = this.sessionManager.getSession(params.sessionId);
+    const actualGeneratedCode = finalSessionState.state.generatedCode || "";
+    const actualCodeGenerated = !!actualGeneratedCode;
+
+    // Use session state as the authoritative source, not workflow local variables
+    const overallSuccess = params.isComplete && actualCodeGenerated;
 
     return {
       content: [
@@ -5380,7 +5401,7 @@ ${recommendationsList}
             sessionId: params.sessionId,
             result: {
               analysisComplete: params.isComplete,
-              codeGenerated: params.codeGenerationSuccess,
+              codeGenerated: actualCodeGenerated,
               workflowStatus: overallSuccess
                 ? "completed"
                 : params.isComplete
@@ -5389,12 +5410,12 @@ ${recommendationsList}
               iterations: params.iterations,
               targetUrl: params.targetUrl,
               elapsedTime: params.elapsedTime,
-              codeLength: params.generatedCode.length,
+              codeLength: actualGeneratedCode.length,
             },
             steps: params.steps,
             warnings: params.warnings,
-            ...(params.generatedCode && {
-              generatedCode: params.generatedCode,
+            ...(actualGeneratedCode && {
+              generatedCode: actualGeneratedCode,
             }),
             summary: `Analysis ${params.isComplete ? "completed" : "partially completed"} in ${params.iterations} iterations (${params.elapsedTime}ms)`,
           }),
