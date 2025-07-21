@@ -168,7 +168,6 @@ interface HARStats {
   authErrors: number;
 }
 
-
 /**
  * Assess quality based on captured statistics with authentication awareness
  */

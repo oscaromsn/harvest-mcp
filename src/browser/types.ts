@@ -91,7 +91,14 @@ export interface SessionConfig {
     };
     contextOptions?: {
       deviceScaleFactor?: number | undefined;
+      hasTouch?: boolean | undefined;
+      isMobile?: boolean | undefined;
+      locale?: string | undefined;
+      timezone?: string | undefined;
     };
+    timeout?: number | undefined;
+    navigationTimeout?: number | undefined;
+    slowMo?: number | undefined;
   };
   artifactConfig?: {
     enabled?: boolean | undefined;

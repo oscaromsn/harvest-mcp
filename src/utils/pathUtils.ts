@@ -130,8 +130,16 @@ export async function getSafeOutputDirectory(
 async function handleClientAccessibleDirectory(
   sessionId?: string
 ): Promise<string> {
-  const sharedBaseDir =
-    process.env.HARVEST_SHARED_DIR || join(homedir(), ".harvest", "shared");
+  let sharedBaseDir: string;
+  try {
+    const { getConfig } = await import("../config/index.js");
+    const config = getConfig();
+    sharedBaseDir = config.paths.sharedDir;
+  } catch {
+    // Fallback to environment variable or default
+    sharedBaseDir =
+      process.env.HARVEST_SHARED_DIR || join(homedir(), ".harvest", "shared");
+  }
   const sessionPart = sessionId ? `/${sessionId}` : `/session-${Date.now()}`;
   const primaryPath = `${sharedBaseDir}${sessionPart}`;
 
