@@ -37,6 +37,7 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 html/**
 
 # docs & dev artifacts
+docs/analysis/**
 **/todo.md
 tests/fixtures/**
 tests/investigation/**
