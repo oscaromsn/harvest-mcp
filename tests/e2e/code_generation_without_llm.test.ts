@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { SessionManager } from "../../src/core/SessionManager.js";
 import { Request } from "../../src/models/Request.js";
 import { HarvestMCPServer } from "../../src/server.js";
+import { handleGenerateWrapperScript } from "../../src/tools/codegenTools.js";
+import { handleSessionStart } from "../../src/tools/sessionTools.js";
 
 /**
  * Code Generation E2E Tests (No LLM Required)
@@ -21,11 +23,14 @@ describe("E2E Code Generation (No LLM)", () => {
   describe("Complete Workflow Without LLM Dependencies", () => {
     it("should complete full code generation workflow with manually constructed DAG", async () => {
       // Step 1: Create session using MCP tool call
-      const sessionResult = await server.handleSessionStart({
-        harPath: "tests/fixtures/test-data/pangea_search.har",
-        cookiePath: "tests/fixtures/test-data/pangea_cookies.json",
-        prompt: "Search and download documents from Pangea system",
-      });
+      const sessionResult = await handleSessionStart(
+        {
+          harPath: "tests/fixtures/test-data/pangea_search.har",
+          cookiePath: "tests/fixtures/test-data/pangea_cookies.json",
+          prompt: "Search and download documents from Pangea system",
+        },
+        server.getContext()
+      );
 
       const firstContent = sessionResult.content?.[0];
       if (!firstContent || typeof firstContent.text !== "string") {
@@ -130,9 +135,12 @@ describe("E2E Code Generation (No LLM)", () => {
       session.state.toBeProcessedNodes = [];
 
       // Step 3: Generate code using MCP tool call
-      const codeGenResult = await server.handleGenerateWrapperScript({
-        sessionId,
-      });
+      const codeGenResult = await handleGenerateWrapperScript(
+        {
+          sessionId,
+        },
+        server.getContext()
+      );
       const codeGenContent = codeGenResult.content?.[0];
       if (!codeGenContent || typeof codeGenContent.text !== "string") {
         throw new Error("Test failed: expected valid code generation response");
@@ -195,11 +203,14 @@ describe("E2E Code Generation (No LLM)", () => {
     });
 
     it("should handle cookie dependencies in generated code", async () => {
-      const sessionResult = await server.handleSessionStart({
-        harPath: "tests/fixtures/test-data/pangea_search.har",
-        cookiePath: "tests/fixtures/test-data/pangea_cookies.json",
-        prompt: "Access protected resources using session cookies",
-      });
+      const sessionResult = await handleSessionStart(
+        {
+          harPath: "tests/fixtures/test-data/pangea_search.har",
+          cookiePath: "tests/fixtures/test-data/pangea_cookies.json",
+          prompt: "Access protected resources using session cookies",
+        },
+        server.getContext()
+      );
 
       const sessionContent = sessionResult.content?.[0];
       if (!sessionContent || typeof sessionContent.text !== "string") {
@@ -263,9 +274,12 @@ describe("E2E Code Generation (No LLM)", () => {
       session.state.actionUrl = protectedRequest.url;
       session.state.masterNodeId = protectedNodeId;
 
-      const codeGenResult = await server.handleGenerateWrapperScript({
-        sessionId,
-      });
+      const codeGenResult = await handleGenerateWrapperScript(
+        {
+          sessionId,
+        },
+        server.getContext()
+      );
       const codeGenContent = codeGenResult.content?.[0];
       if (!codeGenContent || typeof codeGenContent.text !== "string") {
         throw new Error("Test failed: expected valid code generation response");
@@ -282,11 +296,14 @@ describe("E2E Code Generation (No LLM)", () => {
     });
 
     it("should handle not_found dependencies gracefully", async () => {
-      const sessionResult = await server.handleSessionStart({
-        harPath: "tests/fixtures/test-data/pangea_search.har",
-        cookiePath: "tests/fixtures/test-data/pangea_cookies.json",
-        prompt: "Handle missing dependencies",
-      });
+      const sessionResult = await handleSessionStart(
+        {
+          harPath: "tests/fixtures/test-data/pangea_search.har",
+          cookiePath: "tests/fixtures/test-data/pangea_cookies.json",
+          prompt: "Handle missing dependencies",
+        },
+        server.getContext()
+      );
 
       const sessionContent = sessionResult.content?.[0];
       if (!sessionContent || typeof sessionContent.text !== "string") {
@@ -326,9 +343,12 @@ describe("E2E Code Generation (No LLM)", () => {
       session.state.actionUrl = request.url;
       session.state.masterNodeId = requestNodeId;
 
-      const codeGenResult = await server.handleGenerateWrapperScript({
-        sessionId,
-      });
+      const codeGenResult = await handleGenerateWrapperScript(
+        {
+          sessionId,
+        },
+        server.getContext()
+      );
       const codeGenContent = codeGenResult.content?.[0];
       if (!codeGenContent || typeof codeGenContent.text !== "string") {
         throw new Error("Test failed: expected valid code generation response");
@@ -346,11 +366,14 @@ describe("E2E Code Generation (No LLM)", () => {
     });
 
     it("should generate optimized code for simple single-request scenarios", async () => {
-      const sessionResult = await server.handleSessionStart({
-        harPath: "tests/fixtures/test-data/pangea_search.har",
-        cookiePath: "tests/fixtures/test-data/pangea_cookies.json",
-        prompt: "Get user profile",
-      });
+      const sessionResult = await handleSessionStart(
+        {
+          harPath: "tests/fixtures/test-data/pangea_search.har",
+          cookiePath: "tests/fixtures/test-data/pangea_cookies.json",
+          prompt: "Get user profile",
+        },
+        server.getContext()
+      );
 
       const sessionContent = sessionResult.content?.[0];
       if (!sessionContent || typeof sessionContent.text !== "string") {
@@ -393,9 +416,12 @@ describe("E2E Code Generation (No LLM)", () => {
       session.state.actionUrl = profileRequest.url;
       session.state.masterNodeId = profileNodeId;
 
-      const codeGenResult = await server.handleGenerateWrapperScript({
-        sessionId,
-      });
+      const codeGenResult = await handleGenerateWrapperScript(
+        {
+          sessionId,
+        },
+        server.getContext()
+      );
       const codeGenContent = codeGenResult.content?.[0];
       if (!codeGenContent || typeof codeGenContent.text !== "string") {
         throw new Error("Test failed: expected valid code generation response");
@@ -419,11 +445,14 @@ describe("E2E Code Generation (No LLM)", () => {
     });
 
     it("should handle complex multi-step workflows", async () => {
-      const sessionResult = await server.handleSessionStart({
-        harPath: "tests/fixtures/test-data/pangea_search.har",
-        cookiePath: "tests/fixtures/test-data/pangea_cookies.json",
-        prompt: "Complete document processing pipeline",
-      });
+      const sessionResult = await handleSessionStart(
+        {
+          harPath: "tests/fixtures/test-data/pangea_search.har",
+          cookiePath: "tests/fixtures/test-data/pangea_cookies.json",
+          prompt: "Complete document processing pipeline",
+        },
+        server.getContext()
+      );
 
       const sessionContent = sessionResult.content?.[0];
       if (!sessionContent || typeof sessionContent.text !== "string") {
@@ -532,9 +561,12 @@ describe("E2E Code Generation (No LLM)", () => {
         session.state.masterNodeId = lastNodeId;
       }
 
-      const codeGenResult = await server.handleGenerateWrapperScript({
-        sessionId,
-      });
+      const codeGenResult = await handleGenerateWrapperScript(
+        {
+          sessionId,
+        },
+        server.getContext()
+      );
       const codeGenContent = codeGenResult.content?.[0];
       if (!codeGenContent || typeof codeGenContent.text !== "string") {
         throw new Error("Test failed: expected valid code generation response");
@@ -580,11 +612,14 @@ describe("E2E Code Generation (No LLM)", () => {
 
   describe("Performance and Edge Cases", () => {
     it("should handle sessions with many parallel requests", async () => {
-      const sessionResult = await server.handleSessionStart({
-        harPath: "tests/fixtures/test-data/pangea_search.har",
-        cookiePath: "tests/fixtures/test-data/pangea_cookies.json",
-        prompt: "Parallel data processing",
-      });
+      const sessionResult = await handleSessionStart(
+        {
+          harPath: "tests/fixtures/test-data/pangea_search.har",
+          cookiePath: "tests/fixtures/test-data/pangea_cookies.json",
+          prompt: "Parallel data processing",
+        },
+        server.getContext()
+      );
 
       const sessionContent = sessionResult.content?.[0];
       if (!sessionContent || typeof sessionContent.text !== "string") {
@@ -672,9 +707,12 @@ describe("E2E Code Generation (No LLM)", () => {
       session.state.masterNodeId = aggregateNodeId;
 
       const startTime = Date.now();
-      const codeGenResult = await server.handleGenerateWrapperScript({
-        sessionId,
-      });
+      const codeGenResult = await handleGenerateWrapperScript(
+        {
+          sessionId,
+        },
+        server.getContext()
+      );
       const duration = Date.now() - startTime;
 
       const codeGenContent = codeGenResult.content?.[0];
@@ -701,11 +739,14 @@ describe("E2E Code Generation (No LLM)", () => {
     });
 
     it("should maintain deterministic code generation", async () => {
-      const sessionResult = await server.handleSessionStart({
-        harPath: "tests/fixtures/test-data/pangea_search.har",
-        cookiePath: "tests/fixtures/test-data/pangea_cookies.json",
-        prompt: "Deterministic test",
-      });
+      const sessionResult = await handleSessionStart(
+        {
+          harPath: "tests/fixtures/test-data/pangea_search.har",
+          cookiePath: "tests/fixtures/test-data/pangea_cookies.json",
+          prompt: "Deterministic test",
+        },
+        server.getContext()
+      );
 
       const sessionContent = sessionResult.content?.[0];
       if (!sessionContent || typeof sessionContent.text !== "string") {
@@ -743,7 +784,10 @@ describe("E2E Code Generation (No LLM)", () => {
       // Generate code multiple times
       const codes: string[] = [];
       for (let i = 0; i < 3; i++) {
-        const result = await server.handleGenerateWrapperScript({ sessionId });
+        const result = await handleGenerateWrapperScript(
+          { sessionId },
+          server.getContext()
+        );
         const resultContent = result.content?.[0];
         if (!resultContent || typeof resultContent.text !== "string") {
           throw new Error(

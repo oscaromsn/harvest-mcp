@@ -2,6 +2,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionManager } from "../../src/core/SessionManager.js";
 import type { HarvestMCPServer } from "../../src/server.js";
 import {
+  handleIsComplete,
+  handleProcessNextNode,
+} from "../../src/tools/analysisTools.js";
+import { handleGenerateWrapperScript } from "../../src/tools/codegenTools.js";
+import {
+  handleGetUnresolvedNodes,
+  handleListAllRequests,
+} from "../../src/tools/debugTools.js";
+import { handleSessionStart } from "../../src/tools/sessionTools.js";
+import {
   cleanupE2EContext,
   createManualDAGScenario,
   createTestSession,
@@ -82,11 +92,11 @@ describe("E2E Complete Code Generation Workflow", () => {
     }, 30000); // 30 second timeout for complete workflow
 
     it("should handle workflow with debug intervention", async () => {
-      const sessionId = await createDebugInterventionSession();
+      const sessionId = await createDebugInterventionSession(server);
       await runInitialAnalysisAndProcessing(sessionId);
       await handleUnresolvedNodes(sessionId);
       await forceCompletionForTesting(sessionId);
-      await verifyCodeGeneration(sessionId);
+      await verifyCodeGeneration(sessionId, server);
 
       console.log("✅ Debug intervention workflow successful");
     }, 20000);
@@ -99,9 +109,12 @@ describe("E2E Complete Code Generation Workflow", () => {
       createManualDAGScenario(sessionManager, sessionId, "simple");
 
       // Generate code for simple case
-      const codeGenResult = await server.handleGenerateWrapperScript({
-        sessionId,
-      });
+      const codeGenResult = await handleGenerateWrapperScript(
+        {
+          sessionId,
+        },
+        server.getContext()
+      );
       const generatedCode = codeGenResult.content?.[0]?.text as string;
       if (!generatedCode) {
         throw new Error("No generated code");
@@ -119,12 +132,17 @@ describe("E2E Complete Code Generation Workflow", () => {
   });
 
   // Helper functions for debug intervention test
-  async function createDebugInterventionSession(): Promise<string> {
-    const sessionResult = await server.handleSessionStart({
-      harPath: "tests/fixtures/test-data/pangea_search.har",
-      cookiePath: "tests/fixtures/test-data/pangea_cookies.json",
-      prompt: "Download documents from Pangea",
-    });
+  async function createDebugInterventionSession(
+    server: HarvestMCPServer
+  ): Promise<string> {
+    const sessionResult = await handleSessionStart(
+      {
+        harPath: "tests/fixtures/test-data/pangea_search.har",
+        cookiePath: "tests/fixtures/test-data/pangea_cookies.json",
+        prompt: "Download documents from Pangea",
+      },
+      server.getContext()
+    );
 
     const firstContent = sessionResult.content?.[0];
     if (!firstContent || typeof firstContent.text !== "string") {
@@ -140,7 +158,10 @@ describe("E2E Complete Code Generation Workflow", () => {
 
     // Process a few nodes
     for (let i = 0; i < 3; i++) {
-      const completeResult = await server.handleIsComplete({ sessionId });
+      const completeResult = handleIsComplete(
+        { sessionId },
+        server.getContext()
+      );
       const completeContent = completeResult.content?.[0];
       if (!completeContent || typeof completeContent.text !== "string") {
         throw new Error(
@@ -152,14 +173,17 @@ describe("E2E Complete Code Generation Workflow", () => {
       if (isComplete) {
         break;
       }
-      await server.handleProcessNextNode({ sessionId });
+      await handleProcessNextNode({ sessionId }, server.getContext());
     }
   }
 
   async function handleUnresolvedNodes(sessionId: string): Promise<void> {
-    const unresolvedResult = await server.handleGetUnresolvedNodes({
-      sessionId,
-    });
+    const unresolvedResult = await handleGetUnresolvedNodes(
+      {
+        sessionId,
+      },
+      server.getContext()
+    );
     const unresolvedContent = unresolvedResult.content?.[0];
     if (!unresolvedContent || typeof unresolvedContent.text !== "string") {
       throw new Error("Test failed: expected valid unresolved nodes response");
@@ -174,7 +198,10 @@ describe("E2E Complete Code Generation Workflow", () => {
   }
 
   async function listRequestsForDebug(sessionId: string): Promise<void> {
-    const requestsResult = await server.handleListAllRequests({ sessionId });
+    const requestsResult = await handleListAllRequests(
+      { sessionId },
+      server.getContext()
+    );
     const requestsContent = requestsResult.content?.[0];
     if (!requestsContent || typeof requestsContent.text !== "string") {
       throw new Error("Test failed: expected valid requests list response");
@@ -205,10 +232,16 @@ describe("E2E Complete Code Generation Workflow", () => {
     session.state.toBeProcessedNodes = [];
   }
 
-  async function verifyCodeGeneration(sessionId: string): Promise<void> {
-    const codeGenResult = await server.handleGenerateWrapperScript({
-      sessionId,
-    });
+  async function verifyCodeGeneration(
+    sessionId: string,
+    server: HarvestMCPServer
+  ): Promise<void> {
+    const codeGenResult = await handleGenerateWrapperScript(
+      {
+        sessionId,
+      },
+      server.getContext()
+    );
     const codeGenContent = codeGenResult.content?.[0];
     if (!codeGenContent || typeof codeGenContent.text !== "string") {
       throw new Error("Test failed: expected valid code generation response");
@@ -228,7 +261,7 @@ describe("E2E Complete Code Generation Workflow", () => {
 
       // Try to generate code without completing analysis
       await expect(
-        server.handleGenerateWrapperScript({ sessionId })
+        handleGenerateWrapperScript({ sessionId }, server.getContext())
       ).rejects.toThrow("Cannot generate code - analysis not complete");
 
       console.log("✅ Incomplete analysis error handling works correctly");
@@ -242,7 +275,7 @@ describe("E2E Complete Code Generation Workflow", () => {
 
       // Code generation should detect and handle the cycle
       await expect(
-        server.handleGenerateWrapperScript({ sessionId })
+        handleGenerateWrapperScript({ sessionId }, server.getContext())
       ).rejects.toThrow("Graph contains cycles");
 
       console.log("✅ Cycle prevention working correctly");
@@ -257,9 +290,12 @@ describe("E2E Complete Code Generation Workflow", () => {
       createManualDAGScenario(sessionManager, sessionId, "complex");
 
       // Generate comprehensive code
-      const codeGenResult = await server.handleGenerateWrapperScript({
-        sessionId,
-      });
+      const codeGenResult = await handleGenerateWrapperScript(
+        {
+          sessionId,
+        },
+        server.getContext()
+      );
       const generatedCode = codeGenResult.content?.[0]?.text as string;
       if (!generatedCode) {
         throw new Error("No generated code");
@@ -287,11 +323,14 @@ describe("E2E Complete Code Generation Workflow", () => {
     it("should handle large HAR files efficiently", async () => {
       const startTime = Date.now();
 
-      const sessionResult = await server.handleSessionStart({
-        harPath: "tests/fixtures/test-data/pangea_search.har",
-        cookiePath: "tests/fixtures/test-data/pangea_cookies.json",
-        prompt: "Performance test for large HAR file processing",
-      });
+      const sessionResult = await handleSessionStart(
+        {
+          harPath: "tests/fixtures/test-data/pangea_search.har",
+          cookiePath: "tests/fixtures/test-data/pangea_cookies.json",
+          prompt: "Performance test for large HAR file processing",
+        },
+        server.getContext()
+      );
 
       const sessionId = JSON.parse(
         sessionResult.content?.[0]?.text as string
@@ -329,9 +368,12 @@ describe("E2E Complete Code Generation Workflow", () => {
       session.state.toBeProcessedNodes = [];
 
       // Generate code for large scenario
-      const codeGenResult = await server.handleGenerateWrapperScript({
-        sessionId,
-      });
+      const codeGenResult = await handleGenerateWrapperScript(
+        {
+          sessionId,
+        },
+        server.getContext()
+      );
       const generatedCode = codeGenResult.content?.[0]?.text as string;
       if (!generatedCode) {
         throw new Error("No generated code");
@@ -361,11 +403,14 @@ describe("E2E Complete Code Generation Workflow", () => {
       // Create multiple sessions concurrently
       for (let i = 0; i < concurrentSessions; i++) {
         const promise = (async () => {
-          const sessionResult = await server.handleSessionStart({
-            harPath: "tests/fixtures/test-data/pangea_search.har",
-            cookiePath: "tests/fixtures/test-data/pangea_cookies.json",
-            prompt: `Concurrent session ${i} - test performance`,
-          });
+          const sessionResult = await handleSessionStart(
+            {
+              harPath: "tests/fixtures/test-data/pangea_search.har",
+              cookiePath: "tests/fixtures/test-data/pangea_cookies.json",
+              prompt: `Concurrent session ${i} - test performance`,
+            },
+            server.getContext()
+          );
 
           const sessionId = JSON.parse(
             sessionResult.content?.[0]?.text as string
@@ -397,9 +442,12 @@ describe("E2E Complete Code Generation Workflow", () => {
           session.state.masterNodeId = nodeId;
 
           // Generate code
-          const codeGenResult = await server.handleGenerateWrapperScript({
-            sessionId,
-          });
+          const codeGenResult = await handleGenerateWrapperScript(
+            {
+              sessionId,
+            },
+            server.getContext()
+          );
           return {
             sessionId,
             codeLength:

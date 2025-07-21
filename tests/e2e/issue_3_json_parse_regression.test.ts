@@ -8,6 +8,15 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import path from "node:path";
 import { HarvestMCPServer } from "../../src/server.js";
+import {
+  handleIsComplete,
+  handleProcessNextNode,
+  handleRunInitialAnalysisWithConfig,
+} from "../../src/tools/analysisTools.js";
+import { handleGenerateWrapperScript } from "../../src/tools/codegenTools.js";
+import { handleSessionStart } from "../../src/tools/sessionTools.js";
+import { handleSessionStatus } from "../../src/tools/systemTools.js";
+import { handleAnalyzeHarWorkflow } from "../../src/tools/workflowTools.js";
 
 describe("Issue #3 Regression: JSON Parse Error Fix", () => {
   let server: HarvestMCPServer;
@@ -32,11 +41,14 @@ describe("Issue #3 Regression: JSON Parse Error Fix", () => {
     const prompt =
       "Generate a comprehensive TypeScript fetcher for searching Brazilian Labor Court jurisprudence from jurisprudencia.jt.jus.br. The fetcher should support all available search filters, parameters, and return structured data with proper typing. Include support for search terms, date ranges, court selection, document types, and pagination. Ensure the fetcher can handle different search scenarios and properly parse the response data into a structured format.";
 
-    const result = await server.handleCompleteAnalysis({
-      harPath: harFilePath,
-      prompt: prompt,
-      maxIterations: 25,
-    });
+    const result = await handleAnalyzeHarWorkflow(
+      {
+        harPath: harFilePath,
+        description: prompt,
+        autoFix: true,
+      },
+      server.getContext()
+    );
 
     // Parse the response
     const responseText = result.content?.[0]?.text;
@@ -83,27 +95,36 @@ describe("Issue #3 Regression: JSON Parse Error Fix", () => {
 
   test("session_status matches workflow_complete_analysis results", async () => {
     // Create a session first
-    const sessionResult = await server.handleSessionStart({
-      harPath: harFilePath,
-      prompt: "Generate jurisprudencia fetcher",
-    });
+    const sessionResult = await handleSessionStart(
+      {
+        harPath: harFilePath,
+        prompt: "Generate jurisprudencia fetcher",
+      },
+      server.getContext()
+    );
 
     const sessionResponseText = sessionResult.content?.[0]?.text;
     const sessionData = JSON.parse(sessionResponseText as string);
     const sessionId = sessionData.sessionId;
 
     // Run the workflow
-    const workflowResult = await server.handleCompleteAnalysis({
-      harPath: harFilePath,
-      prompt: "Generate jurisprudencia fetcher",
-      maxIterations: 25,
-    });
+    const workflowResult = await handleAnalyzeHarWorkflow(
+      {
+        harPath: harFilePath,
+        description: "Generate jurisprudencia fetcher",
+        autoFix: true,
+      },
+      server.getContext()
+    );
 
     const workflowResponseText = workflowResult.content?.[0]?.text;
     const workflowData = JSON.parse(workflowResponseText as string);
 
     // Get session status
-    const statusResult = await server.handleSessionStatus({ sessionId });
+    const statusResult = await handleSessionStatus(
+      { sessionId },
+      server.getContext()
+    );
     const statusResponseText = statusResult.content?.[0]?.text;
     const statusData = JSON.parse(statusResponseText as string);
 
@@ -123,23 +144,32 @@ describe("Issue #3 Regression: JSON Parse Error Fix", () => {
 
   test("direct codegen_generate_wrapper_script still works", async () => {
     // Create and complete analysis for a session
-    const sessionResult = await server.handleSessionStart({
-      harPath: harFilePath,
-      prompt: "Generate jurisprudencia fetcher",
-    });
+    const sessionResult = await handleSessionStart(
+      {
+        harPath: harFilePath,
+        prompt: "Generate jurisprudencia fetcher",
+      },
+      server.getContext()
+    );
 
     const sessionResponseText = sessionResult.content?.[0]?.text;
     const sessionData = JSON.parse(sessionResponseText as string);
     const sessionId = sessionData.sessionId;
 
     // Run analysis to completion
-    await server.handleRunInitialAnalysis({ sessionId });
+    await handleRunInitialAnalysisWithConfig(
+      { sessionId },
+      server.getContext()
+    );
 
     // Process any nodes if needed
     let isComplete = false;
     let attempts = 0;
     while (!isComplete && attempts < 10) {
-      const statusResult = await server.handleIsComplete({ sessionId });
+      const statusResult = await handleIsComplete(
+        { sessionId },
+        server.getContext()
+      );
       const statusText = statusResult.content?.[0]?.text;
       const statusData = JSON.parse(statusText as string);
 
@@ -150,7 +180,7 @@ describe("Issue #3 Regression: JSON Parse Error Fix", () => {
 
       // Process next node
       try {
-        await server.handleProcessNextNode({ sessionId });
+        await handleProcessNextNode({ sessionId }, server.getContext());
       } catch (error) {
         // May fail if queue is empty
         break;
@@ -160,9 +190,12 @@ describe("Issue #3 Regression: JSON Parse Error Fix", () => {
 
     if (isComplete) {
       // Test direct code generation
-      const codeResult = await server.handleGenerateWrapperScript({
-        sessionId,
-      });
+      const codeResult = await handleGenerateWrapperScript(
+        {
+          sessionId,
+        },
+        server.getContext()
+      );
 
       const codeText = codeResult.content?.[0]?.text;
       expect(codeText).toBeDefined();
@@ -177,11 +210,14 @@ describe("Issue #3 Regression: JSON Parse Error Fix", () => {
     const invalidHarPath = path.resolve(__dirname, "../fixtures/empty.har");
 
     try {
-      await server.handleCompleteAnalysis({
-        harPath: invalidHarPath,
-        prompt: "Test error handling",
-        maxIterations: 1,
-      });
+      await handleAnalyzeHarWorkflow(
+        {
+          harPath: invalidHarPath,
+          description: "Test error handling",
+          autoFix: false,
+        },
+        server.getContext()
+      );
     } catch (error: any) {
       // Should get a meaningful error, not a generic JSON parse error
       expect(error.message).toBeDefined();
