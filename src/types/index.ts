@@ -648,16 +648,7 @@ export interface ParsedHARData {
       tokenRequests: number;
       authErrors: number;
     };
-    authAnalysis: {
-      hasAuthHeaders: boolean;
-      hasCookies: boolean;
-      hasTokens: boolean;
-      authErrors: number;
-      tokenPatterns: string[];
-      authTypes: string[];
-      issues: string[];
-      recommendations: string[];
-    };
+    authAnalysis: AuthenticationAnalysis;
   };
   authAnalysis?: AuthenticationAnalysis;
 }
@@ -1178,11 +1169,37 @@ export interface SystemToolContext extends SessionQuery, SessionAnalysis {
   completedSessionManager: CompletedSessionManagerAdapter;
 }
 
+export interface ManualSessionToolContext
+  extends SessionManagement,
+    SessionLogging {
+  sessionManager: SessionManagerAdapter;
+  completedSessionManager: CompletedSessionManagerAdapter;
+}
+
+export interface WorkflowToolContext
+  extends SessionManagement,
+    SessionLogging,
+    SessionAnalysis {
+  sessionManager: SessionManagerAdapter;
+  completedSessionManager: CompletedSessionManagerAdapter;
+}
+
+export interface AuthToolContext
+  extends SessionQuery,
+    SessionLogging,
+    SessionAnalysis {
+  sessionManager: SessionManagerAdapter;
+  completedSessionManager: CompletedSessionManagerAdapter;
+}
+
 /**
- * Legacy interface for backward compatibility
- * @deprecated Use specific tool context interfaces instead
+ * Unified context interface that combines all focused interfaces for backward compatibility
+ * This provides all capabilities needed by legacy code while maintaining type safety
  */
-export interface ToolHandlerContext {
+export interface UnifiedToolContext
+  extends SessionManagement,
+    SessionLogging,
+    SessionAnalysis {
   sessionManager: SessionManagerAdapter;
   completedSessionManager: CompletedSessionManagerAdapter;
 }
@@ -1401,6 +1418,98 @@ export function createSystemToolContext(
 
   return {
     getSession: sessionAdapter.getSession.bind(sessionAdapter),
+    analyzeCompletionState:
+      sessionAdapter.analyzeCompletionState.bind(sessionAdapter),
+    syncCompletionState:
+      sessionAdapter.syncCompletionState.bind(sessionAdapter),
+    sessionManager: sessionAdapter,
+    completedSessionManager: completedSessionAdapter,
+  };
+}
+
+export function createManualSessionToolContext(
+  sessionManager: SessionManager,
+  completedSessionManager: CompletedSessionManager
+): ManualSessionToolContext {
+  const sessionAdapter = new SessionManagerAdapter(sessionManager);
+  const completedSessionAdapter = new CompletedSessionManagerAdapter(
+    completedSessionManager
+  );
+
+  return {
+    getSession: sessionAdapter.getSession.bind(sessionAdapter),
+    addLog: sessionAdapter.addLog.bind(sessionAdapter),
+    createSession: sessionAdapter.createSession.bind(sessionAdapter),
+    listSessions: sessionAdapter.listSessions.bind(sessionAdapter),
+    getStats: sessionAdapter.getStats.bind(sessionAdapter),
+    deleteSession: sessionAdapter.deleteSession.bind(sessionAdapter),
+    sessionManager: sessionAdapter,
+    completedSessionManager: completedSessionAdapter,
+  };
+}
+
+export function createWorkflowToolContext(
+  sessionManager: SessionManager,
+  completedSessionManager: CompletedSessionManager
+): WorkflowToolContext {
+  const sessionAdapter = new SessionManagerAdapter(sessionManager);
+  const completedSessionAdapter = new CompletedSessionManagerAdapter(
+    completedSessionManager
+  );
+
+  return {
+    getSession: sessionAdapter.getSession.bind(sessionAdapter),
+    addLog: sessionAdapter.addLog.bind(sessionAdapter),
+    createSession: sessionAdapter.createSession.bind(sessionAdapter),
+    listSessions: sessionAdapter.listSessions.bind(sessionAdapter),
+    getStats: sessionAdapter.getStats.bind(sessionAdapter),
+    deleteSession: sessionAdapter.deleteSession.bind(sessionAdapter),
+    analyzeCompletionState:
+      sessionAdapter.analyzeCompletionState.bind(sessionAdapter),
+    syncCompletionState:
+      sessionAdapter.syncCompletionState.bind(sessionAdapter),
+    sessionManager: sessionAdapter,
+    completedSessionManager: completedSessionAdapter,
+  };
+}
+
+export function createAuthToolContext(
+  sessionManager: SessionManager,
+  completedSessionManager: CompletedSessionManager
+): AuthToolContext {
+  const sessionAdapter = new SessionManagerAdapter(sessionManager);
+  const completedSessionAdapter = new CompletedSessionManagerAdapter(
+    completedSessionManager
+  );
+
+  return {
+    getSession: sessionAdapter.getSession.bind(sessionAdapter),
+    addLog: sessionAdapter.addLog.bind(sessionAdapter),
+    analyzeCompletionState:
+      sessionAdapter.analyzeCompletionState.bind(sessionAdapter),
+    syncCompletionState:
+      sessionAdapter.syncCompletionState.bind(sessionAdapter),
+    sessionManager: sessionAdapter,
+    completedSessionManager: completedSessionAdapter,
+  };
+}
+
+export function createUnifiedToolContext(
+  sessionManager: SessionManager,
+  completedSessionManager: CompletedSessionManager
+): UnifiedToolContext {
+  const sessionAdapter = new SessionManagerAdapter(sessionManager);
+  const completedSessionAdapter = new CompletedSessionManagerAdapter(
+    completedSessionManager
+  );
+
+  return {
+    getSession: sessionAdapter.getSession.bind(sessionAdapter),
+    addLog: sessionAdapter.addLog.bind(sessionAdapter),
+    createSession: sessionAdapter.createSession.bind(sessionAdapter),
+    listSessions: sessionAdapter.listSessions.bind(sessionAdapter),
+    getStats: sessionAdapter.getStats.bind(sessionAdapter),
+    deleteSession: sessionAdapter.deleteSession.bind(sessionAdapter),
     analyzeCompletionState:
       sessionAdapter.analyzeCompletionState.bind(sessionAdapter),
     syncCompletionState:
