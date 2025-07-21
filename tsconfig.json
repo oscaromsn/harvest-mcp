@@ -50,5 +50,6 @@
       "@/*": ["./src/*"],
       "@tests/*": ["./tests/*"]
     }
-  }
+  },
+  "exclude": ["tests/fixtures/**/*"]
 }
