@@ -1,4 +1,6 @@
 import { z } from "zod";
+import type { CompletedSessionManager } from "../core/CompletedSessionManager.js";
+import type { SessionManager } from "../core/SessionManager.js";
 
 // ========== Authentication Types ==========
 
@@ -1008,7 +1010,7 @@ export type {
 // ========== Tool Handler Context Types ==========
 
 // Forward declarations to avoid circular dependencies
-export interface SessionManager {
+export interface ISessionManager {
   createSession(params: SessionStartParams): Promise<string>;
   getSession(sessionId: string): HarvestSession | undefined;
   listSessions(): SessionInfo[];
@@ -1046,11 +1048,11 @@ export interface SessionManager {
   };
 }
 
-export interface CompletedSessionManager {
+export interface ICompletedSessionManager {
   getSession(sessionId: string): HarvestSession | undefined;
   listSessions(): SessionInfo[];
   deleteSession(sessionId: string): boolean;
-  getGeneratedCode(sessionId: string): string | undefined;
+  getGeneratedCode(sessionId: string): Promise<string | undefined>;
   setGeneratedCode(sessionId: string, code: string): void;
   getInstance(): CompletedSessionManager;
   cacheCompletedSession(
@@ -1082,9 +1084,468 @@ export interface CompletedSessionManager {
  * Shared context for MCP tool handlers to access server dependencies
  * without tight coupling to the HarvestMCPServer class
  */
+// ========== Session Analysis Types ==========
+
+/**
+ * Comprehensive analysis completion interface
+ */
+export interface CompletionAnalysis {
+  isComplete: boolean;
+  blockers: string[];
+  recommendations: string[];
+  diagnostics: {
+    hasMasterNode: boolean;
+    dagComplete: boolean;
+    queueEmpty: boolean;
+    totalNodes: number;
+    unresolvedNodes: number;
+    pendingInQueue: number;
+    hasActionUrl: boolean;
+    authAnalysisComplete: boolean;
+    authReadiness: boolean;
+    authErrors: number;
+    allNodesClassified: boolean;
+    nodesNeedingClassification: number;
+    bootstrapAnalysisComplete: boolean;
+    sessionConstantsCount: number;
+    unresolvedSessionConstants: number;
+  };
+}
+
+export interface CompletedSessionArtifacts {
+  sessionId: string;
+  completedAt: string;
+  prompt: string;
+  artifacts: {
+    har?: {
+      filename: string;
+      path: string;
+      size: number;
+    };
+    cookies?: {
+      filename: string;
+      path: string;
+      size: number;
+    };
+    generatedCode?: {
+      filename: string;
+      path: string;
+      size: number;
+    };
+    metadata: {
+      filename: string;
+      path: string;
+      size: number;
+    };
+  };
+  metadata: {
+    totalNodes: number;
+    harQuality: string;
+    totalRequests: number;
+    hasAuthCookies: boolean;
+    generatedCodeSize: number;
+    cachePath: string;
+  };
+}
+
+// ========== Focused Tool Handler Interfaces (ISP Compliance) ==========
+
+/**
+ * Minimal interface for session querying operations
+ * Used by tools that need to retrieve session data
+ */
+export interface SessionQuery {
+  getSession(sessionId: string): HarvestSession;
+}
+
+/**
+ * Minimal interface for session logging operations
+ * Used by tools that need to add log entries
+ */
+export interface SessionLogging {
+  addLog(
+    sessionId: string,
+    level: LogEntry["level"],
+    message: string,
+    data?: unknown
+  ): void;
+}
+
+/**
+ * Minimal interface for session analysis operations
+ * Used by tools that need completion analysis
+ */
+export interface SessionAnalysis {
+  analyzeCompletionState(sessionId: string): CompletionAnalysis;
+  syncCompletionState(sessionId: string): void;
+}
+
+/**
+ * Minimal interface for session management operations
+ * Used by tools that need to create/manage sessions
+ */
+export interface SessionManagement extends SessionQuery {
+  createSession(params: SessionStartParams): Promise<string>;
+  listSessions(): SessionInfo[];
+  getStats(): {
+    total: number;
+    active: number;
+    completed: number;
+    failed: number;
+    oldestActiveSession?: string;
+    newestActiveSession?: string;
+  };
+  deleteSession(sessionId: string): boolean;
+}
+
+/**
+ * Minimal interface for completed session operations
+ * Used by tools that need to cache completed sessions
+ */
+export interface CompletedSessionOperations {
+  cacheCompletedSession(
+    session: HarvestSession,
+    analysis: CompletionAnalysis
+  ): Promise<CompletedSessionArtifacts>;
+}
+
+/**
+ * Tool handler context interfaces for different tool types
+ * These compose the minimal interfaces based on actual needs
+ */
+export interface DebugToolContext
+  extends SessionQuery,
+    SessionLogging,
+    SessionAnalysis {
+  sessionManager: SessionManagerAdapter;
+  completedSessionManager: CompletedSessionManagerAdapter;
+}
+
+export interface AnalysisToolContext
+  extends SessionQuery,
+    SessionLogging,
+    SessionAnalysis {
+  sessionManager: SessionManagerAdapter;
+  completedSessionManager: CompletedSessionManagerAdapter;
+}
+
+export interface SessionToolContext extends SessionManagement, SessionLogging {
+  sessionManager: SessionManagerAdapter;
+  completedSessionManager: CompletedSessionManagerAdapter;
+}
+
+export interface CodegenToolContext
+  extends SessionQuery,
+    SessionLogging,
+    SessionAnalysis {
+  sessionManager: SessionManagerAdapter;
+  completedSessionManager: CompletedSessionManagerAdapter;
+}
+
+export interface SystemToolContext extends SessionQuery, SessionAnalysis {
+  sessionManager: SessionManagerAdapter;
+  completedSessionManager: CompletedSessionManagerAdapter;
+}
+
+/**
+ * Legacy interface for backward compatibility
+ * @deprecated Use specific tool context interfaces instead
+ */
 export interface ToolHandlerContext {
-  sessionManager: SessionManager;
-  completedSessionManager: CompletedSessionManager;
+  sessionManager: SessionManagerAdapter;
+  completedSessionManager: CompletedSessionManagerAdapter;
+}
+
+// ========== Adapter Pattern Implementation ==========
+
+/**
+ * Adapter class that implements all session-related interfaces
+ * Bridges between concrete SessionManager and focused interfaces
+ */
+export class SessionManagerAdapter
+  implements SessionQuery, SessionLogging, SessionAnalysis, SessionManagement
+{
+  private sessionManager: SessionManager;
+
+  constructor(sessionManager: SessionManager) {
+    this.sessionManager = sessionManager;
+  }
+
+  // SessionQuery implementation
+  getSession(sessionId: string): HarvestSession {
+    return this.sessionManager.getSession(sessionId);
+  }
+
+  // SessionLogging implementation
+  addLog(
+    sessionId: string,
+    level: LogEntry["level"],
+    message: string,
+    data?: unknown
+  ): void {
+    this.sessionManager.addLog(sessionId, level, message, data);
+  }
+
+  // SessionAnalysis implementation
+  analyzeCompletionState(sessionId: string): CompletionAnalysis {
+    return this.sessionManager.analyzeCompletionState(sessionId);
+  }
+
+  syncCompletionState(sessionId: string): void {
+    this.sessionManager.syncCompletionState(sessionId);
+  }
+
+  // ISessionManager compatibility methods
+  isComplete(sessionId: string): boolean {
+    return this.analyzeCompletionState(sessionId).isComplete;
+  }
+
+  setActionUrl(sessionId: string, url: string): void {
+    const session = this.getSession(sessionId);
+    session.state.actionUrl = url;
+  }
+
+  setMasterNodeId(sessionId: string, nodeId: string): void {
+    const session = this.getSession(sessionId);
+    session.state.masterNodeId = nodeId;
+  }
+
+  updateSessionState(sessionId: string, updates: Partial<SessionState>): void {
+    const session = this.getSession(sessionId);
+    Object.assign(session.state, updates);
+  }
+
+  // SessionManagement implementation
+  async createSession(params: SessionStartParams): Promise<string> {
+    return this.sessionManager.createSession(params);
+  }
+
+  listSessions(): SessionInfo[] {
+    return this.sessionManager.listSessions();
+  }
+
+  getStats(): {
+    total: number;
+    active: number;
+    completed: number;
+    failed: number;
+    oldestActiveSession?: string;
+    newestActiveSession?: string;
+  } {
+    const actualStats = this.sessionManager.getStats();
+    // Map the actual implementation to the expected interface format
+    return {
+      total: actualStats.totalSessions,
+      active: actualStats.activeSessions,
+      completed: actualStats.completedSessions,
+      failed: 0, // No failed status in actual implementation, defaulting to 0
+      // Optional properties are omitted instead of being set to undefined
+    };
+  }
+
+  deleteSession(sessionId: string): boolean {
+    return this.sessionManager.deleteSession(sessionId);
+  }
+}
+
+/**
+ * Adapter class for CompletedSessionManager
+ * Implements the minimal CompletedSessionOperations interface
+ */
+export class CompletedSessionManagerAdapter
+  implements CompletedSessionOperations
+{
+  private completedSessionManager: CompletedSessionManager;
+
+  constructor(completedSessionManager: CompletedSessionManager) {
+    this.completedSessionManager = completedSessionManager;
+  }
+
+  async cacheCompletedSession(
+    session: HarvestSession,
+    analysis: CompletionAnalysis
+  ): Promise<CompletedSessionArtifacts> {
+    return this.completedSessionManager.cacheCompletedSession(
+      session,
+      analysis
+    );
+  }
+
+  // ICompletedSessionManager compatibility methods
+  getSession(_sessionId: string): HarvestSession | undefined {
+    // CompletedSessionManager only stores metadata, not full sessions
+    // Return undefined as completed sessions are cached artifacts, not active sessions
+    return undefined;
+  }
+
+  listSessions(): SessionInfo[] {
+    // Map cached session metadata to SessionInfo format
+    const cachedSessions = this.completedSessionManager.getAllCachedSessions();
+    return cachedSessions.map((metadata) => ({
+      id: metadata.sessionId,
+      prompt: metadata.prompt,
+      createdAt: new Date(metadata.completedAt),
+      lastActivity: new Date(metadata.lastAccessed),
+      status: "completed" as const,
+      isComplete: true, // All cached sessions are complete
+      nodeCount: metadata.analysisResult.totalNodes,
+      state: {
+        phase: "COMPLETE" as const,
+        processingQueue: [],
+        resolvedNodes: new Set(),
+        failedNodes: new Set(),
+        generatedCode: metadata.analysisResult.codeGenerated
+          ? "generated"
+          : undefined,
+        masterNodeId: undefined,
+        actionUrl: undefined,
+        sessionConstants: new Map(),
+      },
+      dag: { nodes: [], edges: [] },
+      harData: {
+        requests: [],
+        validation: { quality: metadata.metadata.harQuality },
+      },
+      cookieData: undefined,
+    }));
+  }
+
+  deleteSession(sessionId: string): boolean {
+    try {
+      this.completedSessionManager.removeCachedSession(sessionId);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async getGeneratedCode(sessionId: string): Promise<string | undefined> {
+    try {
+      return await this.completedSessionManager.getCachedArtifact(
+        sessionId,
+        "generatedCode"
+      );
+    } catch {
+      return undefined;
+    }
+  }
+
+  setGeneratedCode(_sessionId: string, _code: string): void {
+    // CompletedSessionManager doesn't support updating cached artifacts
+    // This is a read-only operation for completed sessions
+    throw new Error("Cannot modify generated code for completed sessions");
+  }
+
+  getInstance(): CompletedSessionManager {
+    return this.completedSessionManager;
+  }
+}
+
+/**
+ * Factory functions for creating properly typed tool contexts
+ */
+export function createDebugToolContext(
+  sessionManager: SessionManager,
+  completedSessionManager: CompletedSessionManager
+): DebugToolContext {
+  const sessionAdapter = new SessionManagerAdapter(sessionManager);
+  const completedSessionAdapter = new CompletedSessionManagerAdapter(
+    completedSessionManager
+  );
+
+  return {
+    getSession: sessionAdapter.getSession.bind(sessionAdapter),
+    addLog: sessionAdapter.addLog.bind(sessionAdapter),
+    analyzeCompletionState:
+      sessionAdapter.analyzeCompletionState.bind(sessionAdapter),
+    syncCompletionState:
+      sessionAdapter.syncCompletionState.bind(sessionAdapter),
+    sessionManager: sessionAdapter,
+    completedSessionManager: completedSessionAdapter,
+  };
+}
+
+export function createAnalysisToolContext(
+  sessionManager: SessionManager,
+  completedSessionManager: CompletedSessionManager
+): AnalysisToolContext {
+  const sessionAdapter = new SessionManagerAdapter(sessionManager);
+  const completedSessionAdapter = new CompletedSessionManagerAdapter(
+    completedSessionManager
+  );
+
+  return {
+    getSession: sessionAdapter.getSession.bind(sessionAdapter),
+    addLog: sessionAdapter.addLog.bind(sessionAdapter),
+    analyzeCompletionState:
+      sessionAdapter.analyzeCompletionState.bind(sessionAdapter),
+    syncCompletionState:
+      sessionAdapter.syncCompletionState.bind(sessionAdapter),
+    sessionManager: sessionAdapter,
+    completedSessionManager: completedSessionAdapter,
+  };
+}
+
+export function createSessionToolContext(
+  sessionManager: SessionManager,
+  completedSessionManager: CompletedSessionManager
+): SessionToolContext {
+  const sessionAdapter = new SessionManagerAdapter(sessionManager);
+  const completedSessionAdapter = new CompletedSessionManagerAdapter(
+    completedSessionManager
+  );
+
+  return {
+    getSession: sessionAdapter.getSession.bind(sessionAdapter),
+    addLog: sessionAdapter.addLog.bind(sessionAdapter),
+    createSession: sessionAdapter.createSession.bind(sessionAdapter),
+    listSessions: sessionAdapter.listSessions.bind(sessionAdapter),
+    getStats: sessionAdapter.getStats.bind(sessionAdapter),
+    deleteSession: sessionAdapter.deleteSession.bind(sessionAdapter),
+    sessionManager: sessionAdapter,
+    completedSessionManager: completedSessionAdapter,
+  };
+}
+
+export function createCodegenToolContext(
+  sessionManager: SessionManager,
+  completedSessionManager: CompletedSessionManager
+): CodegenToolContext {
+  const sessionAdapter = new SessionManagerAdapter(sessionManager);
+  const completedSessionAdapter = new CompletedSessionManagerAdapter(
+    completedSessionManager
+  );
+
+  return {
+    getSession: sessionAdapter.getSession.bind(sessionAdapter),
+    addLog: sessionAdapter.addLog.bind(sessionAdapter),
+    analyzeCompletionState:
+      sessionAdapter.analyzeCompletionState.bind(sessionAdapter),
+    syncCompletionState:
+      sessionAdapter.syncCompletionState.bind(sessionAdapter),
+    sessionManager: sessionAdapter,
+    completedSessionManager: completedSessionAdapter,
+  };
+}
+
+export function createSystemToolContext(
+  sessionManager: SessionManager,
+  completedSessionManager: CompletedSessionManager
+): SystemToolContext {
+  const sessionAdapter = new SessionManagerAdapter(sessionManager);
+  const completedSessionAdapter = new CompletedSessionManagerAdapter(
+    completedSessionManager
+  );
+
+  return {
+    getSession: sessionAdapter.getSession.bind(sessionAdapter),
+    analyzeCompletionState:
+      sessionAdapter.analyzeCompletionState.bind(sessionAdapter),
+    syncCompletionState:
+      sessionAdapter.syncCompletionState.bind(sessionAdapter),
+    sessionManager: sessionAdapter,
+    completedSessionManager: completedSessionAdapter,
+  };
 }
 
 // ========== Internal Tool Communication Types ==========
