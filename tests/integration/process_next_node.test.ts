@@ -84,6 +84,7 @@ describe("Process Next Node Integration", () => {
         inProcessNodeDynamicParts: [],
         isComplete: false,
         logs: [],
+        workflowGroups: new Map(),
       },
       createdAt: new Date(),
       lastActivity: new Date(),

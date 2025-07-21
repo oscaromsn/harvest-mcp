@@ -49,6 +49,7 @@ export const createMockSession = (
     inputVariables: {},
     isComplete: false,
     logs: [],
+    workflowGroups: new Map(),
   },
   createdAt: new Date("2024-01-01T00:00:00Z"),
   lastActivity: new Date("2024-01-01T00:00:00Z"),

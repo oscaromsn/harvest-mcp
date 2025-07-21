@@ -33,7 +33,8 @@ export class DAGManager {
   addNode(
     nodeType: NodeType,
     content: RequestNodeContent | CookieNodeContent | NotFoundNodeContent,
-    attributes?: Partial<DAGNode>
+    attributes?: Partial<DAGNode>,
+    groupId?: string
   ): string {
     const nodeId = uuidv4();
 
@@ -49,6 +50,7 @@ export class DAGManager {
           dynamicParts: attributes?.dynamicParts || [],
           extractedParts: attributes?.extractedParts || [],
           inputVariables: attributes?.inputVariables || {},
+          groupId,
           ...attributes,
         } as CurlDAGNode;
         break;
@@ -60,6 +62,7 @@ export class DAGManager {
           dynamicParts: attributes?.dynamicParts || [],
           extractedParts: attributes?.extractedParts || [],
           inputVariables: attributes?.inputVariables || {},
+          groupId,
           ...attributes,
         } as CookieDAGNode;
         break;
@@ -71,6 +74,7 @@ export class DAGManager {
           dynamicParts: attributes?.dynamicParts || [],
           extractedParts: attributes?.extractedParts || [],
           inputVariables: attributes?.inputVariables || {},
+          groupId,
           ...attributes,
         } as NotFoundDAGNode;
         break;
@@ -82,6 +86,7 @@ export class DAGManager {
           dynamicParts: attributes?.dynamicParts || [],
           extractedParts: attributes?.extractedParts || [],
           inputVariables: attributes?.inputVariables || {},
+          groupId,
           ...attributes,
         } as MasterDAGNode;
         break;
@@ -93,6 +98,7 @@ export class DAGManager {
           dynamicParts: attributes?.dynamicParts || [],
           extractedParts: attributes?.extractedParts || [],
           inputVariables: attributes?.inputVariables || {},
+          groupId,
           ...attributes,
         } as MasterCurlDAGNode;
         break;
@@ -556,5 +562,27 @@ export class DAGManager {
       }
     }
     return null;
+  }
+
+  /**
+   * Get all nodes belonging to a specific workflow group
+   */
+  getNodesByGroup(groupId: string): Map<string, DAGNode> {
+    const nodes = new Map<string, DAGNode>();
+    for (const nodeId of this.graph.nodes()) {
+      const node = this.graph.node(nodeId);
+      if (node && node.groupId === groupId) {
+        nodes.set(nodeId, node);
+      }
+    }
+    return nodes;
+  }
+
+  /**
+   * Get the workflow group ID for a given node
+   */
+  getNodeGroup(nodeId: string): string | undefined {
+    const node = this.graph.node(nodeId);
+    return node?.groupId;
   }
 }

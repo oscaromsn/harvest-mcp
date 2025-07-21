@@ -181,6 +181,7 @@ export class SessionManager {
         inputVariables: params.inputVariables || {},
         isComplete: false,
         logs: [],
+        workflowGroups: new Map(),
       };
 
       // Create session

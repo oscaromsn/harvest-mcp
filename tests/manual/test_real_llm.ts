@@ -135,6 +135,7 @@ async function testRealLLMIntegration() {
           inputVariables: {},
           isComplete: false,
           logs: [],
+          workflowGroups: new Map(),
         },
         createdAt: new Date(),
         lastActivity: new Date(),
