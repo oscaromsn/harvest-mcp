@@ -10,8 +10,8 @@ import {
   HarvestError,
   ManualSessionStartSchema,
   ManualSessionStopSchema,
+  type ManualSessionToolContext,
   type SessionConfig,
-  type ToolHandlerContext,
 } from "../types/index.js";
 
 /**
@@ -19,7 +19,7 @@ import {
  */
 export async function handleStartManualSession(
   params: z.infer<typeof ManualSessionStartSchema>,
-  _context: ToolHandlerContext
+  _context: ManualSessionToolContext
 ): Promise<CallToolResult> {
   try {
     const validationResult = ManualSessionStartSchema.safeParse(params);
@@ -61,7 +61,7 @@ export async function handleStartManualSession(
  */
 export async function handleStopManualSession(
   params: z.infer<typeof ManualSessionStopSchema>,
-  _context: ToolHandlerContext
+  _context: ManualSessionToolContext
 ): Promise<CallToolResult> {
   try {
     const validationResult = ManualSessionStopSchema.safeParse(params);
@@ -175,7 +175,7 @@ export async function handleStopManualSession(
  * Handle session_list_manual tool call
  */
 export async function handleListManualSessions(
-  _context: ToolHandlerContext
+  _context: ManualSessionToolContext
 ): Promise<CallToolResult> {
   try {
     const activeSessions = manualSessionManager.listActiveSessions();
@@ -243,7 +243,7 @@ export async function handleListManualSessions(
  */
 export async function handleCheckManualSessionHealth(
   params: { sessionId: string },
-  _context: ToolHandlerContext
+  _context: ManualSessionToolContext
 ): Promise<CallToolResult> {
   try {
     const healthCheck = await manualSessionManager.checkSessionHealth(
@@ -286,7 +286,7 @@ export async function handleCheckManualSessionHealth(
  */
 export async function handleRecoverManualSession(
   params: { sessionId: string },
-  _context: ToolHandlerContext
+  _context: ManualSessionToolContext
 ): Promise<CallToolResult> {
   try {
     const recoveryResult = await manualSessionManager.recoverSession(
@@ -328,7 +328,7 @@ export async function handleConvertManualToAnalysisSession(
     prompt: string;
     cookiePath?: string | undefined;
   },
-  context: ToolHandlerContext
+  context: ManualSessionToolContext
 ): Promise<CallToolResult> {
   try {
     // First, try to get the session status to check if it's active
@@ -599,7 +599,7 @@ function formatFileSize(bytes: number | undefined): string {
  */
 export function registerManualSessionTools(
   server: McpServer,
-  context: ToolHandlerContext
+  context: ManualSessionToolContext
 ): void {
   server.tool(
     "session_start_manual",

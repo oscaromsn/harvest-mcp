@@ -11,10 +11,10 @@ import { DAGManager } from "../core/DAGManager.js";
 import { parseHARFile } from "../core/HARParser.js";
 import {
   type ClassifiedParameter,
+  type DebugToolContext,
   HarvestError,
   type ParameterClassification,
   type RequestModel,
-  type ToolHandlerContext,
   type URLInfo,
 } from "../types/index.js";
 
@@ -23,7 +23,7 @@ import {
  */
 export async function handleGetUnresolvedNodes(
   params: { sessionId: string },
-  context: ToolHandlerContext
+  context: DebugToolContext
 ): Promise<CallToolResult> {
   try {
     const session = context.sessionManager.getSession(params.sessionId);
@@ -90,7 +90,7 @@ export async function handleGetUnresolvedNodes(
  */
 export async function handleGetNodeDetails(
   params: { sessionId: string; nodeId: string },
-  context: ToolHandlerContext
+  context: DebugToolContext
 ): Promise<CallToolResult> {
   try {
     const session = context.sessionManager.getSession(params.sessionId);
@@ -197,7 +197,7 @@ export async function handleGetNodeDetails(
  */
 export async function handleListAllRequests(
   params: { sessionId: string },
-  context: ToolHandlerContext
+  context: DebugToolContext
 ): Promise<CallToolResult> {
   try {
     const session = context.sessionManager.getSession(params.sessionId);
@@ -273,7 +273,7 @@ export async function handleForceDependency(
     providerNodeId: string;
     providedPart: string;
   },
-  context: ToolHandlerContext
+  context: DebugToolContext
 ): Promise<CallToolResult> {
   try {
     const session = context.sessionManager.getSession(params.sessionId);
@@ -398,7 +398,7 @@ export async function handleForceDependency(
  */
 export async function handleSetMasterNode(
   params: { sessionId: string; url: string },
-  context: ToolHandlerContext
+  context: DebugToolContext
 ): Promise<CallToolResult> {
   try {
     const session = context.sessionManager.getSession(params.sessionId);
@@ -510,7 +510,7 @@ export async function handleSetMasterNode(
  */
 export async function handleGetCompletionBlockers(
   params: { sessionId: string },
-  context: ToolHandlerContext
+  context: DebugToolContext
 ): Promise<CallToolResult> {
   try {
     // Use enhanced completion state analysis
@@ -671,7 +671,7 @@ export async function handlePreviewHar(params: {
       totalRequests: parsedHar.requests.length,
       totalUrls: parsedHar.urls.length,
       apiRequests: validation?.stats.apiRequests || 0,
-      hasAuthentication: validation?.authAnalysis.hasAuthHeaders || false,
+      hasAuthentication: validation?.authAnalysis.hasAuthentication || false,
       readyForAnalysis:
         validation?.quality !== "empty" && validation?.quality !== "poor",
     };
@@ -977,7 +977,7 @@ export async function handleOverrideParameterClassification(
     newClassification: ParameterClassification;
     reasoning?: string;
   },
-  context: ToolHandlerContext
+  context: DebugToolContext
 ): Promise<CallToolResult> {
   try {
     const session = context.sessionManager.getSession(params.sessionId);
@@ -1082,7 +1082,7 @@ export async function handleBatchClassifyParameters(
       reasoning?: string;
     }>;
   },
-  context: ToolHandlerContext
+  context: DebugToolContext
 ): Promise<CallToolResult> {
   try {
     const session = context.sessionManager.getSession(params.sessionId);
@@ -1212,7 +1212,7 @@ export async function handleSkipNode(
     nodeId: string;
     reason: string;
   },
-  context: ToolHandlerContext
+  context: DebugToolContext
 ): Promise<CallToolResult> {
   try {
     const session = context.sessionManager.getSession(params.sessionId);
@@ -1307,7 +1307,7 @@ export async function handleInjectResponse(
     responseData: Record<string, unknown>;
     extractedParts?: Record<string, string>;
   },
-  context: ToolHandlerContext
+  context: DebugToolContext
 ): Promise<CallToolResult> {
   try {
     const session = context.sessionManager.getSession(params.sessionId);
@@ -1389,7 +1389,7 @@ export async function handleResetAnalysis(
     sessionId: string;
     preserveManualOverrides?: boolean;
   },
-  context: ToolHandlerContext
+  context: DebugToolContext
 ): Promise<CallToolResult> {
   try {
     const preserveOverrides = params.preserveManualOverrides ?? true;

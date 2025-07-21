@@ -1,7 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { HarvestError, type ToolHandlerContext } from "../types/index.js";
+import { HarvestError, type WorkflowToolContext } from "../types/index.js";
 import { handleIsComplete, handleProcessNextNode } from "./analysisTools.js";
 import { handleGenerateWrapperScript } from "./codegenTools.js";
 import { handleStartManualSession } from "./manualSessionTools.js";
@@ -12,7 +12,7 @@ import { handleSessionStart } from "./sessionTools.js";
  */
 export async function handleCompleteAnalysis(
   params: { sessionId: string; maxIterations?: number },
-  context: ToolHandlerContext
+  context: WorkflowToolContext
 ): Promise<CallToolResult> {
   try {
     const argsObj = parseCompleteAnalysisArgs(params);
@@ -94,7 +94,7 @@ export async function handleCompleteAnalysis(
  */
 export async function handleQuickCaptureWorkflow(
   params: { url?: string | undefined; duration: number; description: string },
-  context: ToolHandlerContext
+  context: WorkflowToolContext
 ): Promise<CallToolResult> {
   try {
     // Start a manual session with smart defaults
@@ -179,7 +179,7 @@ export async function handleAnalyzeHarWorkflow(
     description: string;
     autoFix?: boolean | undefined;
   },
-  context: ToolHandlerContext
+  context: WorkflowToolContext
 ): Promise<CallToolResult> {
   try {
     const startTime = Date.now();
@@ -300,7 +300,7 @@ function parseCompleteAnalysisArgs(args: unknown) {
 async function runInitialAnalysisForWorkflow(
   argsObj: ReturnType<typeof parseCompleteAnalysisArgs>,
   steps: string[],
-  context: ToolHandlerContext
+  context: WorkflowToolContext
 ): Promise<CallToolResult & { isError?: boolean }> {
   try {
     // Import analysis tools dynamically to avoid circular imports
@@ -367,7 +367,7 @@ async function processNodesIteratively(
   argsObj: ReturnType<typeof parseCompleteAnalysisArgs>,
   steps: string[],
   warnings: string[],
-  context: ToolHandlerContext
+  context: WorkflowToolContext
 ): Promise<{ isComplete: boolean; iterations: number }> {
   let iterations = 0;
   let isComplete = false;
@@ -449,7 +449,7 @@ async function generateCodeIfComplete(
   argsObj: ReturnType<typeof parseCompleteAnalysisArgs>,
   steps: string[],
   warnings: string[],
-  context: ToolHandlerContext
+  context: WorkflowToolContext
 ): Promise<{ generatedCode?: string; codeGenerationSuccess: boolean }> {
   if (!isComplete) {
     steps.push("⚠️ Skipping code generation - analysis incomplete");
@@ -530,7 +530,7 @@ function createSuccessResult(params: {
  */
 export function registerWorkflowTools(
   server: McpServer,
-  context: ToolHandlerContext
+  context: WorkflowToolContext
 ): void {
   server.tool(
     "workflow_complete_analysis",

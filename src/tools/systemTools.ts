@@ -6,10 +6,11 @@ import { getLLMClient } from "../core/LLMClient.js";
 import { manualSessionManager } from "../core/ManualSessionManager.js";
 import { validateConfiguration } from "../core/providers/ProviderFactory.js";
 import {
+  type AuthenticationAnalysis,
   type CleanupResult,
   HarvestError,
   type ParsedHARData,
-  type ToolHandlerContext,
+  type SystemToolContext,
 } from "../types/index.js";
 
 /**
@@ -17,7 +18,7 @@ import {
  */
 export async function handleSessionStatus(
   params: { sessionId: string },
-  context: ToolHandlerContext
+  context: SystemToolContext
 ): Promise<CallToolResult> {
   try {
     const session = context.sessionManager.getSession(params.sessionId);
@@ -148,7 +149,7 @@ export async function handleSessionStatus(
  * Handle system_memory_status tool call
  */
 export async function handleMemoryStatus(
-  context: ToolHandlerContext
+  context: SystemToolContext
 ): Promise<CallToolResult> {
   try {
     const memoryStats = manualSessionManager.getMemoryStats();
@@ -225,18 +226,7 @@ function calculateBaseQuality(harData: ParsedHARData) {
 /**
  * Analyze authentication quality and generate suggestions
  */
-function analyzeAuthQuality(
-  authAnalysis:
-    | {
-        hasAuthHeaders?: boolean;
-        hasCookies?: boolean;
-        hasTokens?: boolean;
-        authErrors?: number;
-        tokenPatterns?: string[];
-        authTypes?: string[];
-      }
-    | undefined
-) {
+function analyzeAuthQuality(authAnalysis: AuthenticationAnalysis | undefined) {
   let authQualityImpact = 0;
   const authSuggestions: string[] = [];
   const authIssues: string[] = [];
@@ -249,10 +239,13 @@ function analyzeAuthQuality(
   }
 
   // Check for authentication errors
-  if (authAnalysis.authErrors && authAnalysis.authErrors > 0) {
+  if (
+    authAnalysis.failedAuthRequests &&
+    authAnalysis.failedAuthRequests.length > 0
+  ) {
     authQualityImpact = -0.3;
     authIssues.push(
-      `Found ${authAnalysis.authErrors} authentication failures (401/403 responses)`
+      `Found ${authAnalysis.failedAuthRequests.length} authentication failures (401/403 responses)`
     );
     authSuggestions.push(
       "Fix authentication failures before using generated code",
@@ -262,8 +255,8 @@ function analyzeAuthQuality(
 
   // Check for tokens that may be expired
   if (
-    authAnalysis.hasTokens &&
-    (!authAnalysis.authErrors || authAnalysis.authErrors === 0)
+    authAnalysis.tokens.length > 0 &&
+    authAnalysis.failedAuthRequests.length === 0
   ) {
     authQualityImpact = -0.1;
     authSuggestions.push(
@@ -280,25 +273,15 @@ function analyzeAuthQuality(
   }
 
   // Check for security concerns
-  if (
-    authAnalysis.tokenPatterns?.some((pattern: string) =>
-      pattern.includes("url")
-    )
-  ) {
-    authIssues.push(
-      "Authentication tokens found in URL parameters (security risk)"
-    );
+  if (authAnalysis.securityIssues.length > 0) {
+    authIssues.push(...authAnalysis.securityIssues);
     authSuggestions.push(
-      "Consider moving authentication tokens to headers for better security"
+      "Address security concerns before deploying generated code"
     );
   }
 
   // Check if no authentication detected
-  if (
-    !authAnalysis.hasAuthHeaders &&
-    !authAnalysis.hasCookies &&
-    !authAnalysis.hasTokens
-  ) {
+  if (!authAnalysis.hasAuthentication) {
     authSuggestions.push(
       "No authentication mechanisms detected - API may be public"
     );
@@ -313,11 +296,7 @@ function analyzeAuthQuality(
 function determineQuality(
   baseQuality: string,
   finalScore: number,
-  authAnalysis:
-    | {
-        authErrors?: number;
-      }
-    | undefined
+  authAnalysis: AuthenticationAnalysis | undefined
 ) {
   if (baseQuality === "empty") {
     return "empty";
@@ -325,14 +304,16 @@ function determineQuality(
 
   if (
     finalScore < 50 ||
-    (authAnalysis?.authErrors && authAnalysis.authErrors > 0)
+    (authAnalysis?.failedAuthRequests &&
+      authAnalysis.failedAuthRequests.length > 0)
   ) {
     return "poor";
   }
 
   if (
     finalScore >= 80 &&
-    (!authAnalysis || !authAnalysis.authErrors || authAnalysis.authErrors === 0)
+    (!authAnalysis?.failedAuthRequests ||
+      authAnalysis.failedAuthRequests.length === 0)
   ) {
     return "excellent";
   }
@@ -423,7 +404,7 @@ function buildDetailedAnalysis(harData: ParsedHARData) {
  */
 export async function handleHarValidation(
   params: { harPath: string; detailed?: boolean },
-  _context: ToolHandlerContext
+  _context: SystemToolContext
 ): Promise<CallToolResult> {
   try {
     // Parse HAR file to get validation results
@@ -488,19 +469,17 @@ export async function handleHarValidation(
         quality: validation.quality,
         score: finalScore,
         isReady:
-          validation.quality !== "empty" && authAnalysis?.authErrors === 0,
+          validation.quality !== "empty" &&
+          authAnalysis?.failedAuthRequests.length === 0,
         issues,
         suggestions,
         authAnalysis: authAnalysis
           ? {
-              hasAuthentication:
-                authAnalysis.hasAuthHeaders ||
-                authAnalysis.hasCookies ||
-                authAnalysis.hasTokens,
+              hasAuthentication: authAnalysis.hasAuthentication,
               authTypes: authAnalysis.authTypes,
-              authErrors: authAnalysis.authErrors,
-              tokenCount: authAnalysis.tokenPatterns.length,
-              securityConcerns: authAnalysis.issues.length,
+              authErrors: authAnalysis.failedAuthRequests.length,
+              tokenCount: authAnalysis.tokens.length,
+              securityConcerns: authAnalysis.securityIssues.length,
             }
           : undefined,
       },
@@ -520,7 +499,7 @@ export async function handleHarValidation(
               ? "⚠️ HAR file has issues that may affect code generation"
               : "❌ HAR file needs significant improvements",
         ...suggestions,
-        ...(authAnalysis?.authErrors > 0
+        ...(authAnalysis?.failedAuthRequests.length > 0
           ? [
               "🔐 Authentication issues detected - generated code may fail at runtime",
               "🔧 Fix authentication problems before proceeding with code generation",
@@ -554,7 +533,7 @@ export async function handleConfigValidation(
     testApiKey?: string | undefined;
     testProvider?: string | undefined;
   },
-  _context: ToolHandlerContext,
+  _context: SystemToolContext,
   cliConfig: {
     provider?: string;
     apiKey?: string;
@@ -712,7 +691,7 @@ export async function handleConfigValidation(
  */
 export async function handleSystemCleanup(
   params: { aggressive?: boolean },
-  _context: ToolHandlerContext
+  _context: SystemToolContext
 ): Promise<CallToolResult> {
   try {
     const aggressive = params.aggressive || false;
@@ -845,7 +824,7 @@ function formatFileSize(bytes: number | undefined): string {
  */
 export function registerSystemTools(
   server: McpServer,
-  context: ToolHandlerContext,
+  context: SystemToolContext,
   cliConfig: {
     provider?: string;
     apiKey?: string;

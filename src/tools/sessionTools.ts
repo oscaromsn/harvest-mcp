@@ -5,7 +5,7 @@ import {
   HarvestError,
   type SessionStartResponse,
   type SessionStartSchema,
-  type ToolHandlerContext,
+  type SessionToolContext,
 } from "../types/index.js";
 
 /**
@@ -13,7 +13,7 @@ import {
  */
 export async function handleSessionStart(
   params: z.infer<typeof SessionStartSchema>,
-  context: ToolHandlerContext
+  context: SessionToolContext
 ): Promise<CallToolResult> {
   try {
     const sessionId = await context.sessionManager.createSession(params);
@@ -75,7 +75,7 @@ export async function handleSessionStart(
 /**
  * Handle session_list tool call
  */
-export function handleSessionList(context: ToolHandlerContext): CallToolResult {
+export function handleSessionList(context: SessionToolContext): CallToolResult {
   try {
     const sessions = context.sessionManager.listSessions();
     const stats = context.sessionManager.getStats();
@@ -108,7 +108,7 @@ export function handleSessionList(context: ToolHandlerContext): CallToolResult {
  */
 export function handleSessionDelete(
   params: { sessionId: string },
-  context: ToolHandlerContext
+  context: SessionToolContext
 ): CallToolResult {
   try {
     const deleted = context.sessionManager.deleteSession(params.sessionId);
@@ -140,7 +140,7 @@ export function handleSessionDelete(
  */
 export function registerSessionTools(
   server: McpServer,
-  context: ToolHandlerContext
+  context: SessionToolContext
 ): void {
   server.tool(
     "session_start",

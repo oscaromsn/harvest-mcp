@@ -4,9 +4,9 @@ import { z } from "zod";
 import { generateWrapperScript } from "../core/CodeGenerator.js";
 import {
   type CodeGenerationData,
+  type CodegenToolContext,
   HarvestError,
   type InternalToolResult,
-  type ToolHandlerContext,
 } from "../types/index.js";
 
 /**
@@ -14,7 +14,7 @@ import {
  */
 export async function handleGenerateWrapperScript(
   params: { sessionId: string },
-  context: ToolHandlerContext
+  context: CodegenToolContext
 ): Promise<CallToolResult> {
   const result = await _internalHandleGenerateWrapperScript(params, context);
 
@@ -40,7 +40,7 @@ export async function handleGenerateWrapperScript(
  */
 async function _internalHandleGenerateWrapperScript(
   params: { sessionId: string },
-  context: ToolHandlerContext
+  context: CodegenToolContext
 ): Promise<InternalToolResult<CodeGenerationData>> {
   try {
     const session = context.sessionManager.getSession(params.sessionId);
@@ -179,7 +179,7 @@ ${recommendationsList}
  */
 export function registerCodegenTools(
   server: McpServer,
-  context: ToolHandlerContext
+  context: CodegenToolContext
 ): void {
   server.tool(
     "codegen_generate_wrapper_script",

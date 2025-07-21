@@ -11,11 +11,11 @@ import {
   getPrimaryWorkflow,
 } from "../agents/WorkflowDiscoveryAgent.js";
 import {
+  type AnalysisToolContext,
   type ClassifiedParameter,
   HarvestError,
   type HarvestSession,
   SessionIdSchema,
-  type ToolHandlerContext,
   type URLInfo,
 } from "../types/index.js";
 
@@ -24,7 +24,7 @@ import {
  */
 export async function handleRunInitialAnalysisWithConfig(
   params: { sessionId: string },
-  context: ToolHandlerContext
+  context: AnalysisToolContext
 ): Promise<CallToolResult> {
   try {
     const session = context.sessionManager.getSession(params.sessionId);
@@ -192,7 +192,7 @@ export async function handleRunInitialAnalysisWithConfig(
  */
 export async function handleProcessNextNode(
   params: { sessionId: string },
-  context: ToolHandlerContext
+  context: AnalysisToolContext
 ): Promise<CallToolResult> {
   try {
     const session = context.sessionManager.getSession(params.sessionId);
@@ -279,7 +279,7 @@ export async function handleProcessNextNode(
  */
 export function handleIsComplete(
   params: { sessionId: string },
-  context: ToolHandlerContext
+  context: AnalysisToolContext
 ): CallToolResult {
   try {
     // Use the comprehensive completion analysis as the single source of truth
@@ -379,7 +379,7 @@ export function handleIsComplete(
  */
 export async function handleDiscoverWorkflows(
   params: { sessionId: string },
-  context: ToolHandlerContext
+  context: AnalysisToolContext
 ): Promise<CallToolResult> {
   try {
     const session = context.sessionManager.getSession(params.sessionId);
@@ -591,7 +591,7 @@ function checkNoNodesToProcess(session: HarvestSession): CallToolResult | null {
 function extractNextNodeForProcessing(
   session: HarvestSession,
   sessionId: string,
-  context: ToolHandlerContext
+  context: AnalysisToolContext
 ): { nodeId: string; curlCommand: string } {
   const nodeId = session.state.toBeProcessedNodes.shift();
   if (!nodeId) {
@@ -622,7 +622,7 @@ function handleJavaScriptFileSkip(
   nodeId: string,
   _session: HarvestSession,
   sessionId: string,
-  context: ToolHandlerContext
+  context: AnalysisToolContext
 ): CallToolResult | null {
   // Note: This is a simplified check - the actual function expects a RequestModel
   // but we're doing a simple string check here for the extracted curl command
@@ -659,7 +659,7 @@ async function processDynamicPartsAndInputVariables(
   session: HarvestSession,
   sessionId: string,
   nodeId: string,
-  context: ToolHandlerContext
+  context: AnalysisToolContext
 ): Promise<{
   dynamicParts: string[];
   finalDynamicParts: string[];
@@ -711,7 +711,7 @@ async function processDependenciesAndAddNodes(
   nodeId: string,
   session: HarvestSession,
   _sessionId: string,
-  _context: ToolHandlerContext
+  _context: AnalysisToolContext
 ): Promise<number> {
   let newNodesAdded = 0;
 
@@ -763,7 +763,7 @@ function generateNodeProcessingResponse(
   newNodesAdded: number,
   session: HarvestSession,
   sessionId: string,
-  context: ToolHandlerContext
+  context: AnalysisToolContext
 ): CallToolResult {
   const remainingNodes = session.state.toBeProcessedNodes.length;
   const totalNodes = session.dagManager.getNodeCount();
@@ -817,7 +817,7 @@ function handleNodeProcessingError(error: unknown): CallToolResult {
  */
 export function registerAnalysisTools(
   server: McpServer,
-  context: ToolHandlerContext
+  context: AnalysisToolContext
 ): void {
   server.tool(
     "analysis_run_initial_analysis",

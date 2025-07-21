@@ -3,9 +3,9 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { analyzeAuthentication } from "../agents/AuthenticationAgent.js";
 import {
+  type AuthToolContext,
   HarvestError,
   type HarvestSession,
-  type ToolHandlerContext,
 } from "../types/index.js";
 import { serverLogger } from "../utils/logger.js";
 
@@ -14,7 +14,7 @@ import { serverLogger } from "../utils/logger.js";
  */
 export async function handleAuthAnalyzeSession(
   params: { sessionId: string; forceReanalysis?: boolean },
-  context: ToolHandlerContext
+  context: AuthToolContext
 ): Promise<CallToolResult> {
   try {
     const session = context.sessionManager.getSession(params.sessionId);
@@ -132,7 +132,7 @@ export async function handleAuthTestEndpoint(
     requestUrl: string;
     requestMethod: string;
   },
-  context: ToolHandlerContext
+  context: AuthToolContext
 ): Promise<CallToolResult> {
   try {
     const session = context.sessionManager.getSession(params.sessionId);
@@ -288,7 +288,7 @@ export async function handleAuthTestEndpoint(
  */
 export function registerAuthTools(
   server: McpServer,
-  context: ToolHandlerContext
+  context: AuthToolContext
 ): void {
   server.tool(
     "auth_analyze_session",
