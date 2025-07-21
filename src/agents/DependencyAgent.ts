@@ -355,7 +355,8 @@ function analyzeInScriptTags(
   const escapedParam = escapeRegex(parameter);
 
   let match: RegExpExecArray | null;
-  while ((match = scriptTagRegex.exec(htmlContent)) !== null) {
+  match = scriptTagRegex.exec(htmlContent);
+  while (match !== null) {
     const scriptContent = match[1] || "";
 
     // Check for various JavaScript patterns
@@ -409,6 +410,7 @@ function analyzeInScriptTags(
         };
       }
     }
+    match = scriptTagRegex.exec(htmlContent);
   }
 
   return { found: false, confidence: 0, context: "none" };

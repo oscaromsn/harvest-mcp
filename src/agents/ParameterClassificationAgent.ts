@@ -728,7 +728,9 @@ function analyzeParameterConsistencyWithWorkflows(
 
   for (const param of parameters) {
     const basicResult = basicConsistency.get(param.name);
-    if (!basicResult) continue;
+    if (!basicResult) {
+      continue;
+    }
 
     let workflowContext = {
       workflowId: currentWorkflowId,
@@ -850,6 +852,265 @@ function analyzeParameterInWorkflow(
 }
 
 /**
+ * Update parameter metadata with consistency information
+ */
+function updateMetadataWithConsistency(
+  result: ClassifiedParameter,
+  consistency: {
+    occurrenceCount: number;
+    totalRequests: number;
+    consistencyScore: number;
+    workflowContext?: {
+      workflowId?: string;
+      workflowRequests: number;
+      crossWorkflowConsistency: number;
+      workflowSpecific: boolean;
+    };
+  }
+): void {
+  result.metadata.occurrenceCount = consistency.occurrenceCount;
+  result.metadata.totalRequests = consistency.totalRequests;
+  result.metadata.consistencyScore = consistency.consistencyScore;
+}
+
+/**
+ * Apply workflow-aware classification logic
+ */
+function applyWorkflowAwareClassification(
+  result: ClassifiedParameter,
+  consistency: {
+    occurrenceCount: number;
+    totalRequests: number;
+    consistencyScore: number;
+    workflowContext?: {
+      workflowId?: string;
+      workflowRequests: number;
+      crossWorkflowConsistency: number;
+      workflowSpecific: boolean;
+    };
+  }
+): void {
+  const workflowContext = consistency.workflowContext;
+
+  if (consistency.consistencyScore > 0.9 && consistency.totalRequests > 2) {
+    const nameLower = result.name.toLowerCase();
+
+    if (isWorkflowSpecificParameter(workflowContext)) {
+      classifyAsWorkflowSpecificUserInput(result, workflowContext);
+    } else if (isCrossWorkflowParameter(workflowContext)) {
+      classifyAsCrossWorkflowParameter(result, workflowContext, nameLower);
+    } else {
+      applyLegacyClassification(result, consistency, nameLower);
+    }
+
+    applyStaticParameterClassification(result, consistency, nameLower);
+    boostExistingClassificationConfidence(result);
+  }
+}
+
+/**
+ * Check if parameter is workflow-specific
+ */
+function isWorkflowSpecificParameter(workflowContext?: {
+  workflowId?: string;
+  workflowRequests: number;
+  crossWorkflowConsistency: number;
+  workflowSpecific: boolean;
+}): boolean {
+  return Boolean(
+    workflowContext?.workflowSpecific &&
+      workflowContext.crossWorkflowConsistency < 0.3
+  );
+}
+
+/**
+ * Check if parameter is consistent across workflows
+ */
+function isCrossWorkflowParameter(workflowContext?: {
+  workflowId?: string;
+  workflowRequests: number;
+  crossWorkflowConsistency: number;
+  workflowSpecific: boolean;
+}): boolean {
+  return Boolean(
+    workflowContext && workflowContext.crossWorkflowConsistency > 0.8
+  );
+}
+
+/**
+ * Classify parameter as workflow-specific user input
+ */
+function classifyAsWorkflowSpecificUserInput(
+  result: ClassifiedParameter,
+  workflowContext:
+    | {
+        workflowId?: string;
+        workflowRequests: number;
+        crossWorkflowConsistency: number;
+        workflowSpecific: boolean;
+      }
+    | undefined
+): void {
+  if (!workflowContext) {
+    return;
+  }
+  result.classification = "userInput";
+  result.confidence = Math.min(result.confidence + 0.2, 1.0);
+  result.metadata.domainContext = `workflow-specific:${workflowContext.workflowId}`;
+
+  logger.debug("Workflow-specific parameter classified as userInput", {
+    parameterName: result.name,
+    workflowId: workflowContext.workflowId,
+    confidence: result.confidence,
+  });
+}
+
+/**
+ * Classify parameter as cross-workflow session parameter
+ */
+function classifyAsCrossWorkflowParameter(
+  result: ClassifiedParameter,
+  workflowContext:
+    | {
+        workflowId?: string;
+        workflowRequests: number;
+        crossWorkflowConsistency: number;
+        workflowSpecific: boolean;
+      }
+    | undefined,
+  nameLower: string
+): void {
+  if (!workflowContext) {
+    return;
+  }
+  if (isSessionRelatedParameter(nameLower)) {
+    result.classification = "sessionConstant";
+    result.confidence = Math.min(result.confidence + 0.3, 1.0);
+    result.metadata.domainContext = "cross-workflow-session";
+
+    logger.debug("Cross-workflow parameter classified as sessionConstant", {
+      parameterName: result.name,
+      crossWorkflowConsistency: workflowContext.crossWorkflowConsistency,
+      confidence: result.confidence,
+    });
+  }
+}
+
+/**
+ * Apply legacy classification logic
+ */
+function applyLegacyClassification(
+  result: ClassifiedParameter,
+  consistency: {
+    occurrenceCount: number;
+    totalRequests: number;
+    consistencyScore: number;
+  },
+  nameLower: string
+): void {
+  if (isSessionRelatedParameter(nameLower)) {
+    result.classification = "sessionConstant";
+    result.confidence = 0.95;
+    result.source = "consistency_analysis";
+    result.metadata.domainContext = "legacy-session";
+
+    logger.info(
+      "Parameter reclassified as sessionConstant due to high consistency",
+      {
+        parameterName: result.name,
+        consistencyScore: consistency.consistencyScore,
+        totalRequests: consistency.totalRequests,
+      }
+    );
+  }
+}
+
+/**
+ * Apply static parameter classification
+ */
+function applyStaticParameterClassification(
+  result: ClassifiedParameter,
+  consistency: {
+    occurrenceCount: number;
+    totalRequests: number;
+    consistencyScore: number;
+  },
+  nameLower: string
+): void {
+  if (isStaticParameter(result, nameLower)) {
+    result.classification = "staticConstant";
+    result.confidence = 0.95;
+    result.source = "consistency_analysis";
+
+    logger.info(
+      "Parameter reclassified as staticConstant due to high consistency",
+      {
+        parameterName: result.name,
+        parameterValue: result.value,
+        consistencyScore: consistency.consistencyScore,
+      }
+    );
+  }
+}
+
+/**
+ * Check if parameter is session-related
+ */
+function isSessionRelatedParameter(nameLower: string): boolean {
+  return (
+    nameLower.includes("session") ||
+    nameLower.includes("token") ||
+    nameLower.includes("juristkn") ||
+    nameLower.includes("csrf")
+  );
+}
+
+/**
+ * Check if parameter is static
+ */
+function isStaticParameter(
+  result: ClassifiedParameter,
+  nameLower: string
+): boolean {
+  return (
+    (nameLower === "latitude" && result.value === "0") ||
+    (nameLower === "longitude" && result.value === "0") ||
+    nameLower.includes("version") ||
+    nameLower.includes("format")
+  );
+}
+
+/**
+ * Boost confidence for existing classifications
+ */
+function boostExistingClassificationConfidence(
+  result: ClassifiedParameter
+): void {
+  if (
+    result.classification === "sessionConstant" ||
+    result.classification === "staticConstant"
+  ) {
+    result.confidence = Math.min(result.confidence + 0.2, 0.98);
+  }
+}
+
+/**
+ * Adjust confidence based on consistency scores
+ */
+function adjustConfidenceBasedOnConsistency(
+  result: ClassifiedParameter,
+  consistency: {
+    consistencyScore: number;
+  }
+): void {
+  if (consistency.consistencyScore < 0.5) {
+    result.confidence *= 0.8; // Reduce confidence for inconsistent parameters
+  } else if (consistency.consistencyScore > 0.8) {
+    result.confidence = Math.min(result.confidence * 1.1, 0.95); // Boost confidence for consistent parameters
+  }
+}
+
+/**
  * Merge heuristic and consistency analysis results with workflow awareness
  */
 function mergeAnalysisResults(
@@ -872,119 +1133,9 @@ function mergeAnalysisResults(
   return heuristicResults.map((result) => {
     const consistency = consistencyResults.get(result.name);
     if (consistency) {
-      result.metadata.occurrenceCount = consistency.occurrenceCount;
-      result.metadata.totalRequests = consistency.totalRequests;
-      result.metadata.consistencyScore = consistency.consistencyScore;
-
-      // Enhanced workflow-aware classification
-      const workflowContext = consistency.workflowContext;
-
-      // High-priority rule: Use workflow context to improve classification accuracy
-      if (consistency.consistencyScore > 0.9 && consistency.totalRequests > 2) {
-        const nameLower = result.name.toLowerCase();
-
-        // Workflow-specific parameters are likely user inputs for that specific workflow
-        if (
-          workflowContext?.workflowSpecific &&
-          workflowContext.crossWorkflowConsistency < 0.3
-        ) {
-          // Parameter only appears in one workflow - likely user input for that workflow
-          result.classification = "userInput";
-          result.confidence = Math.min(result.confidence + 0.2, 1.0);
-          result.metadata.domainContext = `workflow-specific:${workflowContext.workflowId}`;
-
-          logger.debug("Workflow-specific parameter classified as userInput", {
-            parameterName: result.name,
-            workflowId: workflowContext.workflowId,
-            confidence: result.confidence,
-          });
-        }
-        // Parameters consistent across multiple workflows are likely session constants
-        else if (
-          workflowContext &&
-          workflowContext.crossWorkflowConsistency > 0.8
-        ) {
-          // Check if it's a session-related parameter
-          if (
-            nameLower.includes("session") ||
-            nameLower.includes("token") ||
-            nameLower.includes("juristkn") ||
-            nameLower.includes("csrf")
-          ) {
-            result.classification = "sessionConstant";
-            result.confidence = Math.min(result.confidence + 0.3, 1.0);
-            result.metadata.domainContext = "cross-workflow-session";
-
-            logger.debug(
-              "Cross-workflow parameter classified as sessionConstant",
-              {
-                parameterName: result.name,
-                crossWorkflowConsistency:
-                  workflowContext.crossWorkflowConsistency,
-                confidence: result.confidence,
-              }
-            );
-          }
-        }
-        // Fallback to legacy classification
-        else {
-          // Check if it's a session-related parameter
-          if (
-            nameLower.includes("session") ||
-            nameLower.includes("token") ||
-            nameLower.includes("juristkn") ||
-            nameLower.includes("csrf")
-          ) {
-            result.classification = "sessionConstant";
-            result.confidence = 0.95;
-            result.source = "consistency_analysis";
-            result.metadata.domainContext = "legacy-session";
-
-            logger.info(
-              "Parameter reclassified as sessionConstant due to high consistency",
-              {
-                parameterName: result.name,
-                consistencyScore: consistency.consistencyScore,
-                totalRequests: consistency.totalRequests,
-              }
-            );
-          }
-        }
-
-        // Check if it's static coordinate or configuration parameter (legacy fallback)
-        if (
-          (nameLower === "latitude" && result.value === "0") ||
-          (nameLower === "longitude" && result.value === "0") ||
-          nameLower.includes("version") ||
-          nameLower.includes("format")
-        ) {
-          result.classification = "staticConstant";
-          result.confidence = 0.95;
-          result.source = "consistency_analysis";
-          logger.info(
-            "Parameter reclassified as staticConstant due to high consistency",
-            {
-              parameterName: result.name,
-              parameterValue: result.value,
-              consistencyScore: consistency.consistencyScore,
-            }
-          );
-        }
-        // For other highly consistent parameters, boost confidence in existing classification
-        else if (
-          result.classification === "sessionConstant" ||
-          result.classification === "staticConstant"
-        ) {
-          result.confidence = Math.min(result.confidence + 0.2, 0.98);
-        }
-      }
-
-      // Adjust confidence based on consistency for other cases
-      if (consistency.consistencyScore < 0.5) {
-        result.confidence *= 0.8; // Reduce confidence for inconsistent parameters
-      } else if (consistency.consistencyScore > 0.8) {
-        result.confidence = Math.min(result.confidence * 1.1, 0.95); // Boost confidence for consistent parameters
-      }
+      updateMetadataWithConsistency(result, consistency);
+      applyWorkflowAwareClassification(result, consistency);
+      adjustConfidenceBasedOnConsistency(result, consistency);
     }
     return result;
   });

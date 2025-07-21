@@ -91,12 +91,13 @@ export async function discoverWorkflows(
       const workflowRequests = new Set<string>();
       for (const endpoint of workflow.endpoints) {
         const endpointBaseUrl = endpoint.url.split("?")[0];
-        if (!endpointBaseUrl) continue;
+        if (!endpointBaseUrl) {
+          continue;
+        }
 
         const matchingRequests = session.harData.requests.filter(
           (req) =>
-            req.url &&
-            req.url.includes(endpointBaseUrl) &&
+            req.url?.includes(endpointBaseUrl) &&
             req.method.toUpperCase() === endpoint.method.toUpperCase()
         );
 
@@ -264,7 +265,9 @@ function analyzeRequestCharacteristics(requests: RequestModel[]): {
 
   for (let i = 0; i < requests.length; i++) {
     const request = requests[i];
-    if (!request) continue;
+    if (!request) {
+      continue;
+    }
 
     // Analyze parameter complexity
     const url = new URL(request.url);
