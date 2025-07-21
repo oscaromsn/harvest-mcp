@@ -22,6 +22,10 @@ import {
   identifyEndUrl,
   sortUrlsByRelevance,
 } from "./agents/URLIdentificationAgent.js";
+import {
+  discoverWorkflows,
+  getPrimaryWorkflow,
+} from "./agents/WorkflowDiscoveryAgent.js";
 // AuthenticationAnalyzer replaced with AuthenticationAgent
 import { generateWrapperScript } from "./core/CodeGenerator.js";
 import { CompletedSessionManager } from "./core/CompletedSessionManager.js";
@@ -358,6 +362,22 @@ export class HarvestMCPServer {
       },
       async (params): Promise<CallToolResult> => {
         return await this.handleIsComplete(params);
+      }
+    );
+
+    this.server.tool(
+      "analysis_discover_workflows",
+      "Discover and analyze multiple workflow groups from HAR data instead of single URL identification. This replaces the single-master-action model with comprehensive multi-workflow analysis.",
+      {
+        sessionId: z
+          .string()
+          .uuid()
+          .describe(
+            "UUID of the session to analyze for workflow discovery. The session must have been initialized with session_start and contain HAR data."
+          ),
+      },
+      async (params): Promise<CallToolResult> => {
+        return await this.handleDiscoverWorkflows(params);
       }
     );
 
@@ -2329,6 +2349,174 @@ export class HarvestMCPServer {
         `Initial analysis failed: ${error instanceof Error ? error.message : "Unknown error"}`,
         "INITIAL_ANALYSIS_FAILED",
         { originalError: error }
+      );
+    }
+  }
+
+  /**
+   * Handle analysis.discover_workflows tool
+   */
+  public async handleDiscoverWorkflows(args: {
+    sessionId: string;
+  }): Promise<CallToolResult> {
+    try {
+      const session = this.sessionManager.getSession(args.sessionId);
+
+      // Check HAR data quality before proceeding
+      if (session.harData.validation) {
+        const validation = session.harData.validation;
+
+        if (validation.quality === "empty") {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error: "Cannot discover workflows from empty HAR file",
+                  message: "No meaningful network requests found in HAR file",
+                  issues: validation.issues,
+                  recommendations: validation.recommendations,
+                  stats: validation.stats,
+                  nextSteps: [
+                    "1. Capture a new HAR file with meaningful interactions",
+                    "2. Ensure you interact with the website's main functionality",
+                    "3. Look for forms, buttons, or API calls to capture",
+                  ],
+                }),
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        if (validation.quality === "poor") {
+          this.sessionManager.addLog(
+            args.sessionId,
+            "warn",
+            `Proceeding with poor quality HAR file: ${validation.issues.join(", ")}`
+          );
+        }
+      }
+
+      // Check if we have any URLs available
+      if (!session.harData.urls || session.harData.urls.length === 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                error: "Cannot discover workflows - no URLs found",
+                message: "No URLs available for workflow analysis",
+                nextSteps: [
+                  "1. Capture a new HAR file with website interactions",
+                  "2. Ensure network requests are recorded during capture",
+                  "3. Use session_start with a valid HAR file",
+                ],
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      // Discover workflows using the WorkflowDiscoveryAgent
+      const workflowGroups = await discoverWorkflows(session);
+
+      if (workflowGroups.size === 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                error: "No workflows discovered",
+                message:
+                  "Failed to identify any logical workflow groups from the HAR data",
+                recommendations: [
+                  "The HAR file may contain only simple requests without complex workflows",
+                  "Try capturing a more comprehensive user interaction sequence",
+                  "Consider using the legacy analysis_run_initial_analysis for simple APIs",
+                ],
+                stats: {
+                  totalUrls: session.harData.urls.length,
+                  totalRequests: session.harData.requests.length,
+                },
+              }),
+            },
+          ],
+          isError: false, // Not really an error, just no complex workflows found
+        };
+      }
+
+      // Update session state with discovered workflows
+      session.state.workflowGroups = workflowGroups;
+
+      // Select primary workflow if none specified
+      const primaryWorkflow = getPrimaryWorkflow(workflowGroups);
+      if (primaryWorkflow) {
+        session.state.activeWorkflowId = primaryWorkflow.id;
+        this.sessionManager.addLog(
+          args.sessionId,
+          "info",
+          `Selected primary workflow: ${primaryWorkflow.name} (${primaryWorkflow.id})`
+        );
+      }
+
+      this.sessionManager.addLog(
+        args.sessionId,
+        "info",
+        `Workflow discovery complete. Found ${workflowGroups.size} workflow groups`
+      );
+
+      // Prepare workflow summary for response
+      const workflowSummary = Array.from(workflowGroups.values()).map(
+        (group) => ({
+          id: group.id,
+          name: group.name,
+          description: group.description,
+          category: group.category,
+          priority: group.priority,
+          complexity: group.complexity,
+          requiresUserInput: group.requiresUserInput,
+          nodeCount: group.nodeIds.size,
+          isPrimary: group.id === session.state.activeWorkflowId,
+        })
+      );
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              status: "success",
+              message: "Workflow discovery completed successfully",
+              workflowCount: workflowGroups.size,
+              primaryWorkflowId: session.state.activeWorkflowId,
+              workflows: workflowSummary,
+              stats: {
+                totalUrls: session.harData.urls.length,
+                totalRequests: session.harData.requests.length,
+              },
+              nextSteps: [
+                "Use analysis_process_next_node to process discovered workflows",
+                "Use debug tools to inspect specific workflow details",
+                "Use codegen_generate_wrapper_script when analysis is complete",
+              ],
+            }),
+          },
+        ],
+      };
+    } catch (error) {
+      if (error instanceof HarvestError) {
+        throw error;
+      }
+
+      throw new HarvestError(
+        `Workflow discovery failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+        "WORKFLOW_DISCOVERY_FAILED",
+        {
+          sessionId: args.sessionId,
+          originalError: error,
+        }
       );
     }
   }
@@ -7647,6 +7835,7 @@ ${recommendationsList}
             data: { preserveManualOverrides: preserveOverrides },
           },
         ],
+        workflowGroups: new Map(), // Initialize workflow groups
       };
 
       // Log the reset
