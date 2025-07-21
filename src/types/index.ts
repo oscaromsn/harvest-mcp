@@ -1004,3 +1004,28 @@ export type {
   SessionConfig,
   SessionStopResult,
 } from "../browser/types.js";
+
+// ========== Internal Tool Communication Types ==========
+
+/**
+ * Strongly-typed result format for internal tool communication
+ * to prevent data format mismatches between components
+ */
+export interface InternalToolResult<T> {
+  success: boolean;
+  data: T;
+  error?: {
+    message: string;
+    code: string;
+  };
+  warnings?: string[];
+}
+
+/**
+ * Specific interface for code generation results
+ */
+export interface CodeGenerationData {
+  code: string;
+  language: "typescript";
+  characterCount: number;
+}
