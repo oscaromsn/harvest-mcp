@@ -735,6 +735,123 @@ export const DebugGetNodeDetailsSchema = z.object({
 
 // ========== Manual Session Schemas ==========
 
+/**
+ * Browser viewport configuration schema
+ */
+export const ViewportConfigSchema = z
+  .object({
+    width: z
+      .number()
+      .min(320, "Viewport width must be at least 320px")
+      .max(7680, "Viewport width cannot exceed 7680px")
+      .optional()
+      .describe("Browser viewport width (320-7680px)"),
+    height: z
+      .number()
+      .min(240, "Viewport height must be at least 240px")
+      .max(4320, "Viewport height cannot exceed 4320px")
+      .optional()
+      .describe("Browser viewport height (240-4320px)"),
+  })
+  .describe("Browser viewport configuration");
+
+/**
+ * Browser context options schema
+ */
+export const ContextOptionsSchema = z
+  .object({
+    deviceScaleFactor: z
+      .number()
+      .min(0.25, "Device scale factor must be at least 0.25")
+      .max(4, "Device scale factor cannot exceed 4")
+      .optional()
+      .describe("Device scale factor for coordinate accuracy (0.25-4)"),
+  })
+  .describe("Browser context options");
+
+/**
+ * Manual session browser configuration options schema
+ */
+export const ManualBrowserOptionsSchema = z
+  .object({
+    headless: z
+      .boolean()
+      .optional()
+      .describe(
+        "Run browser in headless mode (default: false for manual interaction)"
+      ),
+    viewport: ViewportConfigSchema.optional().describe(
+      "Browser viewport configuration"
+    ),
+    contextOptions: ContextOptionsSchema.optional().describe(
+      "Browser context options"
+    ),
+  })
+  .describe("Browser configuration options for manual sessions");
+
+/**
+ * Artifact collection configuration schema
+ */
+export const ArtifactConfigSchema = z
+  .object({
+    enabled: z
+      .boolean()
+      .optional()
+      .describe("Enable artifact collection (default: true)"),
+    outputDir: z
+      .string()
+      .min(1, "Output directory path cannot be empty")
+      .refine(
+        (path) => !path.includes(".."),
+        "Output directory path cannot contain '..' for security"
+      )
+      .optional()
+      .describe(
+        "Custom output directory for artifacts (relative or absolute path)"
+      ),
+    saveHar: z.boolean().optional().describe("Save HAR files (default: true)"),
+    saveCookies: z
+      .boolean()
+      .optional()
+      .describe("Save cookies (default: true)"),
+    saveScreenshots: z
+      .boolean()
+      .optional()
+      .describe("Save screenshots (default: true)"),
+    autoScreenshotInterval: z
+      .number()
+      .min(1, "Auto-screenshot interval must be at least 1 second")
+      .max(3600, "Auto-screenshot interval cannot exceed 1 hour (3600 seconds)")
+      .optional()
+      .describe(
+        "Take screenshots automatically every N seconds (1-3600, 0 = disabled)"
+      ),
+  })
+  .describe("Configuration for artifact collection during the session");
+
+/**
+ * Manual session configuration schema
+ */
+export const ManualSessionConfigSchema = z
+  .object({
+    timeout: z
+      .number()
+      .min(1, "Timeout must be at least 1 minute")
+      .max(1440, "Timeout cannot exceed 24 hours (1440 minutes)")
+      .optional()
+      .describe("Auto-cleanup timeout in minutes (1-1440, 0 = no timeout)"),
+    browserOptions: ManualBrowserOptionsSchema.optional().describe(
+      "Browser configuration options"
+    ),
+    artifactConfig: ArtifactConfigSchema.optional().describe(
+      "Configuration for artifact collection during the session"
+    ),
+  })
+  .describe("Session configuration options");
+
+/**
+ * Manual session start parameters schema
+ */
 export const ManualSessionStartSchema = z.object({
   sessionId: z
     .string()
@@ -753,101 +870,9 @@ export const ManualSessionStartSchema = z.object({
       return val;
     })
     .describe("Starting URL for the browser session"),
-  config: z
-    .object({
-      timeout: z
-        .number()
-        .min(1, "Timeout must be at least 1 minute")
-        .max(1440, "Timeout cannot exceed 24 hours (1440 minutes)")
-        .optional()
-        .describe("Auto-cleanup timeout in minutes (1-1440, 0 = no timeout)"),
-      browserOptions: z
-        .object({
-          headless: z
-            .boolean()
-            .optional()
-            .describe(
-              "Run browser in headless mode (default: false for manual interaction)"
-            ),
-          viewport: z
-            .object({
-              width: z
-                .number()
-                .min(320, "Viewport width must be at least 320px")
-                .max(7680, "Viewport width cannot exceed 7680px")
-                .optional()
-                .describe("Browser viewport width (320-7680px)"),
-              height: z
-                .number()
-                .min(240, "Viewport height must be at least 240px")
-                .max(4320, "Viewport height cannot exceed 4320px")
-                .optional()
-                .describe("Browser viewport height (240-4320px)"),
-            })
-            .optional()
-            .describe("Browser viewport configuration"),
-          contextOptions: z
-            .object({
-              deviceScaleFactor: z
-                .number()
-                .min(0.25, "Device scale factor must be at least 0.25")
-                .max(4, "Device scale factor cannot exceed 4")
-                .optional()
-                .describe(
-                  "Device scale factor for coordinate accuracy (0.25-4)"
-                ),
-            })
-            .optional()
-            .describe("Browser context options"),
-        })
-        .optional()
-        .describe("Browser configuration options"),
-      artifactConfig: z
-        .object({
-          enabled: z
-            .boolean()
-            .optional()
-            .describe("Enable artifact collection (default: true)"),
-          outputDir: z
-            .string()
-            .min(1, "Output directory path cannot be empty")
-            .refine(
-              (path) => !path.includes(".."),
-              "Output directory path cannot contain '..' for security"
-            )
-            .optional()
-            .describe(
-              "Custom output directory for artifacts (relative or absolute path)"
-            ),
-          saveHar: z
-            .boolean()
-            .optional()
-            .describe("Save HAR files (default: true)"),
-          saveCookies: z
-            .boolean()
-            .optional()
-            .describe("Save cookies (default: true)"),
-          saveScreenshots: z
-            .boolean()
-            .optional()
-            .describe("Save screenshots (default: true)"),
-          autoScreenshotInterval: z
-            .number()
-            .min(1, "Auto-screenshot interval must be at least 1 second")
-            .max(
-              3600,
-              "Auto-screenshot interval cannot exceed 1 hour (3600 seconds)"
-            )
-            .optional()
-            .describe(
-              "Take screenshots automatically every N seconds (1-3600, 0 = disabled)"
-            ),
-        })
-        .optional()
-        .describe("Configuration for artifact collection during the session"),
-    })
-    .optional()
-    .describe("Session configuration options"),
+  config: ManualSessionConfigSchema.optional().describe(
+    "Session configuration options"
+  ),
 });
 
 export const ManualSessionStopSchema = z.object({
@@ -888,6 +913,13 @@ export type DebugGetNodeDetailsParams = z.infer<
 >;
 export type ManualSessionStartParams = z.infer<typeof ManualSessionStartSchema>;
 export type ManualSessionStopParams = z.infer<typeof ManualSessionStopSchema>;
+
+// Manual Session Component Types
+export type ViewportConfig = z.infer<typeof ViewportConfigSchema>;
+export type ContextOptions = z.infer<typeof ContextOptionsSchema>;
+export type ManualBrowserOptions = z.infer<typeof ManualBrowserOptionsSchema>;
+export type ArtifactConfig = z.infer<typeof ArtifactConfigSchema>;
+export type ManualSessionConfig = z.infer<typeof ManualSessionConfigSchema>;
 
 // ========== Error Types ==========
 
