@@ -5,6 +5,12 @@ import {
 } from "../../src/core/LLMClient.js";
 import type { SessionManager } from "../../src/core/SessionManager.js";
 import { HarvestMCPServer } from "../../src/server.js";
+import {
+  handleIsComplete,
+  handleProcessNextNode,
+} from "../../src/tools/analysisTools.js";
+import { handleGenerateWrapperScript } from "../../src/tools/codegenTools.js";
+import { handleSessionStart } from "../../src/tools/sessionTools.js";
 import { createMockLLMClient } from "../mocks/llm-client.mock.js";
 
 /**
@@ -86,11 +92,14 @@ export async function createTestSession(
     prompt = "Test analysis workflow",
   } = options;
 
-  const sessionResult = await server.handleSessionStart({
-    harPath,
-    cookiePath,
-    prompt,
-  });
+  const sessionResult = await handleSessionStart(
+    {
+      harPath,
+      cookiePath,
+      prompt,
+    },
+    server.getContext()
+  );
 
   const firstContent = sessionResult.content?.[0];
   if (!firstContent || typeof firstContent.text !== "string") {
@@ -139,7 +148,7 @@ export async function processAllNodes(
 
   while (!isComplete && iterations < maxIterations) {
     // Check if analysis is complete
-    const completeResult = await server.handleIsComplete({ sessionId });
+    const completeResult = handleIsComplete({ sessionId }, server.getContext());
     const completeContent = completeResult.content?.[0];
     if (!completeContent || typeof completeContent.text !== "string") {
       throw new Error(
@@ -154,7 +163,10 @@ export async function processAllNodes(
     }
 
     // Process next node
-    const processResult = await server.handleProcessNextNode({ sessionId });
+    const processResult = await handleProcessNextNode(
+      { sessionId },
+      server.getContext()
+    );
     const processContent = processResult.content?.[0];
     if (!processContent || typeof processContent.text !== "string") {
       throw new Error(
@@ -180,7 +192,10 @@ export async function generateWrapperScript(
   server: HarvestMCPServer,
   sessionId: string
 ): Promise<string> {
-  const codeGenResult = await server.handleGenerateWrapperScript({ sessionId });
+  const codeGenResult = await handleGenerateWrapperScript(
+    { sessionId },
+    server.getContext()
+  );
   const firstContent = codeGenResult.content?.[0];
   if (!firstContent || typeof firstContent.text !== "string") {
     throw new Error(
