@@ -19,6 +19,7 @@ import {
 } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { getConfig } from "../config/index.js";
 import type {
   CompletedSessionArtifacts,
   CompletionAnalysis,
@@ -51,12 +52,22 @@ export interface CompletedSessionMetadata {
 export class CompletedSessionManager {
   private static instance: CompletedSessionManager;
   private readonly cacheDir: string;
-  private readonly maxCacheAge = 7 * 24 * 60 * 60 * 1000; // 7 days
+  private readonly maxCacheAgeMs: number;
   // TODO: Implement cache size-based cleanup
   // private readonly maxCacheSize = 1024 * 1024 * 1024; // 1GB
   private completedSessions = new Map<string, CompletedSessionMetadata>();
 
   private constructor() {
+    // Get cache TTL from configuration or use default
+    try {
+      const config = getConfig();
+      this.maxCacheAgeMs =
+        config.session.completedSessionCacheTTLMinutes * 60 * 1000; // Convert to milliseconds
+    } catch {
+      // Fallback to default (60 minutes = 1 hour)
+      this.maxCacheAgeMs = 60 * 60 * 1000;
+    }
+
     // Use a dedicated cache directory for completed sessions
     this.cacheDir = join(homedir(), ".harvest", "completed-sessions");
     this.initializeCache();
@@ -437,7 +448,7 @@ export class CompletedSessionManager {
       const lastAccessed = new Date(metadata.lastAccessed).getTime();
       const age = now - lastAccessed;
 
-      if (age > this.maxCacheAge) {
+      if (age > this.maxCacheAgeMs) {
         try {
           const sessionDir = join(this.cacheDir, sessionId);
           const dirStats = await stat(sessionDir);

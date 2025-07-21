@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from "uuid";
 import { analyzeAuthentication } from "../agents/AuthenticationAgent.js";
+import { getConfig } from "../config/index.js";
 import {
   type AuthenticationAnalysis,
   type CompletionAnalysis,
@@ -30,12 +31,27 @@ const logger = createComponentLogger("session-manager");
 
 export class SessionManager {
   private sessions = new Map<string, HarvestSession>();
-  private readonly MAX_SESSIONS = 100;
-  private readonly SESSION_TIMEOUT = 30 * 60 * 1000; // 30 minutes
+  private readonly maxSessions: number;
+  private readonly sessionTimeoutMs: number;
+  private readonly cleanupIntervalMs: number;
 
   constructor() {
+    // Get configuration values or use defaults
+    try {
+      const config = getConfig();
+      this.maxSessions = config.session.maxSessions;
+      this.sessionTimeoutMs = config.session.timeoutMinutes * 60 * 1000; // Convert to milliseconds
+      this.cleanupIntervalMs =
+        config.session.cleanupIntervalMinutes * 60 * 1000;
+    } catch {
+      // Fallback to hardcoded defaults if config not available
+      this.maxSessions = 100;
+      this.sessionTimeoutMs = 30 * 60 * 1000; // 30 minutes
+      this.cleanupIntervalMs = 5 * 60 * 1000; // 5 minutes
+    }
+
     // Set up periodic cleanup
-    setInterval(() => this.cleanupExpiredSessions(), 5 * 60 * 1000); // Every 5 minutes
+    setInterval(() => this.cleanupExpiredSessions(), this.cleanupIntervalMs);
   }
 
   /**
@@ -43,11 +59,11 @@ export class SessionManager {
    */
   async createSession(params: SessionStartParams): Promise<string> {
     // Clean up if we're at max capacity
-    if (this.sessions.size >= this.MAX_SESSIONS) {
+    if (this.sessions.size >= this.maxSessions) {
       this.cleanupExpiredSessions();
 
       // If still at capacity, remove oldest session
-      if (this.sessions.size >= this.MAX_SESSIONS) {
+      if (this.sessions.size >= this.maxSessions) {
         this.removeOldestSession();
       }
     }
@@ -316,7 +332,7 @@ export class SessionManager {
     const expiredSessions: string[] = [];
 
     for (const [id, session] of this.sessions) {
-      if (now - session.lastActivity.getTime() > this.SESSION_TIMEOUT) {
+      if (now - session.lastActivity.getTime() > this.sessionTimeoutMs) {
         expiredSessions.push(id);
       }
     }

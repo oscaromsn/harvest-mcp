@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { AgentFactory } from "../browser/AgentFactory.js";
 import { ArtifactCollector } from "../browser/ArtifactCollector.js";
 import type { BrowserAgentConfig } from "../browser/types.js";
+import { getConfig } from "../config/index.js";
 import type {
   Artifact,
   ManualBrowserAgent,
@@ -87,6 +88,75 @@ export class ManualSessionManager {
   }
 
   /**
+   * Get browser options with centralized configuration fallback
+   */
+  private getBrowserOptions(config: SessionConfig) {
+    try {
+      const centralConfig = getConfig();
+      return {
+        headless:
+          config.browserOptions?.headless ??
+          centralConfig.manualSession.browser.headless,
+        viewport: {
+          width:
+            config.browserOptions?.viewport?.width ??
+            centralConfig.manualSession.browser.viewport.width,
+          height:
+            config.browserOptions?.viewport?.height ??
+            centralConfig.manualSession.browser.viewport.height,
+        },
+        contextOptions: {
+          deviceScaleFactor:
+            config.browserOptions?.contextOptions?.deviceScaleFactor ??
+            centralConfig.manualSession.browser.contextOptions
+              .deviceScaleFactor,
+          hasTouch:
+            config.browserOptions?.contextOptions?.hasTouch ??
+            centralConfig.manualSession.browser.contextOptions.hasTouch,
+          isMobile:
+            config.browserOptions?.contextOptions?.isMobile ??
+            centralConfig.manualSession.browser.contextOptions.isMobile,
+          locale:
+            config.browserOptions?.contextOptions?.locale ??
+            centralConfig.manualSession.browser.contextOptions.locale,
+          timezone:
+            config.browserOptions?.contextOptions?.timezone ??
+            centralConfig.manualSession.browser.contextOptions.timezone,
+        },
+        timeout:
+          config.browserOptions?.timeout ??
+          centralConfig.manualSession.browser.timeout,
+        navigationTimeout:
+          config.browserOptions?.navigationTimeout ??
+          centralConfig.manualSession.browser.navigationTimeout,
+        slowMo:
+          config.browserOptions?.slowMo ??
+          centralConfig.manualSession.browser.slowMo,
+      };
+    } catch {
+      // Fallback to hardcoded defaults if config not available
+      return {
+        headless: config.browserOptions?.headless ?? false,
+        viewport: {
+          width: config.browserOptions?.viewport?.width ?? 1280,
+          height: config.browserOptions?.viewport?.height ?? 720,
+        },
+        contextOptions: {
+          deviceScaleFactor:
+            config.browserOptions?.contextOptions?.deviceScaleFactor ?? 1,
+          hasTouch: config.browserOptions?.contextOptions?.hasTouch ?? false,
+          isMobile: config.browserOptions?.contextOptions?.isMobile ?? false,
+          locale: config.browserOptions?.contextOptions?.locale ?? "en-US",
+          timezone: config.browserOptions?.contextOptions?.timezone ?? "UTC",
+        },
+        timeout: config.browserOptions?.timeout ?? 30000,
+        navigationTimeout: config.browserOptions?.navigationTimeout ?? 60000,
+        slowMo: config.browserOptions?.slowMo ?? 0,
+      };
+    }
+  }
+
+  /**
    * Start a new manual browser session
    */
   async startSession(config: SessionConfig = {}): Promise<SessionInfo> {
@@ -116,17 +186,7 @@ export class ManualSessionManager {
       // Create browser agent with manual-friendly defaults (no URL navigation yet)
       const agentConfig: BrowserAgentConfig = {
         // Don't include URL here - we'll navigate after setting up network tracking
-        browserOptions: {
-          headless: config.browserOptions?.headless ?? false, // Default to visible for manual interaction
-          viewport: {
-            width: config.browserOptions?.viewport?.width ?? 1280,
-            height: config.browserOptions?.viewport?.height ?? 720,
-          },
-          contextOptions: {
-            deviceScaleFactor:
-              config.browserOptions?.contextOptions?.deviceScaleFactor ?? 1,
-          },
-        },
+        browserOptions: this.getBrowserOptions(config),
       };
 
       const agent = await this.agentFactory.createAgent(agentConfig);
@@ -1403,7 +1463,14 @@ export class ManualSessionManager {
     agent: ManualBrowserAgent,
     sessionId: string
   ): Promise<void> {
-    const cleanupTimeout = 5000; // 5 seconds timeout for cleanup
+    // Get cleanup timeout from configuration or use default
+    let cleanupTimeout = 5000;
+    try {
+      const centralConfig = getConfig();
+      cleanupTimeout = centralConfig.manualSession.cleanupTimeoutMs;
+    } catch {
+      // Use default if config not available
+    }
 
     try {
       // Try graceful cleanup with timeout
