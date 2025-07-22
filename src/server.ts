@@ -6,7 +6,6 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { identifyEndUrl } from "./agents/URLIdentificationAgent.js";
 import { type CLIArgs, initializeConfig } from "./config/index.js";
-// AuthenticationAnalyzer replaced with AuthenticationAgent
 import { CompletedSessionManager } from "./core/CompletedSessionManager.js";
 import { manualSessionManager } from "./core/ManualSessionManager.js";
 // validateConfiguration no longer needed - centralized config handles validation

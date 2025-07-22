@@ -17,7 +17,6 @@ import {
   type SessionState,
 } from "../types/index.js";
 import { createComponentLogger } from "../utils/logger.js";
-// AuthenticationAnalyzer replaced with AuthenticationAgent
 import { parseCookieFile } from "./CookieParser.js";
 import { DAGManager } from "./DAGManager.js";
 import { type HARParsingOptions, parseHARFile } from "./HARParser.js";
