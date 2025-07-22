@@ -30,6 +30,7 @@ bun test:coverage       # With coverage report
 # Code Quality (run before committing)
 bun run check           # Lint and format check
 bun run typecheck       # TypeScript type checking
+bun run knip            # Find unused code and dependencies
 
 # Build
 bun run build           # Lint, format, and build for production
