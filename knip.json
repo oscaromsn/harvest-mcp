@@ -11,6 +11,7 @@
     "docs/**",
     "issues/**",
     "tests/manual/**",
+    // These files are used by generated code, so knip cannot detect their usage statically
     "src/core/ast/CookieManager.ts",
     "src/core/ast/SharedTypes.ts"
   ],
