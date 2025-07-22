@@ -78,11 +78,10 @@ export class ASTTypeDefinitionEngine {
 
   /**
    * Generate standard type definitions
-   * @param useSharedImports - If true, import from SharedTypes.ts instead of generating inline
+   * Uses shared imports from SharedTypes.js for all standard types
    * @param inferredTypes - Custom response type interfaces to generate
    */
   addStandardTypeDefinitions(
-    useSharedImports = false,
     inferredTypes?: Array<{
       interfaceName: string;
       fields: Array<{ name: string; type: string; optional: boolean }>;
@@ -93,9 +92,7 @@ export class ASTTypeDefinitionEngine {
     // Add comment for type definitions section
     const sourceFile = this.astProject.getSourceFile(this.currentSourceFile);
     if (sourceFile) {
-      const comment = useSharedImports
-        ? "// Type definitions\n\n"
-        : "// Type definitions\n\n";
+      const comment = "// Type definitions\n\n";
       sourceFile.insertText(sourceFile.getFullText().length, comment);
     }
 
@@ -109,18 +106,8 @@ export class ASTTypeDefinitionEngine {
       }
     }
 
-    // Generate standard types (shared imports or inline)
-    typeBuilder.generateStandardTypes(useSharedImports);
-
-    // Only add export statements if using inline generation
-    if (!useSharedImports) {
-      // Add export statements for types (except AuthenticationError which is exported by the class)
-      this.addExportTypeStatement([
-        "ApiResponse",
-        "RequestOptions",
-        "AuthConfig",
-      ]);
-    }
+    // Generate standard types using shared imports
+    typeBuilder.generateStandardTypes();
   }
 
   /**

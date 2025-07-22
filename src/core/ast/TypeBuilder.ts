@@ -9,7 +9,6 @@
 import {
   type InterfaceDeclaration,
   type PropertySignatureStructure,
-  Scope,
   StructureKind,
   type TypeAliasDeclaration,
 } from "ts-morph";
@@ -486,70 +485,26 @@ export class TypeBuilder extends BaseBuilder {
   /**
    * Generate all standard type definitions used by the generated code
    * This replaces the generateTypeDefinitions function from TypeDefinitionTemplateEngine
-   *
-   * @param useSharedImports - If true, import from SharedTypes.ts instead of generating inline
+   * Uses shared imports from SharedTypes.js for reduced boilerplate
    */
-  generateStandardTypes(useSharedImports = false): void {
-    if (useSharedImports) {
-      // Import from shared types module
-      this.sourceFile.addImportDeclaration({
-        moduleSpecifier: "./SharedTypes.js",
-        namedImports: [
-          "ApiResponse",
-          "RequestOptions",
-          "AuthConfig",
-          "AuthenticationError",
-          "NetworkRequestError",
-          "WorkflowExecutionError",
-          "CookieError",
-        ],
-      });
-
-      // Add a comment explaining the import
-      const importComment =
-        "// Standard types imported from SharedTypes.js for reduced boilerplate\n";
-      this.sourceFile.insertText(0, importComment);
-
-      return;
-    }
-
-    // Legacy inline generation for backward compatibility
-    // Create standard interfaces
-    this.createApiResponseInterface();
-    this.createRequestOptionsInterface();
-    this.createAuthConfigInterface();
-
-    // Add authentication error class (not an interface, but related)
-    this.sourceFile.addClass({
-      name: "AuthenticationError",
-      extends: "Error",
-      isExported: true,
-      ctors: [
-        {
-          parameters: [
-            { name: "message", type: "string" },
-            {
-              name: "status",
-              type: "number",
-              scope: Scope.Public,
-              isReadonly: true,
-            },
-            {
-              name: "response",
-              type: "unknown",
-              hasQuestionToken: true,
-              scope: Scope.Public,
-              isReadonly: true,
-            },
-          ],
-          statements: ["super(message);", "this.name = 'AuthenticationError';"],
-        },
-      ],
-      docs: [
-        {
-          description: "Authentication error for retry logic",
-        },
+  generateStandardTypes(): void {
+    // Import from shared types module
+    this.sourceFile.addImportDeclaration({
+      moduleSpecifier: "./SharedTypes.js",
+      namedImports: [
+        "ApiResponse",
+        "RequestOptions",
+        "AuthConfig",
+        "AuthenticationError",
+        "NetworkRequestError",
+        "WorkflowExecutionError",
+        "CookieError",
       ],
     });
+
+    // Add a comment explaining the import
+    const importComment =
+      "// Standard types imported from SharedTypes.js for reduced boilerplate\n";
+    this.sourceFile.insertText(0, importComment);
   }
 }

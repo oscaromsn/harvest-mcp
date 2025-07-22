@@ -167,11 +167,8 @@ export class WrapperScriptOrchestrator {
     const inferredTypes = this.inferResponseTypes(session);
 
     // Generate standard API types (ApiResponse, RequestOptions, etc.)
-    // Use shared imports if enabled to reduce boilerplate
-    this.typeEngine.addStandardTypeDefinitions(
-      this.config.useSharedTypes,
-      inferredTypes
-    );
+    // Uses shared imports from SharedTypes.js to reduce boilerplate
+    this.typeEngine.addStandardTypeDefinitions(inferredTypes);
 
     // Generate parameter interfaces for functions with complex parameters
     this.generateParameterInterfaces(session);
@@ -259,27 +256,24 @@ export class WrapperScriptOrchestrator {
     // Parse parameters
     const parameters = this.parseNodeParameters(node, session);
 
-    // Generate function body (still using hybrid approach for now)
+    // Generate function body using pure AST approach
     const functionBody = this.generateRequestFunctionBody(
       node,
       request,
       session
     );
 
-    // Create function using AST engine
+    // Create function using pure AST approach
     this.functionEngine
-      .createFunctionWithTemplateBody(
-        functionName,
-        parameters,
-        `ApiResponse<${responseType}>`,
-        functionBody,
-        {
-          description: documentation.description,
-          additionalLines: documentation.additionalLines,
-          params: documentation.params,
-          returns: `Promise resolving to API response with ${responseType} data`,
-        }
-      )
+      .getFunctionPatterns()
+      .createApiRequestFunction(functionName, parameters, responseType)
+      .withDocumentation({
+        description: documentation.description,
+        additionalLines: documentation.additionalLines,
+        params: documentation.params,
+        returns: `Promise resolving to API response with ${responseType} data`,
+      })
+      .setBodyText(functionBody)
       .export();
 
     logger.debug("Generated request function", {
