@@ -88,14 +88,11 @@ We use **Biome** for linting, formatting, and code quality enforcement:
 # Check code quality
 bun run check
 
-# Auto-fix issues
-bun run check:fix
+# Find unused code and dependencies  
+bun run knip
 
-# Format code
-bun run format:fix
-
-# Lint only
-bun run lint:fix
+# Auto-fix unused dependencies (where possible)
+bun run knip:fix
 ```
 
 ### TypeScript Guidelines
@@ -194,7 +191,7 @@ describe('ComponentName', () => {
 
 1. **Code Quality Checks**:
    ```bash
-   bun run ci  # Runs check + test
+   bun run ci  # Runs check + knip + test
    ```
 
 2. **Update Documentation**: Ensure README and code comments are current
