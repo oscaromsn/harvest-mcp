@@ -26,8 +26,3 @@ export const createMockSession = (
   lastActivity: new Date("2024-01-01T00:00:00Z"),
   ...overrides,
 });
-
-// Async test helpers
-export const waitFor = (ms: number): Promise<void> => {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-};

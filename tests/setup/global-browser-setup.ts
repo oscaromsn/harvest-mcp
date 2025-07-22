@@ -36,22 +36,4 @@ export async function teardownBrowser(): Promise<void> {
   }
 }
 
-export async function getSharedBrowser(): Promise<Browser> {
-  if (!globalBrowser) {
-    await setupBrowser();
-  }
-  if (!globalBrowser) {
-    throw new Error("Failed to setup global browser");
-  }
-  return globalBrowser;
-}
-
-export async function createTestContext(): Promise<BrowserContext> {
-  const browser = await getSharedBrowser();
-  const context = await browser.newContext({
-    viewport: TEST_BROWSER_DEFAULTS.viewport,
-  });
-  return context;
-}
-
 // For tests that need isolated contexts but shared browser
