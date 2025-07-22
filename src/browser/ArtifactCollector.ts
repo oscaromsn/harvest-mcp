@@ -201,7 +201,7 @@ export class ArtifactCollector {
               name,
               value,
             })),
-            cookies: [], // TODO: Extract cookies from headers if needed
+            cookies: [], // Cookie extraction handled via context.cookies()
             postData: request.postData()
               ? {
                   mimeType:
@@ -274,7 +274,7 @@ export class ArtifactCollector {
                 value,
               })
             ),
-            cookies: [], // TODO: Extract cookies from set-cookie headers if needed
+            cookies: [], // Cookie extraction handled via context.cookies()
             content: {
               size: Number.parseInt(
                 response.headers()["content-length"] || "0",
