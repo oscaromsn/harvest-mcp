@@ -245,35 +245,6 @@ describe("AST FunctionBuilder", () => {
       engine = new ASTFunctionEngine(astProject);
     });
 
-    it("should create functions with template bodies", () => {
-      const templateBody = `  const url = new URL('https://api.example.com/search');
-  const response = await fetch(url.toString());
-  return await response.json();`;
-
-      const parameters: ParameterDefinition[] = [
-        { name: "searchTerm", type: "string" },
-      ];
-
-      engine.createFunctionWithTemplateBody(
-        "performSearch",
-        parameters,
-        "SearchResult[]",
-        templateBody,
-        {
-          description: "Perform a search operation",
-          params: [
-            { name: "searchTerm", description: "The term to search for" },
-          ],
-        }
-      );
-
-      const code = engine.generateCode();
-      expect(code).toContain("async function performSearch");
-      expect(code).toContain("Promise<SearchResult[]>");
-      expect(code).toContain("const url = new URL");
-      expect(code).toContain("searchTerm: string");
-    });
-
     it("should create standard API functions", () => {
       const parameters: ParameterDefinition[] = [
         { name: "userId", type: "string" },

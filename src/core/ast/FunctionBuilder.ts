@@ -395,30 +395,6 @@ export class ASTFunctionEngine {
   }
 
   /**
-   * Create a function with template-generated body (hybrid approach)
-   */
-  createFunctionWithTemplateBody(
-    name: string,
-    parameters: ParameterDefinition[],
-    returnType: string,
-    templateBody: string,
-    documentation?: JSDocOptions
-  ): FunctionBuilder {
-    const patterns = this.getFunctionPatterns();
-    const builder = patterns
-      .asyncFunction(name)
-      .setReturnType(returnType)
-      .addParameters(parameters)
-      .setBodyText(templateBody);
-
-    if (documentation) {
-      builder.withDocumentation(documentation);
-    }
-
-    return builder;
-  }
-
-  /**
    * Create a standard API function (common pattern)
    */
   createStandardApiFunction(
