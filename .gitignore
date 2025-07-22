@@ -38,6 +38,8 @@ html/**
 
 # docs & dev artifacts
 docs/analysis/**
+docs/plans/**
+**/roadmap.md
 **/todo.md
 tests/fixtures/**
 tests/investigation/**
