@@ -92,56 +92,6 @@ describe("Sprint 6: Memory Management & Performance", () => {
       expect(stopSnapshots.length).toBeGreaterThan(0);
     }, 15000);
 
-    test.skip("should detect memory leaks over multiple sessions", async () => {
-      // DISABLED: This test is flaky due to browser startup/shutdown timing.
-      // Memory leak detection is already covered by the pure memory monitor test below.
-      // This test mixes browser resource management with memory monitoring logic.
-      // TODO: Consider splitting into separate browser integration vs pure memory tests.
-
-      const sessionCount = 2;
-      const sessionIds: string[] = [];
-
-      try {
-        for (let i = 0; i < sessionCount; i++) {
-          const sessionConfig: SessionConfig = {
-            artifactConfig: { enabled: false },
-            browserOptions: { headless: true },
-            url: "about:blank",
-          };
-
-          const sessionInfo =
-            await manualSessionManager.startSession(sessionConfig);
-          sessionIds.push(sessionInfo.id);
-          await new Promise((resolve) => setTimeout(resolve, 100));
-          await manualSessionManager.stopSession(sessionInfo.id, {
-            reason: `memory_leak_test_${i}`,
-          });
-          manualSessionManager.performCleanup();
-          await new Promise((resolve) => setTimeout(resolve, 100));
-        }
-
-        const memoryStats = manualSessionManager.getMemoryStats();
-        expect(memoryStats.activeSessions).toBe(0);
-        expect(memoryStats.snapshotCount).toBeGreaterThan(sessionCount * 2);
-        expect(memoryStats.leakDetection.isLeaking).toBeDefined();
-        expect(memoryStats.leakDetection.trend).toMatch(
-          /increasing|stable|decreasing/
-        );
-        expect(typeof memoryStats.leakDetection.growth).toBe("number");
-      } catch (error) {
-        await Promise.allSettled(
-          sessionIds.map((id) =>
-            manualSessionManager
-              .stopSession(id, { reason: "error_cleanup" })
-              .catch(() => {
-                // Ignore cleanup errors during test cleanup
-              })
-          )
-        );
-        throw error;
-      }
-    }, 25000);
-
     test("should provide detailed memory statistics", () => {
       const stats = manualSessionManager.getMemoryStats();
 
@@ -211,111 +161,9 @@ describe("Sprint 6: Memory Management & Performance", () => {
         beforeCleanup.heapUsed * 1.1
       ); // Allow 10% tolerance
     }, 10000);
-
-    test.skip("should handle concurrent session cleanup", async () => {
-      // DISABLED: This test is flaky due to browser resource contention and timing.
-      // Concurrent browser session management is system-dependent and not core to our logic.
-      // Basic session cleanup is tested in "should properly clean up browser resources".
-      // TODO: Move to manual/integration testing if concurrent behavior is critical.
-
-      const concurrentSessions = 2;
-      const sessionIds: string[] = [];
-
-      try {
-        for (let i = 0; i < concurrentSessions; i++) {
-          const sessionInfo = await manualSessionManager.startSession({
-            artifactConfig: { enabled: false },
-            browserOptions: { headless: true },
-            url: "about:blank",
-          });
-          sessionIds.push(sessionInfo.id);
-          if (i < concurrentSessions - 1) {
-            await new Promise((resolve) => setTimeout(resolve, 500));
-          }
-        }
-
-        expect(sessionIds.length).toBe(concurrentSessions);
-        expect(manualSessionManager.listActiveSessions().length).toBe(
-          concurrentSessions
-        );
-
-        const stopPromises = sessionIds.map((id) =>
-          manualSessionManager.stopSession(id, {
-            reason: "concurrent_cleanup_test",
-          })
-        );
-
-        const results = await Promise.allSettled(stopPromises);
-        expect(results.length).toBe(concurrentSessions);
-        expect(manualSessionManager.listActiveSessions().length).toBe(0);
-
-        const memoryStats = manualSessionManager.getMemoryStats();
-        expect(memoryStats.activeSessions).toBe(0);
-      } catch (error) {
-        await Promise.allSettled(
-          sessionIds.map((id) =>
-            manualSessionManager
-              .stopSession(id, { reason: "error_cleanup" })
-              .catch(() => {
-                // Ignore cleanup errors during test cleanup
-              })
-          )
-        );
-        throw error;
-      }
-    }, 25000);
   });
 
   describe("Performance Monitoring", () => {
-    test.skip("should maintain acceptable memory usage under load", async () => {
-      // DISABLED: This test is flaky due to browser resource contention and timing issues.
-      // It tests browser performance rather than our memory monitoring logic.
-      // The core memory tracking functionality is covered by other tests.
-      // TODO: Re-evaluate if this test is needed or if it should be moved to manual testing.
-
-      // Test implementation left for reference but disabled
-      const maxSessions = 4;
-      const sessionIds: string[] = [];
-
-      try {
-        for (let i = 0; i < maxSessions; i++) {
-          const sessionInfo = await manualSessionManager.startSession({
-            artifactConfig: { enabled: false },
-            browserOptions: { headless: true },
-            url: "about:blank",
-          });
-          sessionIds.push(sessionInfo.id);
-          await new Promise((resolve) => setTimeout(resolve, 250));
-
-          const memory = memoryMonitor.getCurrentMemoryUsage();
-          const memoryMB = memory.heapUsed / (1024 * 1024);
-          expect(memoryMB).toBeLessThan(500);
-        }
-
-        expect(manualSessionManager.listActiveSessions().length).toBe(
-          maxSessions
-        );
-
-        for (const id of sessionIds) {
-          await manualSessionManager.stopSession(id, { reason: "load_test" });
-          await new Promise((resolve) => setTimeout(resolve, 100));
-        }
-
-        expect(manualSessionManager.listActiveSessions().length).toBe(0);
-      } catch (error) {
-        await Promise.allSettled(
-          sessionIds.map((id) =>
-            manualSessionManager
-              .stopSession(id, { reason: "error_cleanup" })
-              .catch(() => {
-                // Ignore cleanup errors during test cleanup
-              })
-          )
-        );
-        throw error;
-      }
-    }, 45000);
-
     test("should detect and warn about memory leaks", async () => {
       // This test simulates a leak by creating many memory snapshots quickly
       const snapshotCount = 15;
