@@ -1,0 +1,33 @@
+{
+  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "entry": ["src/server.ts"],
+  "project": ["src/**/*.ts", "tests/**/*.ts", "scripts/**/*.ts"],
+  "ignore": [
+    "coverage/**",
+    "dist/**",
+    "html/**",
+    "manual-session-artifacts/**",
+    "node_modules/**",
+    "docs/**",
+    "issues/**",
+    "tests/manual/**"
+  ],
+  "ignoreDependencies": ["sharp", "pino-pretty"],
+  "ignoreBinaries": ["tsc"],
+  "ignoreExportsUsedInFile": true,
+  "rules": {
+    "files": "warn",
+    "dependencies": "error",
+    "unlisted": "error",
+    "exports": "warn",
+    "nsExports": "warn",
+    "classMembers": "off",
+    "types": "off",
+    "nsTypes": "off",
+    "enumMembers": "off",
+    "duplicates": "error"
+  },
+  "vitest": {
+    "config": "vitest.config.ts"
+  }
+}
