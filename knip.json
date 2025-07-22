@@ -1,13 +1,7 @@
 {
   "$schema": "https://unpkg.com/knip@5/schema.json",
-  "entry": [
-    "src/server.ts"
-  ],
-  "project": [
-    "src/**/*.ts",
-    "tests/**/*.ts",
-    "scripts/**/*.ts"
-  ],
+  "entry": ["src/server.ts"],
+  "project": ["src/**/*.ts", "tests/**/*.ts", "scripts/**/*.ts"],
   "ignore": [
     "coverage/**",
     "dist/**",
@@ -20,13 +14,8 @@
     "src/core/ast/CookieManager.ts",
     "src/core/ast/SharedTypes.ts"
   ],
-  "ignoreDependencies": [
-    "sharp",
-    "pino-pretty"
-  ],
-  "ignoreBinaries": [
-    "tsc"
-  ],
+  "ignoreDependencies": ["sharp", "pino-pretty"],
+  "ignoreBinaries": ["tsc"],
   "ignoreExportsUsedInFile": true,
   "rules": {
     "binaries": "warn",
