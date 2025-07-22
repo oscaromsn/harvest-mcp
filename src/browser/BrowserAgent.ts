@@ -17,10 +17,6 @@ export class BrowserAgent implements IBrowserAgent {
   public readonly context: BrowserContext;
   public readonly browser: Browser;
   private isStarted = false;
-  private contextDestroyedCount = 0;
-  private lastContextError: Date | null = null;
-  private readonly maxContextErrors = 3;
-  private readonly contextErrorWindow = 5000; // 5 seconds
 
   constructor(page: Page, context: BrowserContext) {
     this.page = page;
@@ -107,49 +103,10 @@ export class BrowserAgent implements IBrowserAgent {
   }
 
   /**
-   * Check if we're in a circuit breaker state due to repeated context errors
-   */
-  private isCircuitBreakerOpen(): boolean {
-    if (this.contextDestroyedCount >= this.maxContextErrors) {
-      const now = new Date();
-      if (
-        this.lastContextError &&
-        now.getTime() - this.lastContextError.getTime() <
-          this.contextErrorWindow
-      ) {
-        return true;
-      }
-      // Reset circuit breaker after window expires
-      this.contextDestroyedCount = 0;
-      this.lastContextError = null;
-    }
-    return false;
-  }
-
-  /**
-   * Record a context destruction error for circuit breaker
-   */
-  private recordContextError(): void {
-    this.contextDestroyedCount++;
-    this.lastContextError = new Date();
-
-    if (this.contextDestroyedCount >= this.maxContextErrors) {
-      browserLogger.warn(
-        `Circuit breaker opened: too many context destruction errors (${this.contextDestroyedCount})`
-      );
-    }
-  }
-
-  /**
    * Get the current page URL
    */
   getCurrentUrl(): string {
     try {
-      // Circuit breaker check
-      if (this.isCircuitBreakerOpen()) {
-        return "";
-      }
-
       // Check if the page is still valid before trying to get URL
       if (!this.page || !this.context || this.page.isClosed()) {
         return "";
@@ -173,7 +130,9 @@ export class BrowserAgent implements IBrowserAgent {
           error.message.includes("Protocol error") ||
           error.message.includes("Navigation"))
       ) {
-        this.recordContextError();
+        browserLogger.debug("Context destroyed while getting URL", {
+          error: error.message,
+        });
         return "";
       }
       logBrowserError(error as Error, { operation: "get_current_url" });
@@ -186,11 +145,6 @@ export class BrowserAgent implements IBrowserAgent {
    */
   async getCurrentTitle(): Promise<string> {
     try {
-      // Circuit breaker check
-      if (this.isCircuitBreakerOpen()) {
-        return "";
-      }
-
       // Check if the page is still valid before trying to get title
       if (!this.page || !this.context || this.page.isClosed()) {
         return "";
@@ -201,28 +155,11 @@ export class BrowserAgent implements IBrowserAgent {
         return "";
       }
 
-      // Quick context validation check first
-      try {
-        await this.page.evaluate(
-          () =>
-            (
-              globalThis as typeof globalThis & {
-                document?: { readyState?: string };
-              }
-            ).document?.readyState || "loading"
-        );
-      } catch (_contextError) {
-        // Context is already destroyed, no point in continuing
-        this.recordContextError();
-        return "";
-      }
-
-      // Handle title retrieval with proper async/await and timeout
+      // Handle title retrieval with timeout for robustness
       const title = await Promise.race([
         this.page.title(),
-        new Promise<string>(
-          (_, reject) =>
-            setTimeout(() => reject(new Error("Title fetch timeout")), 3000) // Reduced timeout
+        new Promise<string>((_, reject) =>
+          setTimeout(() => reject(new Error("Title fetch timeout")), 3000)
         ),
       ]);
 
@@ -240,7 +177,9 @@ export class BrowserAgent implements IBrowserAgent {
           error.message.includes("Protocol error") ||
           error.message.includes("Navigation"))
       ) {
-        this.recordContextError();
+        browserLogger.debug("Context destroyed while getting title", {
+          error: error.message,
+        });
         return "";
       }
       logBrowserError(error as Error, { operation: "get_current_title" });
