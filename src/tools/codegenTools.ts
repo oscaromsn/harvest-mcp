@@ -104,7 +104,7 @@ ${recommendationsList}
     );
 
     // Generate the wrapper script
-    const generatedCode = generateWrapperScript(session);
+    const generatedCode = await generateWrapperScript(session);
 
     // Store the generated code in session state for resource access
     session.state.generatedCode = generatedCode;
