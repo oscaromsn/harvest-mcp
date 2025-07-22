@@ -263,26 +263,6 @@ export function getConfig(): Config {
   return configManager.getConfig();
 }
 
-/**
- * Check if configuration is initialized
- */
-export function isConfigInitialized(): boolean {
-  if (!configManager) {
-    return false;
-  }
-  return configManager.isInitialized();
-}
-
-/**
- * Reset configuration (for testing)
- */
-export function resetConfig(): void {
-  if (configManager) {
-    configManager.reset();
-  }
-  configManager = null;
-}
-
 export type { ConfigLoaderOptions } from "./loader.js";
 // Re-export essential types for consumers
 // ConfigSchema is kept internal - consumers should use getConfig() function

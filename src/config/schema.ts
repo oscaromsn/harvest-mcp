@@ -123,15 +123,6 @@ export const ConfigSchema = z.object({
 
 // Infer TypeScript type from schema
 export type Config = z.infer<typeof ConfigSchema>;
-export type LLMConfig = z.infer<typeof LLMConfigSchema>;
-export type SessionConfig = z.infer<typeof SessionConfigSchema>;
-export type ManualSessionConfig = z.infer<typeof ManualSessionConfigSchema>;
-export type BrowserOptions = z.infer<typeof BrowserOptionsSchema>;
-export type ArtifactConfig = z.infer<typeof ArtifactConfigSchema>;
-export type PathConfig = z.infer<typeof PathConfigSchema>;
-export type LoggingConfig = z.infer<typeof LoggingConfigSchema>;
-export type MemoryConfig = z.infer<typeof MemoryConfigSchema>;
-export type DevelopmentConfig = z.infer<typeof DevelopmentConfigSchema>;
 
 // CLI Arguments Schema
 export const CLIArgsSchema = z.object({
@@ -197,4 +188,3 @@ export const ENVIRONMENT_VARIABLE_MAP = {
 export type EnvironmentVariableKey = keyof typeof ENVIRONMENT_VARIABLE_MAP;
 
 // Default configuration values (applied by schema defaults)
-export const DEFAULT_CONFIG: Config = ConfigSchema.parse({});
