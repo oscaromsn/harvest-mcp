@@ -175,12 +175,72 @@ export class SessionManager {
         workflowGroups: new Map(),
       };
 
+      // Create DAG manager
+      const dagManager = new DAGManager();
+
+      // CRITICAL FIX: Convert parsed HAR requests into DAG nodes
+      // This was the missing step causing 0 nodes in the DAG
+      if (harData.requests && harData.requests.length > 0) {
+        logger.info(
+          `Converting ${harData.requests.length} HAR requests to DAG nodes`,
+          {
+            sessionId,
+            requestCount: harData.requests.length,
+          }
+        );
+
+        for (const request of harData.requests) {
+          try {
+            // Create node content from request (request is already a RequestModel)
+            const nodeContent = {
+              key: request, // request is already a RequestModel instance
+              value: request.response || null, // Include response data if available
+            };
+
+            // Add as curl node (will be analyzed later for dependencies and types)
+            const nodeId = dagManager.addNode("curl", nodeContent);
+            sessionState.toBeProcessedNodes.push(nodeId);
+
+            logger.debug(
+              `Added DAG node for ${request.method} ${request.url}`,
+              {
+                sessionId,
+                nodeId,
+                method: request.method,
+                url: request.url,
+              }
+            );
+          } catch (error) {
+            logger.warn("Failed to create DAG node for request", {
+              sessionId,
+              method: request.method,
+              url: request.url,
+              error: error instanceof Error ? error.message : "Unknown error",
+            });
+          }
+        }
+
+        logger.info(
+          `Successfully created ${sessionState.toBeProcessedNodes.length} DAG nodes`,
+          {
+            sessionId,
+            totalNodes: sessionState.toBeProcessedNodes.length,
+          }
+        );
+      } else {
+        logger.warn("No HAR requests found to convert to DAG nodes", {
+          sessionId,
+          harDataExists: !!harData,
+          requestsCount: harData.requests?.length || 0,
+        });
+      }
+
       // Create session
       const session: HarvestSession = {
         id: sessionId,
         prompt: params.prompt,
         harData,
-        dagManager: new DAGManager(),
+        dagManager,
         state: sessionState,
         createdAt: now,
         lastActivity: now,
