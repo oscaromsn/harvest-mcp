@@ -189,7 +189,7 @@ describe("CodeGenerator", () => {
 
       // Should generate basic structure with main function
       expect(code).toContain("async function main");
-      expect(code).toContain("No API functions available");
+      expect(code).toContain("No workflow steps available");
     });
   });
 });

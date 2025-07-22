@@ -55,7 +55,8 @@ export interface CookieStorage {
 class BrowserCookieStorage implements CookieStorage {
   getCookie(name: string): string | null {
     // Use globalThis to avoid document reference issues
-    const doc = (globalThis as { document?: Document & { cookie: string } }).document;
+    const doc = (globalThis as { document?: Document & { cookie: string } })
+      .document;
     if (!doc) {
       return null;
     }
@@ -74,7 +75,8 @@ class BrowserCookieStorage implements CookieStorage {
     value: string,
     attributes: CookieAttributes = {}
   ): void {
-    const doc = (globalThis as { document?: Document & { cookie: string } }).document;
+    const doc = (globalThis as { document?: Document & { cookie: string } })
+      .document;
     if (!doc) {
       console.warn("Cannot set cookies in non-browser environment");
       return;
@@ -118,7 +120,8 @@ class BrowserCookieStorage implements CookieStorage {
   }
 
   getAllCookies(): Record<string, string> {
-    const doc = (globalThis as { document?: Document & { cookie: string } }).document;
+    const doc = (globalThis as { document?: Document & { cookie: string } })
+      .document;
     if (!doc) {
       return {};
     }
