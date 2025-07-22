@@ -11,11 +11,42 @@ import {
 } from "../types/index.js";
 import { createComponentLogger } from "../utils/logger.js";
 import {
+  generateAuthErrorHandling,
+  generateAuthenticationSetup as generateAuthSetup,
+} from "./AuthTemplateEngine.js";
+import {
   apiRequestFailed,
   workflowFailed,
   workflowNotFound,
 } from "./ErrorHandlingTemplate.js";
 import { fetchWithQueryParams } from "./FetchTemplate.js";
+import {
+  generateAsyncFunction,
+  generateCatchBlock,
+  generateFunctionWithDocumentation,
+  generateJSDocComment,
+  generateReturnStatement,
+} from "./FunctionTemplateEngine.js";
+import {
+  generateCookieNodeComment,
+  generateFetchCall,
+  generateHeadersObject,
+  generateNotFoundNodeFunction,
+  generateParameterSetup,
+  generateRequestOptions,
+  generateResponseOkCheck,
+  generateResponseProcessing,
+  generateUrlWithParams,
+} from "./ResponseHandlingTemplateEngine.js";
+import {
+  generateExportBlock,
+  generateFileHeader,
+  generateInterface,
+  generateMainFunctionEmptyBody,
+  generateMainFunctionWithMaster,
+  generateTypeDefinitions,
+  generateUsageExample,
+} from "./TypeDefinitionTemplateEngine.js";
 
 const logger = createComponentLogger("code-generator");
 
@@ -306,38 +337,54 @@ function generateRequestNodeCode(
     );
   }
 
-  const lines: string[] = [];
-
   // Determine response type
   const inferredTypes = session ? inferResponseTypes(session) : [];
   const responseType = getResponseTypeForNode(node, inferredTypes);
 
-  // Generate function documentation and signature
-  lines.push(...generateFunctionDocumentation(node, request));
-  lines.push(
-    `async function ${functionName}(${generateFunctionParameters(node)}): Promise<ApiResponse<${responseType}>> {`
-  );
-  lines.push("  try {");
+  // Generate function documentation
+  const documentation = generateFunctionDocumentation(node, request).join("\n");
+
+  // Generate function body parts
+  const bodyParts: string[] = [];
 
   // Generate URL construction code
-  const urlExpression = generateUrlConstruction(request, node, lines);
+  const urlExpression = generateUrlConstruction(request, node, bodyParts);
 
   // Generate headers and request options
-  generateHeadersAndOptions(request, lines);
+  generateHeadersAndOptions(request, bodyParts);
 
   // Generate request execution and response handling
-  generateRequestExecution(urlExpression, lines);
-  generateResponseHandling(lines);
+  generateRequestExecution(urlExpression, bodyParts);
+  generateResponseHandling(bodyParts);
 
   // Generate variable extraction comments
-  generateVariableExtractionComments(node, lines);
+  generateVariableExtractionComments(node, bodyParts);
 
-  // Generate return statement and error handling
-  generateReturnStatement(lines);
-  generateErrorHandling(functionName, lines);
+  // Generate return statement - use the imported template function
+  const returnStmt = generateReturnStatement();
+  bodyParts.push(
+    ...returnStmt
+      .split("\n")
+      .map((line) => `    ${line.trim()}`)
+      .filter((line) => line.trim())
+  );
 
-  lines.push("}");
-  return lines.join("\n");
+  // Combine body parts
+  const tryBody = bodyParts.join("\n");
+  const catchHandler = generateCatchBlock(functionName);
+  const functionBody = `  try {\n${tryBody}\n  ${catchHandler}`;
+
+  // Generate complete function using template
+  const parameters = generateFunctionParameters(node);
+  const completeFunction = generateFunctionWithDocumentation(
+    documentation,
+    functionName,
+    parameters,
+    `ApiResponse<${responseType}>`,
+    functionBody
+  );
+
+  return completeFunction;
 }
 
 /**
@@ -353,12 +400,7 @@ function generateCookieNodeCode(node: DAGNode, _functionName: string): string {
   const cookieKey = node.content.key;
   const cookieValue = node.content.value;
 
-  const lines: string[] = [];
-  lines.push(`// Cookie: ${cookieKey}`);
-  lines.push(`// Value: ${cookieValue}`);
-  lines.push("// This cookie should be included in requests that need it");
-
-  return lines.join("\n");
+  return generateCookieNodeComment(cookieKey, cookieValue);
 }
 
 /**
@@ -372,16 +414,7 @@ function generateNotFoundNodeCode(node: DAGNode, functionName: string): string {
   }
 
   const missingPart = node.content.key;
-
-  const lines: string[] = [];
-  lines.push(`// WARNING: Could not resolve ${missingPart}`);
-  lines.push(`function ${functionName}(): never {`);
-  lines.push(
-    `  throw new Error('Missing dependency: ${missingPart}. This value needs to be provided manually.');`
-  );
-  lines.push("}");
-
-  return lines.join("\n");
+  return generateNotFoundNodeFunction(functionName, missingPart);
 }
 
 /**
@@ -709,18 +742,7 @@ export function getExtractedVariables(node: DAGNode): string[] {
  * Generate file header with metadata
  */
 export function generateHeader(session: HarvestSession): string {
-  const lines: string[] = [];
-  lines.push("// Harvest Generated API Integration Code");
-  lines.push("// ==========================================");
-  lines.push("//");
-  lines.push(`// Original prompt: ${session.prompt}`);
-  lines.push(`// Generated: ${new Date().toISOString().split("T")[0]}`);
-  lines.push(`// Session ID: ${session.id}`);
-  lines.push("//");
-  lines.push("// DO NOT EDIT - This file is auto-generated");
-  lines.push("// To modify the API integration, re-run the Harvest analysis");
-
-  return lines.join("\n");
+  return generateFileHeader(session.prompt, session.id);
 }
 
 /**
@@ -940,69 +962,8 @@ function inferTypeScriptType(value: unknown): string {
  * Generate TypeScript imports and type definitions with authentication support
  */
 export function generateImports(session?: HarvestSession): string {
-  const lines: string[] = [];
-
-  // Type definitions with inferred response types
-  lines.push("// Type definitions");
-
-  if (session) {
-    const responseTypes = inferResponseTypes(session);
-
-    if (responseTypes.length > 0) {
-      lines.push("// Inferred response data types");
-      for (const responseType of responseTypes) {
-        lines.push(`interface ${responseType.interfaceName} {`);
-        for (const field of responseType.fields) {
-          lines.push(
-            `  ${field.name}${field.optional ? "?" : ""}: ${field.type};`
-          );
-        }
-        lines.push("}");
-        lines.push("");
-      }
-    }
-  }
-
-  lines.push("interface ApiResponse<T = any> {");
-  lines.push("  success: boolean;");
-  lines.push("  data: T;");
-  lines.push("  status: number;");
-  lines.push("  headers: Record<string, string>;");
-  lines.push("}");
-  lines.push("");
-  lines.push("interface RequestOptions {");
-  lines.push("  method: string;");
-  lines.push("  headers: Record<string, string>;");
-  lines.push("  body?: string;");
-  lines.push("}");
-  lines.push("");
-  lines.push("// Authentication configuration interface");
-  lines.push("interface AuthConfig {");
-  lines.push("  type: 'bearer' | 'api_key' | 'basic' | 'session' | 'custom';");
-  lines.push("  token?: string;");
-  lines.push("  apiKey?: string;");
-  lines.push("  username?: string;");
-  lines.push("  password?: string;");
-  lines.push("  sessionCookies?: Record<string, string>;");
-  lines.push("  customHeaders?: Record<string, string>;");
-  lines.push("  tokenRefreshUrl?: string;");
-  lines.push("  onTokenExpired?: () => Promise<string>;");
-  lines.push("}");
-  lines.push("");
-  lines.push("// Authentication error for retry logic");
-  lines.push("class AuthenticationError extends Error {");
-  lines.push(
-    "  constructor(message: string, public status: number, public response?: any) {"
-  );
-  lines.push("    super(message);");
-  lines.push("    this.name = 'AuthenticationError';");
-  lines.push("  }");
-  lines.push("}");
-  lines.push("");
-  lines.push("export type { ApiResponse, RequestOptions, AuthConfig };");
-  lines.push("export { AuthenticationError };");
-
-  return lines.join("\n");
+  const inferredTypes = session ? inferResponseTypes(session) : undefined;
+  return generateTypeDefinitions(inferredTypes);
 }
 
 /**
@@ -1012,8 +973,6 @@ export function generateFooter(
   session: HarvestSession,
   nodeFunctionNameMap?: Map<string, string>
 ): string {
-  const lines: string[] = [];
-
   // Get all function names, using provided mapping if available
   const sortedNodeIds = session.dagManager.topologicalSort();
   const functionNames: string[] = [];
@@ -1034,17 +993,15 @@ export function generateFooter(
     }
   }
 
-  // Main orchestration function
-  lines.push("/**");
-  lines.push(" * Main function that executes the complete API workflow");
-  lines.push(" */");
-  lines.push("async function main(): Promise<ApiResponse> {");
+  // Generate main function using templates
+  const mainFunctionDoc = generateJSDocComment(
+    "Main function that executes the complete API workflow"
+  );
 
+  let mainFunctionBody: string;
   if (functionNames.length === 0) {
-    lines.push('  throw new Error("No API functions found to execute");');
+    mainFunctionBody = generateMainFunctionEmptyBody();
   } else {
-    lines.push("  // Execute requests in dependency order");
-
     // Find the master function (main action)
     const masterFunctionName =
       functionNames.find((name) =>
@@ -1060,32 +1017,33 @@ export function generateFooter(
         })
       ) || functionNames[functionNames.length - 1];
 
-    lines.push(`  const result = await ${masterFunctionName}();`);
-    lines.push("  return result;");
-  }
-
-  lines.push("}");
-  lines.push("");
-
-  // Exports
-  lines.push("// Export all functions for individual use");
-  lines.push("export {");
-  if (functionNames.length > 0) {
-    for (const functionName of functionNames) {
-      lines.push(`  ${functionName},`);
+    if (!masterFunctionName) {
+      throw new Error("No master function found in the generated code");
     }
+
+    mainFunctionBody = generateMainFunctionWithMaster(masterFunctionName);
   }
-  lines.push("  main");
-  lines.push("};");
-  lines.push("");
 
-  // Usage example
-  lines.push("// Usage example:");
-  lines.push('// import { main } from "./generated-api-integration.ts";');
-  lines.push("// const result = await main();");
-  lines.push("// console.log(result.data);");
+  const mainFunction = generateAsyncFunction(
+    "main",
+    "",
+    "ApiResponse",
+    mainFunctionBody
+  );
 
-  return lines.join("\n");
+  // Generate exports using template
+  const exportBlock = generateExportBlock(functionNames);
+
+  // Generate usage example using template
+  const usageExample = generateUsageExample("./generated-api-integration.ts");
+
+  // Combine all parts
+  return `${mainFunctionDoc}
+${mainFunction}
+
+${exportBlock}
+
+${usageExample}`;
 }
 
 /**
@@ -1095,21 +1053,19 @@ function generateFunctionDocumentation(
   node: DAGNode,
   request: RequestModel
 ): string[] {
-  const lines: string[] = [];
-  lines.push("/**");
-  lines.push(
-    ` * ${node.nodeType === "master_curl" ? "Main API call" : "Dependency request"}: ${request.method} ${request.url}`
-  );
+  const description = `${node.nodeType === "master_curl" ? "Main API call" : "Dependency request"}: ${request.method} ${request.url}`;
+
+  const additionalLines: string[] = [];
   if (node.extractedParts && node.extractedParts.length > 0) {
-    lines.push(` * Extracts: ${node.extractedParts.join(", ")}`);
+    additionalLines.push(`Extracts: ${node.extractedParts.join(", ")}`);
   }
   if (node.inputVariables && Object.keys(node.inputVariables).length > 0) {
-    lines.push(
-      ` * Input variables: ${Object.keys(node.inputVariables).join(", ")}`
+    additionalLines.push(
+      `Input variables: ${Object.keys(node.inputVariables).join(", ")}`
     );
   }
-  lines.push(" */");
-  return lines;
+
+  return generateJSDocComment(description, additionalLines).split("\n");
 }
 
 /**
@@ -1167,56 +1123,49 @@ function generateUrlConstruction(
     }
   }
 
-  // Generate URL construction based on parameter types
-  lines.push(`    const url = new URL('${baseUrl}');`);
-  lines.push("");
-
-  // Add static parameters first
-  if (staticParams.length > 0) {
-    lines.push("    // Static parameters");
-    for (const key of staticParams) {
-      const value = request.queryParams[key];
-      lines.push(`    url.searchParams.set('${key}', '${value}');`);
-    }
-    lines.push("");
+  // Generate URL construction using templates
+  const queryParams = request.queryParams; // Already checked above for existence
+  if (!queryParams) {
+    return "url.toString()"; // Should never happen but type safety
   }
 
-  // Add configurable parameters
-  if (configurableParams.length > 0) {
-    lines.push("    // Configurable parameters");
-    for (const key of configurableParams) {
-      const defaultValue = request.queryParams[key];
-      // Check if this parameter should come from function arguments
-      const paramName =
-        node.inputVariables &&
-        defaultValue &&
-        Object.values(node.inputVariables).includes(defaultValue)
-          ? Object.keys(node.inputVariables).find(
-              (k) => node.inputVariables?.[k] === defaultValue
-            ) || key
-          : key;
+  const staticParamsList = staticParams.map((key) => ({
+    key,
+    value: queryParams[key] as string, // Type safe - we know queryParams exists and has string values
+  }));
 
-      lines.push(
-        `    if (${paramName} !== undefined && ${paramName} !== null) {`
-      );
-      lines.push(`      url.searchParams.set('${key}', String(${paramName}));`);
-      lines.push("    }");
-    }
-    lines.push("");
-  }
+  const configurableParamsList = configurableParams.map((key) => {
+    const defaultValue = queryParams[key];
+    // Check if this parameter should come from function arguments
+    const paramName =
+      node.inputVariables &&
+      defaultValue &&
+      Object.values(node.inputVariables).includes(defaultValue)
+        ? Object.keys(node.inputVariables).find(
+            (k) => node.inputVariables?.[k] === defaultValue
+          ) || key
+        : key;
 
-  // Add dynamic parameters (these need to be resolved from previous responses)
-  if (dynamicParams.length > 0) {
-    lines.push("    // Dynamic parameters (resolved from previous requests)");
-    for (const key of dynamicParams) {
-      const value = request.queryParams[key];
-      lines.push(`    // TODO: Resolve '${key}' from previous API response`);
-      lines.push(
-        `    url.searchParams.set('${key}', '${value}'); // Placeholder value`
-      );
-    }
-    lines.push("");
-  }
+    return { key, paramName };
+  });
+
+  const dynamicParamsList = dynamicParams.map((key) => ({
+    key,
+    value: queryParams[key] as string, // Type safe - we know queryParams exists and has string values
+  }));
+
+  // Generate the URL construction code using templates
+  const parameterSetupCode = generateParameterSetup({
+    static: staticParamsList,
+    configurable: configurableParamsList,
+    dynamic: dynamicParamsList,
+  });
+
+  const urlConstructionCode = generateUrlWithParams(
+    baseUrl as string,
+    parameterSetupCode || ""
+  );
+  lines.push(...urlConstructionCode.split("\n"));
 
   return "url.toString()";
 }
@@ -1297,57 +1246,23 @@ function generateHeadersAndOptions(
   request: RequestModel,
   lines: string[]
 ): void {
-  // Build headers
-  lines.push("    const headers: Record<string, string> = {");
-  for (const [key, value] of Object.entries(request.headers)) {
-    // Escape quotes in header values
-    const escapedValue = value.replace(/'/g, "\\'");
-    const lowerKey = key.toLowerCase();
-    // Skip authentication headers - these will be handled dynamically
-    if (
-      lowerKey === "authorization" ||
-      lowerKey === "cookie" ||
-      lowerKey.includes("api-key") ||
-      lowerKey.includes("auth-token") ||
-      lowerKey.includes("x-api-key")
-    ) {
-      lines.push(
-        `      // '${key}': SKIPPED - Will be set dynamically based on authConfig`
-      );
-      continue;
-    }
-
-    lines.push(`      '${key}': '${escapedValue}',`);
-  }
-  lines.push("    };");
+  // Generate headers using template
+  const headersCode = generateHeadersObject(request.headers, true);
+  lines.push(headersCode);
   lines.push("");
 
   // Generate authentication setup based on detected type
   const authInfo = detectRequestAuthentication(request);
-  if (authInfo.hasAuthentication) {
-    generateAuthenticationSetup(authInfo, lines);
-  } else {
-    lines.push("    // No authentication detected - request may be public");
-    lines.push("");
-  }
+  const authSetupCode = generateAuthSetup(authInfo);
+  lines.push(...authSetupCode.split("\n"));
+  lines.push("");
 
-  // Build request options
-  lines.push("    const options: RequestOptions = {");
-  lines.push(`      method: '${request.method}',`);
-  lines.push("      headers,");
-
-  // Add body if present
-  if (request.body) {
-    if (typeof request.body === "object") {
-      lines.push(
-        `      body: JSON.stringify(${JSON.stringify(request.body, null, 6)}),`
-      );
-    } else {
-      lines.push(`      body: '${String(request.body).replace(/'/g, "\\'")}',`);
-    }
-  }
-
-  lines.push("    };");
+  // Generate request options using template
+  const requestOptionsCode = generateRequestOptions(
+    request.method,
+    request.body
+  );
+  lines.push(requestOptionsCode);
   lines.push("");
 }
 
@@ -1358,57 +1273,19 @@ function generateRequestExecution(
   urlExpression: string,
   lines: string[]
 ): void {
-  lines.push(`    const response = await fetch(${urlExpression}, options);`);
+  // Generate fetch call
+  const fetchCallCode = generateFetchCall(urlExpression);
+  lines.push(fetchCallCode);
   lines.push("");
-  lines.push("    // Handle authentication errors with retry logic");
-  lines.push("    if (response.status === 401 || response.status === 403) {");
-  lines.push("      const authError = new AuthenticationError(");
-  lines.push(
-    '        "Authentication failed: " + response.status + " " + response.statusText,'
-  );
-  lines.push("        response.status,");
-  lines.push("        await response.text()");
-  lines.push("      );");
-  lines.push("      ");
-  lines.push(
-    "      // If token refresh is available, attempt to refresh and retry"
-  );
-  lines.push("      if (authConfig?.onTokenExpired) {");
-  lines.push("        try {");
-  lines.push(
-    "          console.log('Attempting token refresh due to auth failure...');"
-  );
-  lines.push("          const newToken = await authConfig.onTokenExpired();");
-  lines.push("          // Update token and retry request");
-  lines.push("          if (authConfig.type === 'bearer' && newToken) {");
-  lines.push("            authConfig.token = newToken;");
-  lines.push(
-    '            options.headers["Authorization"] = "Bearer " + newToken;'
-  );
-  lines.push(
-    "            console.log('Token refreshed, retrying request...');"
-  );
-  lines.push("            // Retry the request once");
-  lines.push(
-    `            const retryResponse = await fetch(${urlExpression}, options);`
-  );
-  lines.push("            if (retryResponse.ok) {");
-  lines.push("              return await processResponse(retryResponse);");
-  lines.push("            }");
-  lines.push("          }");
-  lines.push("        } catch (refreshError) {");
-  lines.push("          console.warn('Token refresh failed:', refreshError);");
-  lines.push("        }");
-  lines.push("      }");
-  lines.push("      ");
-  lines.push("      throw authError;");
-  lines.push("    }");
+
+  // Generate authentication error handling with retry logic
+  const authErrorHandlingCode = generateAuthErrorHandling(urlExpression);
+  lines.push(...authErrorHandlingCode.split("\n"));
   lines.push("");
-  lines.push("    if (!response.ok) {");
-  lines.push(
-    '      throw new Error("Request failed: " + response.status + " " + response.statusText);'
-  );
-  lines.push("    }");
+
+  // Generate basic response check
+  const responseOkCheckCode = generateResponseOkCheck();
+  lines.push(responseOkCheckCode);
   lines.push("");
 }
 
@@ -1416,16 +1293,8 @@ function generateRequestExecution(
  * Generate response parsing code
  */
 function generateResponseHandling(lines: string[]): void {
-  lines.push(
-    `    const contentType = response.headers.get('content-type') || '';`
-  );
-  lines.push("    let data: any;");
-  lines.push("    ");
-  lines.push(`    if (contentType.includes('application/json')) {`);
-  lines.push("      data = await response.json();");
-  lines.push("    } else {");
-  lines.push("      data = await response.text();");
-  lines.push("    }");
+  const responseProcessingCode = generateResponseProcessing();
+  lines.push(...responseProcessingCode.split("\n"));
   lines.push("");
 }
 
@@ -1443,29 +1312,6 @@ function generateVariableExtractionComments(
     }
     lines.push("");
   }
-}
-
-/**
- * Generate return statement
- */
-function generateReturnStatement(lines: string[]): void {
-  lines.push("    return {");
-  lines.push("      success: true,");
-  lines.push("      data,");
-  lines.push("      status: response.status,");
-  lines.push("      headers: Object.fromEntries(response.headers.entries())");
-  lines.push("    };");
-}
-
-/**
- * Generate error handling code
- */
-function generateErrorHandling(functionName: string, lines: string[]): void {
-  lines.push("  } catch (error) {");
-  lines.push(
-    `    throw new Error(\`${functionName} failed: \\\${error instanceof Error ? error.message : 'Unknown error'}\`);`
-  );
-  lines.push("  }");
 }
 
 // Utility functions
@@ -1609,123 +1455,6 @@ function detectRequestAuthentication(request: RequestModel): {
   return result;
 }
 
-/**
- * Generate authentication setup code based on detected authentication type
- */
-function generateAuthenticationSetup(
-  authInfo: ReturnType<typeof detectRequestAuthentication>,
-  lines: string[]
-): void {
-  // Check if this is a public endpoint (addresses the main bug report issue)
-  const isPublicEndpoint =
-    authInfo.authType === "none" ||
-    (authInfo.authHeaders.length === 0 && authInfo.authCookies.length === 0);
-
-  if (isPublicEndpoint) {
-    lines.push("    // No authentication required - this is a public endpoint");
-    lines.push("");
-    return;
-  }
-
-  lines.push(
-    "    // Authentication setup - IMPORTANT: Configure authConfig before using"
-  );
-  lines.push("    if (!authConfig) {");
-  lines.push(
-    "      throw new Error('Authentication required but authConfig not provided. See setup instructions below.');"
-  );
-  lines.push("    }");
-  lines.push("");
-
-  if (authInfo.warningMessage) {
-    lines.push(`    // WARNING: ${authInfo.warningMessage}`);
-    lines.push("");
-  }
-
-  switch (authInfo.authType) {
-    case "bearer_token":
-      lines.push("    // Bearer token authentication");
-      lines.push(
-        "    if (authConfig.type !== 'bearer' || !authConfig.token) {"
-      );
-      lines.push(
-        "      throw new Error('Bearer token required in authConfig.token');"
-      );
-      lines.push("    }");
-      lines.push(
-        '    headers["Authorization"] = "Bearer " + authConfig.token;'
-      );
-      break;
-
-    case "api_key":
-      lines.push("    // API key authentication");
-      lines.push(
-        "    if (authConfig.type !== 'api_key' || !authConfig.apiKey) {"
-      );
-      lines.push(
-        "      throw new Error('API key required in authConfig.apiKey');"
-      );
-      lines.push("    }");
-      for (const headerName of authInfo.authHeaders) {
-        lines.push(`    headers['${headerName}'] = authConfig.apiKey;`);
-      }
-      break;
-
-    case "basic_auth":
-      lines.push("    // Basic authentication");
-      lines.push(
-        "    if (authConfig.type !== 'basic' || !authConfig.username || !authConfig.password) {"
-      );
-      lines.push(
-        "      throw new Error('Username and password required in authConfig for basic auth');"
-      );
-      lines.push("    }");
-      lines.push(
-        '    const basicAuth = btoa(authConfig.username + ":" + authConfig.password);'
-      );
-      lines.push('    headers["Authorization"] = "Basic " + basicAuth;');
-      break;
-
-    case "session_cookie":
-      lines.push("    // Session cookie authentication");
-      lines.push(
-        "    if (authConfig.type !== 'session' || !authConfig.sessionCookies) {"
-      );
-      lines.push(
-        "      throw new Error('Session cookies required in authConfig.sessionCookies');"
-      );
-      lines.push("    }");
-      lines.push(
-        "    const cookiePairs = Object.entries(authConfig.sessionCookies)"
-      );
-      lines.push('      .map(([name, value]) => name + "=" + value)');
-      lines.push("      .join('; ');");
-      lines.push("    headers['Cookie'] = cookiePairs;");
-      break;
-
-    case "custom_header":
-    case "url_parameter":
-      lines.push("    // Custom authentication");
-      lines.push(
-        "    if (authConfig.type !== 'custom' || !authConfig.customHeaders) {"
-      );
-      lines.push(
-        "      throw new Error('Custom authentication headers required in authConfig.customHeaders');"
-      );
-      lines.push("    }");
-      lines.push("    Object.assign(headers, authConfig.customHeaders);");
-      break;
-
-    case "none":
-      // Already handled above, but include for completeness
-      lines.push("    // No authentication required for this endpoint");
-      lines.push("");
-      return;
-  }
-
-  lines.push("");
-}
-
 // ========== Multi-Workflow Code Generation ==========
 
 /**
@@ -1805,48 +1534,41 @@ function generateWorkflowHeader(
   session: HarvestSession,
   workflowInfo: ReturnType<typeof analyzeWorkflowRequirements>
 ): string {
-  const parts: string[] = [];
-
-  parts.push("/**");
-  parts.push(" * Generated Multi-Workflow API Client");
-  parts.push(` * Source: ${session.prompt}`);
-  parts.push(` * Generated: ${new Date().toISOString()}`);
-  parts.push(" * ");
-  parts.push(
-    ` * This client provides ${workflowInfo.workflowCount} distinct workflows:`
-  );
+  const additionalLines: string[] = [
+    `Source: ${session.prompt}`,
+    `Generated: ${new Date().toISOString()}`,
+    "",
+    `This client provides ${workflowInfo.workflowCount} distinct workflows:`,
+  ];
 
   for (const workflow of workflowInfo.workflows) {
-    parts.push(
-      ` * - ${workflow.name}: ${workflow.description} (${workflow.category})`
+    additionalLines.push(
+      `- ${workflow.name}: ${workflow.description} (${workflow.category})`
     );
   }
 
-  parts.push(" * ");
-  parts.push(" * Usage:");
-  parts.push(" *   const client = new APIClient();");
-  parts.push(" *   const workflows = client.getAvailableWorkflows();");
-  parts.push(
-    " *   const result = await client.executeWorkflow('workflow-id', params);"
+  additionalLines.push(
+    "",
+    "Usage:",
+    "  const client = new APIClient();",
+    "  const workflows = client.getAvailableWorkflows();",
+    "  const result = await client.executeWorkflow('workflow-id', params);"
   );
-  parts.push(" */");
 
-  return parts.join("\n");
+  return generateJSDocComment(
+    "Generated Multi-Workflow API Client",
+    additionalLines
+  );
 }
 
 /**
  * Generate imports for workflow-based clients
  */
 function generateWorkflowImports(session: HarvestSession): string {
-  const parts: string[] = [];
+  // Combine comment with standard imports
+  return `// HTTP client and type definitions
 
-  parts.push("// HTTP client and type definitions");
-  parts.push("");
-
-  // Add the standard API response types
-  parts.push(generateImports(session));
-
-  return parts.join("\n");
+${generateImports(session)}`;
 }
 
 /**
@@ -1855,37 +1577,34 @@ function generateWorkflowImports(session: HarvestSession): string {
 function generateWorkflowInterfaces(
   _workflowInfo: ReturnType<typeof analyzeWorkflowRequirements>
 ): string {
-  const parts: string[] = [];
+  const workflowInfoDoc = generateJSDocComment("Workflow metadata interface");
+  const workflowInfoInterface = generateInterface("WorkflowInfo", [
+    { name: "id", type: "string" },
+    { name: "name", type: "string" },
+    { name: "description", type: "string" },
+    { name: "category", type: "string" },
+    { name: "priority", type: "number" },
+    { name: "complexity", type: "number" },
+    { name: "requiresUserInput", type: "boolean" },
+  ]);
 
-  parts.push("/**");
-  parts.push(" * Workflow metadata interface");
-  parts.push(" */");
-  parts.push("interface WorkflowInfo {");
-  parts.push("  id: string;");
-  parts.push("  name: string;");
-  parts.push("  description: string;");
-  parts.push("  category: string;");
-  parts.push("  priority: number;");
-  parts.push("  complexity: number;");
-  parts.push("  requiresUserInput: boolean;");
-  parts.push("}");
-  parts.push("");
+  const workflowResultDoc = generateJSDocComment("Workflow execution result");
+  const workflowResultInterface = generateInterface("WorkflowResult<T = any>", [
+    { name: "workflowId", type: "string" },
+    { name: "success", type: "boolean" },
+    { name: "data", type: "T" },
+    { name: "executionTime", type: "number" },
+    {
+      name: "metadata",
+      type: "{\n    requestCount: number;\n    workflow: WorkflowInfo;\n  }",
+    },
+  ]);
 
-  parts.push("/**");
-  parts.push(" * Workflow execution result");
-  parts.push(" */");
-  parts.push("interface WorkflowResult<T = any> {");
-  parts.push("  workflowId: string;");
-  parts.push("  success: boolean;");
-  parts.push("  data: T;");
-  parts.push("  executionTime: number;");
-  parts.push("  metadata: {");
-  parts.push("    requestCount: number;");
-  parts.push("    workflow: WorkflowInfo;");
-  parts.push("  };");
-  parts.push("}");
+  return `${workflowInfoDoc}
+${workflowInfoInterface}
 
-  return parts.join("\n");
+${workflowResultDoc}
+${workflowResultInterface}`;
 }
 
 /**
