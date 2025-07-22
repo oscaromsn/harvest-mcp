@@ -196,20 +196,6 @@ export interface ParameterDiagnostic {
   debugCommand?: string;
 }
 
-/**
- * Enhanced error context for parameter-related issues
- */
-export interface ParameterErrorContext {
-  sessionId: string;
-  unresolvedNodes: Array<{
-    nodeId: string;
-    parameters: ClassifiedParameter[];
-  }>;
-  recommendations: string[];
-  debugCommands: string[];
-  parameterAnalysis: ParameterDiagnostic[];
-}
-
 // ========== Workflow Group Types ==========
 
 /**
@@ -308,15 +294,6 @@ export type NodeType =
 export interface RequestNodeContent {
   key: RequestModel;
   value?: ResponseData | null;
-}
-
-/**
- * Authentication-specific node content for auth flows
- */
-export interface AuthNodeContent {
-  key: string;
-  value: TokenInfo | AuthenticationEndpoint;
-  authType: AuthenticationType;
 }
 
 export interface CookieNodeContent {
@@ -442,26 +419,6 @@ export interface URLIdentificationResponse {
 }
 
 /**
- * Response from workflow discovery function call
- */
-export interface WorkflowDiscoveryResponse {
-  workflows: Array<{
-    id: string;
-    name: string;
-    description: string;
-    category: string;
-    priority: number;
-    complexity: number;
-    requiresUserInput: boolean;
-    endpoints: Array<{
-      url: string;
-      method: string;
-      role: "primary" | "secondary" | "supporting";
-    }>;
-  }>;
-}
-
-/**
  * Response from dynamic parts identification function call
  */
 export interface DynamicPartsResponse {
@@ -531,45 +488,6 @@ export interface DependencyResult {
 export interface CookieSearchResult {
   found: CookieDependency[];
   remaining: string[];
-}
-
-/**
- * Analysis result for MCP tools
- */
-export interface AnalysisResult {
-  nodeId: string;
-  status:
-    | "completed"
-    | "needs_input"
-    | "failed"
-    | "skipped_javascript"
-    | "no_nodes_to_process";
-  dynamicPartsFound?: number;
-  inputVariablesFound?: number;
-  finalDynamicParts?: number;
-  newNodesAdded?: number;
-  remainingNodes?: number;
-  totalNodes?: number;
-  nextStep?: string;
-  message: string;
-}
-
-/**
- * Completion status result for MCP tools
- */
-export interface CompletionStatusResult {
-  isComplete: boolean;
-  status: "complete" | "processing" | "needs_intervention" | "unknown";
-  nodeCount: number;
-  unresolvedNodesCount: number;
-  unresolvedNodes: Array<{
-    nodeId: string;
-    unresolvedParts: string[];
-    nodeType?: NodeType;
-  }>;
-  remainingToProcess: number;
-  nextStep: string;
-  message: string;
 }
 
 /**
@@ -692,12 +610,6 @@ export interface CookieData {
 }
 
 // ========== Dependency Analysis Types ==========
-
-export interface DependencyFindingResult {
-  type: "cookie" | "request";
-  source: string | RequestModel;
-  part: string;
-}
 
 // ========== Zod Schemas for Validation ==========
 
@@ -904,22 +816,8 @@ export const ManualSessionStopSchema = z.object({
 // ========== Type Exports ==========
 
 export type SessionStartParams = z.infer<typeof SessionStartSchema>;
-export type SessionIdParams = z.infer<typeof SessionIdSchema>;
-export type DebugForceDependencyParams = z.infer<
-  typeof DebugForceDependencySchema
->;
-export type DebugGetNodeDetailsParams = z.infer<
-  typeof DebugGetNodeDetailsSchema
->;
-export type ManualSessionStartParams = z.infer<typeof ManualSessionStartSchema>;
-export type ManualSessionStopParams = z.infer<typeof ManualSessionStopSchema>;
 
 // Manual Session Component Types
-export type ViewportConfig = z.infer<typeof ViewportConfigSchema>;
-export type ContextOptions = z.infer<typeof ContextOptionsSchema>;
-export type ManualBrowserOptions = z.infer<typeof ManualBrowserOptionsSchema>;
-export type ArtifactConfig = z.infer<typeof ArtifactConfigSchema>;
-export type ManualSessionConfig = z.infer<typeof ManualSessionConfigSchema>;
 
 // ========== Error Types ==========
 
@@ -938,24 +836,6 @@ export class HarvestError extends Error {
 export class SessionNotFoundError extends HarvestError {
   constructor(sessionId: string) {
     super(`Session ${sessionId} not found`, "SESSION_NOT_FOUND", { sessionId });
-  }
-}
-
-export class NodeNotFoundError extends HarvestError {
-  constructor(nodeId: string) {
-    super(`Node ${nodeId} not found`, "NODE_NOT_FOUND", { nodeId });
-  }
-}
-
-export class AnalysisNotCompleteError extends HarvestError {
-  constructor(sessionId: string) {
-    super(
-      `Analysis for session ${sessionId} is not complete`,
-      "ANALYSIS_NOT_COMPLETE",
-      {
-        sessionId,
-      }
-    );
   }
 }
 
@@ -997,20 +877,6 @@ export class HARGenerationError extends HarvestError {
   }
 }
 
-export class NetworkActivityError extends HarvestError {
-  constructor(
-    reason: string,
-    context?: {
-      sessionId?: string;
-      networkStatus?: string;
-      recommendations?: string[];
-    }
-  ) {
-    const message = `Network activity issue: ${reason}`;
-    super(message, "NETWORK_ACTIVITY_ERROR", context);
-  }
-}
-
 // ========== Browser Types Export ==========
 
 export type {
@@ -1019,11 +885,9 @@ export type {
   ArtifactCollection,
   BrowserAgent,
   BrowserAgentConfig,
-  BrowserConnectorOptions,
   BrowserEngine,
   BrowserOptions,
   BrowserSessionInfo,
-  FallbackConfig,
   ManualBrowserAgent,
   ManualSession,
   SessionConfig,

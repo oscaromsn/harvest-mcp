@@ -26,13 +26,6 @@ export type BrowserOptions = (
   fallbackOnTimeout?: boolean;
 };
 
-// Browser Connector Options - adapted for harvest-mcp
-export interface BrowserConnectorOptions {
-  browser?: BrowserOptions;
-  url?: string;
-  virtualScreenDimensions?: { width: number; height: number };
-}
-
 // Browser Agent Configuration
 export interface BrowserAgentConfig {
   url?: string;
@@ -156,11 +149,6 @@ export type ManualBrowserAgent = BrowserAgent;
 export interface ActiveBrowser {
   browserPromise: Promise<Browser>;
   activeContextsCount: number;
-}
-
-export interface FallbackConfig {
-  artifacts?: Record<string, unknown>;
-  browserEngine?: BrowserEngine;
 }
 
 // Default Browser Options
