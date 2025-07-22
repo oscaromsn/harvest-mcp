@@ -15,7 +15,7 @@
     "src/core/ast/CookieManager.ts",
     "src/core/ast/SharedTypes.ts"
   ],
-  "ignoreDependencies": ["sharp", "pino-pretty"],
+  "ignoreDependencies": ["pino-pretty"],
   "ignoreBinaries": ["tsc"],
   "ignoreExportsUsedInFile": true,
   "rules": {
