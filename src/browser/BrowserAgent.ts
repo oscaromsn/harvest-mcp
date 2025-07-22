@@ -249,63 +249,6 @@ export class BrowserAgent implements IBrowserAgent {
   }
 
   /**
-   * Get the current page title (synchronous version for backward compatibility)
-   * Note: This method should be avoided in favor of async getCurrentTitle()
-   */
-  getCurrentTitleSync(): string {
-    try {
-      // Circuit breaker check
-      if (this.isCircuitBreakerOpen()) {
-        return "";
-      }
-
-      // Check if the page is still valid before trying to get title
-      if (!this.page || !this.context || this.page.isClosed()) {
-        return "";
-      }
-
-      // Additional browser connection check
-      if (!this.browser?.isConnected()) {
-        return "";
-      }
-
-      // For synchronous operation, we need to handle the Promise appropriately
-      // In tests, this will be mocked to return a string directly
-      // In real usage, this would need to be made async or cached
-      const title = this.page.title();
-
-      // If it's a promise (real Playwright), we can't wait for it synchronously
-      // so we return empty string. This method is deprecated in favor of async version.
-      if (title instanceof Promise) {
-        // Log a warning that this method should be replaced with async version
-        browserLogger.warn(
-          "getCurrentTitleSync called with Promise-based title - use getCurrentTitle() instead"
-        );
-        return "";
-      }
-
-      return title as string;
-    } catch (error) {
-      // Handle context destruction gracefully
-      if (
-        error instanceof Error &&
-        (error.message.includes("Execution context was destroyed") ||
-          error.message.includes(
-            "Target page, context or browser has been closed"
-          ) ||
-          error.message.includes("TargetClosedError") ||
-          error.message.includes("Protocol error") ||
-          error.message.includes("Navigation"))
-      ) {
-        this.recordContextError();
-        return "";
-      }
-      logBrowserError(error as Error, { operation: "get_current_title_sync" });
-      return "";
-    }
-  }
-
-  /**
    * Check if the agent is ready for operations
    */
   isReady(): boolean {
