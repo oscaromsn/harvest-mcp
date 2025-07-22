@@ -1,7 +1,13 @@
 {
   "$schema": "https://unpkg.com/knip@5/schema.json",
-  "entry": ["src/server.ts"],
-  "project": ["src/**/*.ts", "tests/**/*.ts", "scripts/**/*.ts"],
+  "entry": [
+    "src/server.ts"
+  ],
+  "project": [
+    "src/**/*.ts",
+    "tests/**/*.ts",
+    "scripts/**/*.ts"
+  ],
   "ignore": [
     "coverage/**",
     "dist/**",
@@ -12,20 +18,28 @@
     "issues/**",
     "tests/manual/**"
   ],
-  "ignoreDependencies": ["sharp", "pino-pretty"],
-  "ignoreBinaries": ["tsc"],
+  "ignoreDependencies": [
+    "sharp",
+    "pino-pretty"
+  ],
+  "ignoreBinaries": [
+    "tsc"
+  ],
   "ignoreExportsUsedInFile": true,
   "rules": {
-    "files": "warn",
+    "binaries": "warn",
     "dependencies": "error",
-    "unlisted": "error",
+    "devDependencies": "warn",
+    "duplicates": "error",
+    "enumMembers": "warn",
     "exports": "warn",
+    "files": "warn",
     "nsExports": "warn",
-    "classMembers": "off",
-    "types": "off",
-    "nsTypes": "off",
-    "enumMembers": "off",
-    "duplicates": "error"
+    "classMembers": "warn",
+    "types": "warn",
+    "nsTypes": "warn",
+    "unlisted": "warn",
+    "unresolved": "warn"
   },
   "vitest": {
     "config": "vitest.config.ts"
