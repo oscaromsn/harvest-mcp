@@ -16,7 +16,9 @@
     "node_modules/**",
     "docs/**",
     "issues/**",
-    "tests/manual/**"
+    "tests/manual/**",
+    "src/core/ast/CookieManager.ts",
+    "src/core/ast/SharedTypes.ts"
   ],
   "ignoreDependencies": [
     "sharp",
