@@ -692,28 +692,3 @@ function createEmptyAuthAnalysis(): AuthenticationAnalysis {
     },
   };
 }
-
-/**
- * Quick authentication check for a single request
- */
-export function quickAuthCheck(request: RequestModel): {
-  hasAuth: boolean;
-  authType: AuthenticationType;
-  isPublic: boolean;
-} {
-  const analysis = analyzeRequestAuthentication(request, "quick_check");
-
-  // Determine if truly public based on lack of authentication AND URL patterns
-  const hasUrlPublicPattern =
-    analysis.url.toLowerCase().includes("/no-auth/") ||
-    analysis.url.toLowerCase().includes("/public/");
-
-  const isPublic =
-    analysis.authenticationType === "none" && hasUrlPublicPattern;
-
-  return {
-    hasAuth: analysis.authenticationType !== "none",
-    authType: analysis.authenticationType,
-    isPublic,
-  };
-}

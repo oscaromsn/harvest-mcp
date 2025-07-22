@@ -1077,53 +1077,6 @@ export function isJavaScriptOrHtml(request: RequestModel): boolean {
 }
 
 /**
- * Create dependency edges in DAG format for MCP integration
- */
-export function createDependencyEdges(
-  consumerNodeId: string,
-  dependencies: DependencyResult
-): Array<{
-  from: string;
-  to: string;
-  type: "cookie" | "request" | "not_found";
-}> {
-  const edges: Array<{
-    from: string;
-    to: string;
-    type: "cookie" | "request" | "not_found";
-  }> = [];
-
-  // Cookie dependencies
-  for (const cookieDep of dependencies.cookieDependencies) {
-    edges.push({
-      from: consumerNodeId,
-      to: `cookie_${cookieDep.cookieKey}`,
-      type: "cookie",
-    });
-  }
-
-  // Request dependencies
-  for (const requestDep of dependencies.requestDependencies) {
-    edges.push({
-      from: consumerNodeId,
-      to: `request_${requestDep.sourceRequest.url}`,
-      type: "request",
-    });
-  }
-
-  // Not found parts
-  for (const notFoundPart of dependencies.notFoundParts) {
-    edges.push({
-      from: consumerNodeId,
-      to: `not_found_${notFoundPart}`,
-      type: "not_found",
-    });
-  }
-
-  return edges;
-}
-
-/**
  * Validate dynamic parts before processing
  */
 export function validateDynamicParts(dynamicParts: string[]): {

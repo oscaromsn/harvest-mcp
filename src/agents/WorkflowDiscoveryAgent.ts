@@ -487,40 +487,6 @@ Set complexity based on:
  * Update workflow groups with actual DAG node IDs after nodes are created
  * This should be called after DAG nodes have been created
  */
-export function updateWorkflowGroupNodeIds(
-  workflowGroups: Map<string, WorkflowGroup>,
-  nodeRequestMapping: Map<string, string> // Maps "METHOD:URL" to actual node ID
-): Map<string, WorkflowGroup> {
-  const updatedGroups = new Map<string, WorkflowGroup>();
-
-  for (const [groupId, group] of workflowGroups) {
-    // Update nodeIds with actual DAG node IDs
-    const actualNodeIds = new Set<string>();
-    let actualMasterNodeId = group.masterNodeId;
-
-    for (const tempNodeId of group.nodeIds) {
-      const actualNodeId = nodeRequestMapping.get(tempNodeId);
-      if (actualNodeId) {
-        actualNodeIds.add(actualNodeId);
-
-        // Update master node ID if this is the master
-        if (tempNodeId === group.masterNodeId) {
-          actualMasterNodeId = actualNodeId;
-        }
-      }
-    }
-
-    const updatedGroup: WorkflowGroup = {
-      ...group,
-      masterNodeId: actualMasterNodeId,
-      nodeIds: actualNodeIds,
-    };
-
-    updatedGroups.set(groupId, updatedGroup);
-  }
-
-  return updatedGroups;
-}
 
 /**
  * Get the most important workflow from discovered workflows

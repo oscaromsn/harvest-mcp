@@ -411,9 +411,6 @@ export function formatURLsForPrompt(harUrls: URLInfo[]): string {
 /**
  * Validate a URL against the available HAR URLs
  */
-export function validateUrl(url: string, harUrls: URLInfo[]): boolean {
-  return harUrls.some((urlInfo) => urlInfo.url === url);
-}
 
 /**
  * Get URLs filtered by criteria (e.g., only API endpoints)
