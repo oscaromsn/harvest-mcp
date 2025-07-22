@@ -40,16 +40,6 @@ export interface Message {
 }
 
 /**
- * Provider-agnostic function call result
- */
-export interface FunctionCallResult {
-  name: string;
-  arguments: Record<string, unknown>;
-  result?: unknown;
-  error?: string;
-}
-
-/**
  * Provider-agnostic completion options
  */
 export interface CompletionOptions {

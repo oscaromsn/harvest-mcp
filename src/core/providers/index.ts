@@ -5,14 +5,10 @@ export {
   createProvider,
   getAvailableProviders,
   getDefaultProvider,
-  getProviderInfo,
-  isProviderAvailable,
-  registerProvider,
 } from "./ProviderFactory.js";
 export type {
   CompletionOptions,
   CompletionResponse,
-  FunctionCallResult,
   FunctionDefinition,
   FunctionParameter,
   ILLMProvider,

@@ -263,37 +263,6 @@ export function getAvailableProviders(): string[] {
 }
 
 /**
- * Check if a provider is available
- */
-export function isProviderAvailable(providerName: string): boolean {
-  return providerName.toLowerCase() in PROVIDER_REGISTRY;
-}
-
-/**
- * Get provider information
- */
-export function getProviderInfo(
-  providerName: string
-): ProviderRegistryEntry | undefined {
-  return PROVIDER_REGISTRY[providerName.toLowerCase()];
-}
-
-/**
- * Register a custom provider
- */
-export function registerProvider(entry: ProviderRegistryEntry): void {
-  if (PROVIDER_REGISTRY[entry.name.toLowerCase()]) {
-    logger.warn(
-      { provider: entry.name },
-      "Overwriting existing provider registration"
-    );
-  }
-
-  PROVIDER_REGISTRY[entry.name.toLowerCase()] = entry;
-  logger.info({ provider: entry.name }, "Provider registered");
-}
-
-/**
  * Validate configuration status and provide setup guidance
  * Checks CLI arguments, environment variables, and provides detailed configuration status
  */
