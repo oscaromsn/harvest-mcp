@@ -270,37 +270,3 @@ function buildTempPath(sessionId?: string): string {
   const sessionPart = sessionId ? `/${sessionId}` : `/session-${Date.now()}`;
   return `${tempDir}/${datePart}${sessionPart}`;
 }
-
-/**
- * Validate and normalize a path for safe usage
- */
-export function validateAndNormalizePath(inputPath: string): {
-  isValid: boolean;
-  normalizedPath: string;
-  error?: string;
-} {
-  try {
-    const expanded = expandTilde(inputPath);
-    const normalized = resolve(expanded);
-
-    // Basic security checks
-    if (normalized.includes("..")) {
-      return {
-        isValid: false,
-        normalizedPath: "",
-        error: "Path contains invalid traversal sequences",
-      };
-    }
-
-    return {
-      isValid: true,
-      normalizedPath: normalized,
-    };
-  } catch (error) {
-    return {
-      isValid: false,
-      normalizedPath: "",
-      error: error instanceof Error ? error.message : "Unknown path error",
-    };
-  }
-}
