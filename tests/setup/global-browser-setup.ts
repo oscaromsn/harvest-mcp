@@ -55,13 +55,3 @@ export async function createTestContext(): Promise<BrowserContext> {
 }
 
 // For tests that need isolated contexts but shared browser
-export async function withTestContext<T>(
-  fn: (context: BrowserContext) => Promise<T>
-): Promise<T> {
-  const context = await createTestContext();
-  try {
-    return await fn(context);
-  } finally {
-    await context.close();
-  }
-}
