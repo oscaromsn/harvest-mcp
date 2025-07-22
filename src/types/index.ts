@@ -184,18 +184,6 @@ export interface ClassifiedParameter {
   };
 }
 
-/**
- * Parameter diagnostic information for error reporting
- */
-export interface ParameterDiagnostic {
-  parameter: string;
-  classification: ParameterClassification;
-  issue: string;
-  possibleSources: string[];
-  recommendedAction: string;
-  debugCommand?: string;
-}
-
 // ========== Workflow Group Types ==========
 
 /**
@@ -631,18 +619,6 @@ export const SessionStartSchema = z.object({
 
 export const SessionIdSchema = z.object({
   sessionId: z.string().uuid("Invalid session ID format"),
-});
-
-export const DebugForceDependencySchema = z.object({
-  sessionId: z.string().uuid(),
-  consumerNodeId: z.string().uuid(),
-  providerNodeId: z.string().uuid(),
-  providedPart: z.string().min(1),
-});
-
-export const DebugGetNodeDetailsSchema = z.object({
-  sessionId: z.string().uuid(),
-  nodeId: z.string().uuid(),
 });
 
 // ========== Manual Session Schemas ==========
