@@ -12,7 +12,11 @@
  * production-ready authentication flows.
  */
 
-import type { DAGNode, HarvestSession } from "../../types/index.js";
+import type {
+  DAGNode,
+  HarvestSession,
+  RequestModel,
+} from "../../types/index.js";
 import { createComponentLogger } from "../../utils/logger.js";
 
 const logger = createComponentLogger("dependency-flow-generator");
@@ -147,31 +151,37 @@ export class DependencyFlowGenerator {
 
     for (const nodeId of sortedNodeIds) {
       const node = this.session.dagManager.getNode(nodeId);
-      if (!node) continue;
+      if (!node) {
+        continue;
+      }
 
       const step = this.createWorkflowStep(node);
       if (step) {
         steps.push(step);
 
         // Track workflow characteristics
-        if (step.type === "cookie") usesCookies = true;
-        if (step.type === "auth") hasAuthentication = true;
+        if (step.type === "cookie") {
+          usesCookies = true;
+        }
+        if (step.type === "auth") {
+          hasAuthentication = true;
+        }
 
         // Collect input variables from step.inputVariables
-        step.inputVariables.forEach((input) => {
+        for (const input of step.inputVariables) {
           allInputParameters.add(
             `${input.name}:${input.type}:${input.optional}`
           );
-        });
+        }
 
         // Also collect user input parameters from step.requiredParameters
-        step.requiredParameters
-          .filter((param) => param.source === "user_input")
-          .forEach((param) => {
-            allInputParameters.add(
-              `${param.name}:${param.type}:${param.optional}`
-            );
-          });
+        for (const param of step.requiredParameters.filter(
+          (param) => param.source === "user_input"
+        )) {
+          allInputParameters.add(
+            `${param.name}:${param.type}:${param.optional}`
+          );
+        }
       }
     }
 
@@ -282,10 +292,14 @@ export class DependencyFlowGenerator {
    * Determine if a node represents an authentication endpoint
    */
   private isAuthenticationNode(node: DAGNode): boolean {
-    if (node.nodeType === "cookie") return false;
+    if (node.nodeType === "cookie") {
+      return false;
+    }
 
-    const request = node.content.key as any;
-    if (!request?.url) return false;
+    const request = node.content.key as RequestModel;
+    if (!request?.url) {
+      return false;
+    }
 
     const url = String(request.url).toLowerCase();
     const authPatterns = [
@@ -468,8 +482,10 @@ export class DependencyFlowGenerator {
    * Check if node has authentication token dependency
    */
   private hasAuthTokenDependency(node: DAGNode): boolean {
-    const request = node.content.key as any;
-    if (!request?.headers) return false;
+    const request = node.content.key as RequestModel;
+    if (!request?.headers) {
+      return false;
+    }
 
     return Object.entries(request.headers).some(
       ([key, value]) =>
@@ -519,19 +535,29 @@ export class DependencyFlowGenerator {
   /**
    * Infer TypeScript type from a value
    */
-  private inferTypeFromValue(value: any): string {
-    if (typeof value === "string") return "string";
-    if (typeof value === "number") return "number";
-    if (typeof value === "boolean") return "boolean";
-    if (Array.isArray(value)) return "any[]";
-    if (value && typeof value === "object") return "Record<string, unknown>";
+  private inferTypeFromValue(value: unknown): string {
+    if (typeof value === "string") {
+      return "string";
+    }
+    if (typeof value === "number") {
+      return "number";
+    }
+    if (typeof value === "boolean") {
+      return "boolean";
+    }
+    if (Array.isArray(value)) {
+      return "any[]";
+    }
+    if (value && typeof value === "object") {
+      return "Record<string, unknown>";
+    }
     return "unknown";
   }
 
   /**
    * Determine if an input should be optional
    */
-  private isOptionalInput(key: string, value: any): boolean {
+  private isOptionalInput(key: string, value: unknown): boolean {
     const optionalPatterns = [
       "optional",
       "extra",
@@ -593,7 +619,9 @@ export class DependencyFlowGenerator {
 
     for (let i = 0; i < workflow.steps.length; i++) {
       const step = workflow.steps[i];
-      if (!step) continue;
+      if (!step) {
+        continue;
+      }
       const stepVar = `step${i + 1}Result`;
 
       // Generate function call with proper parameters

@@ -127,12 +127,12 @@ class BrowserCookieStorage implements CookieStorage {
     }
 
     const cookies: Record<string, string> = {};
-    doc.cookie.split(";").forEach((cookie: string) => {
+    for (const cookie of doc.cookie.split(";")) {
       const [name, value] = cookie.trim().split("=");
       if (name && value) {
         cookies[name] = decodeURIComponent(value);
       }
-    });
+    }
     return cookies;
   }
 }
@@ -224,11 +224,18 @@ class NodeCookieStorage implements CookieStorage {
       } = {
         value: cookie.value,
       };
-      if (cookie.attributes.domain) item.domain = cookie.attributes.domain;
-      if (cookie.attributes.path) item.path = cookie.attributes.path;
-      if (cookie.attributes.secure) item.secure = cookie.attributes.secure;
-      if (cookie.attributes.httpOnly)
+      if (cookie.attributes.domain) {
+        item.domain = cookie.attributes.domain;
+      }
+      if (cookie.attributes.path) {
+        item.path = cookie.attributes.path;
+      }
+      if (cookie.attributes.secure) {
+        item.secure = cookie.attributes.secure;
+      }
+      if (cookie.attributes.httpOnly) {
         item.httpOnly = cookie.attributes.httpOnly;
+      }
 
       result[name] = item;
     }
@@ -249,13 +256,24 @@ export class CookieManager {
   constructor(customStorage?: CookieStorage) {
     if (customStorage) {
       this.storage = customStorage;
-    } else if ((globalThis as any).window && (globalThis as any).document) {
+    } else if (this.isBrowserEnvironment()) {
       // Browser environment
       this.storage = new BrowserCookieStorage();
     } else {
       // Node.js environment
       this.storage = new NodeCookieStorage();
     }
+  }
+
+  /**
+   * Type guard to check if we're in a browser environment
+   */
+  private isBrowserEnvironment(): boolean {
+    return (
+      typeof globalThis !== "undefined" &&
+      "window" in globalThis &&
+      "document" in globalThis
+    );
   }
 
   /**
@@ -313,10 +331,18 @@ export class CookieManager {
   ): void {
     for (const [name, cookie] of Object.entries(cookieData)) {
       const attributes: CookieAttributes = {};
-      if (cookie.domain) attributes.domain = cookie.domain;
-      if (cookie.path) attributes.path = cookie.path;
-      if (cookie.secure) attributes.secure = cookie.secure;
-      if (cookie.httpOnly) attributes.httpOnly = cookie.httpOnly;
+      if (cookie.domain) {
+        attributes.domain = cookie.domain;
+      }
+      if (cookie.path) {
+        attributes.path = cookie.path;
+      }
+      if (cookie.secure) {
+        attributes.secure = cookie.secure;
+      }
+      if (cookie.httpOnly) {
+        attributes.httpOnly = cookie.httpOnly;
+      }
 
       this.set(name, cookie.value, attributes);
     }
@@ -393,7 +419,9 @@ export class CookieManager {
   parseSetCookieHeader(setCookieHeader: string): void {
     const parts = setCookieHeader.split(";").map((part) => part.trim());
     const nameValue = parts[0];
-    if (!nameValue) return;
+    if (!nameValue) {
+      return;
+    }
 
     const [name, value] = nameValue.split("=").map((s) => s.trim());
 
@@ -406,7 +434,9 @@ export class CookieManager {
     // Parse attributes
     for (let i = 1; i < parts.length; i++) {
       const part = parts[i]?.toLowerCase();
-      if (!part) continue;
+      if (!part) {
+        continue;
+      }
 
       if (part === "secure") {
         attributes.secure = true;

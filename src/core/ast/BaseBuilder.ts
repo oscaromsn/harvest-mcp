@@ -246,51 +246,46 @@ export abstract class BaseBuilder {
 }
 
 /**
- * Utility functions for common AST operations
+ * Format a multi-line string with proper indentation
  */
-export namespace ASTUtils {
-  /**
-   * Format a multi-line string with proper indentation
-   */
-  export function formatMultilineString(text: string, indentLevel = 0): string {
-    const indent = "  ".repeat(indentLevel);
-    return text
-      .split("\n")
-      .map((line, index) => (index === 0 ? line : indent + line))
-      .join("\n");
-  }
+export function formatMultilineString(text: string, indentLevel = 0): string {
+  const indent = "  ".repeat(indentLevel);
+  return text
+    .split("\n")
+    .map((line, index) => (index === 0 ? line : indent + line))
+    .join("\n");
+}
 
-  /**
-   * Clean up whitespace in generated code
-   */
-  export function cleanWhitespace(code: string): string {
-    return code
-      .replace(/\s+$/gm, "") // Remove trailing whitespace from lines first
-      .replace(/^\s+$/gm, "") // Remove lines with only whitespace
-      .replace(/\n\s*\n\s*\n/g, "\n\n") // Remove excessive blank lines
-      .replace(/\n\s*\n/g, "\n\n") // Normalize double blank lines
-      .trim();
-  }
+/**
+ * Clean up whitespace in generated code
+ */
+export function cleanWhitespace(code: string): string {
+  return code
+    .replace(/\s+$/gm, "") // Remove trailing whitespace from lines first
+    .replace(/^\s+$/gm, "") // Remove lines with only whitespace
+    .replace(/\n\s*\n\s*\n/g, "\n\n") // Remove excessive blank lines
+    .replace(/\n\s*\n/g, "\n\n") // Normalize double blank lines
+    .trim();
+}
 
-  /**
-   * Validate that a string is valid TypeScript code (basic check)
-   */
-  export function isValidTypeScriptCode(code: string): boolean {
-    // Basic validation - check for balanced braces and parentheses
-    const openBraces = (code.match(/{/g) || []).length;
-    const closeBraces = (code.match(/}/g) || []).length;
-    const openParens = (code.match(/\(/g) || []).length;
-    const closeParens = (code.match(/\)/g) || []).length;
+/**
+ * Validate that a string is valid TypeScript code (basic check)
+ */
+export function isValidTypeScriptCode(code: string): boolean {
+  // Basic validation - check for balanced braces and parentheses
+  const openBraces = (code.match(/{/g) || []).length;
+  const closeBraces = (code.match(/}/g) || []).length;
+  const openParens = (code.match(/\(/g) || []).length;
+  const closeParens = (code.match(/\)/g) || []).length;
 
-    return openBraces === closeBraces && openParens === closeParens;
-  }
+  return openBraces === closeBraces && openParens === closeParens;
+}
 
-  /**
-   * Extract unique import statements from code
-   */
-  export function extractImports(code: string): string[] {
-    const importRegex = /import\s+.*?from\s+['"][^'"]+['"];?/g;
-    const imports = code.match(importRegex) || [];
-    return Array.from(new Set(imports));
-  }
+/**
+ * Extract unique import statements from code
+ */
+export function extractImports(code: string): string[] {
+  const importRegex = /import\s+.*?from\s+['"][^'"]+['"];?/g;
+  const imports = code.match(importRegex) || [];
+  return Array.from(new Set(imports));
 }

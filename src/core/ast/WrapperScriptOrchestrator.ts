@@ -6,7 +6,11 @@
  * generation using ts-morph for type safety and automatic import management.
  */
 
-import type { DAGNode, HarvestSession } from "../../types/index.js";
+import type {
+  DAGNode,
+  HarvestSession,
+  RequestModel,
+} from "../../types/index.js";
 import { createComponentLogger } from "../../utils/logger.js";
 import { ASTProject } from "./ASTProject.js";
 import { ASTTypeDefinitionEngine } from "./ASTTypeDefinitionEngine.js";
@@ -573,7 +577,7 @@ export class WrapperScriptOrchestrator {
 
     // Cookie nodes get descriptive names
     if (node.nodeType === "cookie") {
-      const cookieKey = (node.content as any)?.key;
+      const cookieKey = (node.content as { key?: string })?.key;
       if (cookieKey) {
         // Convert cookieKey to camelCase first, then capitalize
         const camelCaseKey = this.convertToCamelCase(cookieKey);
@@ -595,78 +599,180 @@ export class WrapperScriptOrchestrator {
       const urlObj = new URL(url);
       const pathParts = urlObj.pathname.split("/").filter(Boolean);
 
-      // Common endpoint patterns
       if (pathParts.length === 0) {
-        return method.toLowerCase() + "Root";
+        return `${method.toLowerCase()}Root`;
       }
 
       const lastPart = pathParts[pathParts.length - 1];
       const secondLastPart =
         pathParts.length > 1 ? pathParts[pathParts.length - 2] : null;
 
-      // Handle common API patterns
-      if (lastPart === "auth" || lastPart === "login") {
-        return method === "POST" ? "authLogin" : "checkAuth";
-      }
+      return this.generateNameFromPathParts(
+        lastPart || "",
+        secondLastPart || null,
+        method
+      );
+    } catch (_error) {
+      return this.generateNameFromInvalidUrl(url, method);
+    }
+  }
 
-      if (lastPart === "logout") {
-        return "authLogout";
-      }
-
-      if (lastPart === "data" || lastPart === "search") {
-        if (method === "GET") {
-          if (secondLastPart && secondLastPart !== "data") {
-            return `get${this.capitalize(secondLastPart)}Data`;
-          }
-          if (lastPart === "search") {
-            return "search";
-          }
-          return "getData";
-        }
-        if (method === "POST") {
-          return lastPart === "search" ? "search" : "searchData";
-        }
-      }
-
-      // Handle resource patterns: /users, /products, etc.
-      if (lastPart && !lastPart.match(/^\d+$/)) {
-        // Not just a number (ID)
-        const resource = lastPart;
-        if (method === "GET") return `get${this.capitalize(resource)}`;
-        if (method === "POST") return `create${this.capitalize(resource)}`;
-        if (method === "PUT") return `update${this.capitalize(resource)}`;
-        if (method === "DELETE") return `delete${this.capitalize(resource)}`;
-      }
-
-      // Handle ID-based endpoints: /users/123
-      if (lastPart && lastPart.match(/^\d+$/) && secondLastPart) {
-        const resource = secondLastPart;
-        if (method === "GET") return `get${this.capitalize(resource)}ById`;
-        if (method === "PUT") return `update${this.capitalize(resource)}`;
-        if (method === "DELETE") return `delete${this.capitalize(resource)}`;
-      }
-
-      // Fallback: use last meaningful part
-      if (lastPart) {
-        const cleanPart = lastPart.replace(/[^a-zA-Z0-9]/g, "");
-        if (cleanPart) {
-          return method.toLowerCase() + this.capitalize(cleanPart);
-        }
-      }
-    } catch (error) {
-      // Invalid URL, extract from path string
-      const pathParts = url.split("/").filter(Boolean);
-      if (pathParts.length > 0) {
-        const lastPart = pathParts[pathParts.length - 1];
-        if (lastPart) {
-          const cleanPart = lastPart.replace(/[^a-zA-Z0-9]/g, "");
-          if (cleanPart) {
-            return method.toLowerCase() + this.capitalize(cleanPart);
-          }
-        }
-      }
+  /**
+   * Generate name from path parts
+   */
+  private generateNameFromPathParts(
+    lastPart: string,
+    secondLastPart: string | null,
+    method: string
+  ): string {
+    // Handle authentication patterns
+    const authName = this.generateAuthFunctionName(lastPart, method);
+    if (authName) {
+      return authName;
     }
 
+    // Handle data/search patterns
+    const dataName = this.generateDataFunctionName(
+      lastPart,
+      secondLastPart,
+      method
+    );
+    if (dataName) {
+      return dataName;
+    }
+
+    // Handle resource patterns
+    const resourceName = this.generateResourceFunctionName(
+      lastPart,
+      secondLastPart,
+      method
+    );
+    if (resourceName) {
+      return resourceName;
+    }
+
+    // Fallback
+    return this.generateFallbackName(lastPart, method);
+  }
+
+  /**
+   * Generate authentication function names
+   */
+  private generateAuthFunctionName(
+    lastPart: string,
+    method: string
+  ): string | null {
+    if (lastPart === "auth" || lastPart === "login") {
+      return method === "POST" ? "authLogin" : "checkAuth";
+    }
+    if (lastPart === "logout") {
+      return "authLogout";
+    }
+    return null;
+  }
+
+  /**
+   * Generate data/search function names
+   */
+  private generateDataFunctionName(
+    lastPart: string,
+    secondLastPart: string | null,
+    method: string
+  ): string | null {
+    if (lastPart === "data" || lastPart === "search") {
+      if (method === "GET") {
+        if (secondLastPart && secondLastPart !== "data") {
+          return `get${this.capitalize(secondLastPart)}Data`;
+        }
+        return lastPart === "search" ? "search" : "getData";
+      }
+      if (method === "POST") {
+        return lastPart === "search" ? "search" : "searchData";
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Generate resource-based function names
+   */
+  private generateResourceFunctionName(
+    lastPart: string,
+    secondLastPart: string | null,
+    method: string
+  ): string | null {
+    // Handle resource patterns: /users, /products, etc.
+    if (lastPart && !lastPart.match(/^\d+$/)) {
+      return this.generateCrudFunctionName(lastPart, method);
+    }
+
+    // Handle ID-based endpoints: /users/123
+    if (lastPart?.match(/^\d+$/) && secondLastPart) {
+      return this.generateIdBasedFunctionName(secondLastPart, method);
+    }
+
+    return null;
+  }
+
+  /**
+   * Generate CRUD function names for resources
+   */
+  private generateCrudFunctionName(resource: string, method: string): string {
+    switch (method) {
+      case "GET":
+        return `get${this.capitalize(resource)}`;
+      case "POST":
+        return `create${this.capitalize(resource)}`;
+      case "PUT":
+        return `update${this.capitalize(resource)}`;
+      case "DELETE":
+        return `delete${this.capitalize(resource)}`;
+      default:
+        return `${method.toLowerCase()}${this.capitalize(resource)}`;
+    }
+  }
+
+  /**
+   * Generate function names for ID-based endpoints
+   */
+  private generateIdBasedFunctionName(
+    resource: string,
+    method: string
+  ): string {
+    switch (method) {
+      case "GET":
+        return `get${this.capitalize(resource)}ById`;
+      case "PUT":
+        return `update${this.capitalize(resource)}`;
+      case "DELETE":
+        return `delete${this.capitalize(resource)}`;
+      default:
+        return `${method.toLowerCase()}${this.capitalize(resource)}`;
+    }
+  }
+
+  /**
+   * Generate fallback name from last path part
+   */
+  private generateFallbackName(lastPart: string, method: string): string {
+    if (lastPart) {
+      const cleanPart = lastPart.replace(/[^a-zA-Z0-9]/g, "");
+      if (cleanPart) {
+        return method.toLowerCase() + this.capitalize(cleanPart);
+      }
+    }
+    return "request";
+  }
+
+  /**
+   * Generate name from invalid URL
+   */
+  private generateNameFromInvalidUrl(url: string, method: string): string {
+    const pathParts = url.split("/").filter(Boolean);
+    if (pathParts.length > 0) {
+      const lastPart = pathParts[pathParts.length - 1];
+      return this.generateFallbackName(lastPart || "", method);
+    }
     return "request";
   }
 
@@ -731,16 +837,18 @@ export class WrapperScriptOrchestrator {
       try {
         // Check if the node has response data
         if (node.content.value && typeof node.content.value === "object") {
-          const responseData = node.content.value as any;
+          const responseData = node.content.value as {
+            content?: { text?: string };
+          };
 
           // Try to extract JSON response if available
-          let jsonData: any = null;
+          let jsonData: unknown = null;
 
           // Check if there's a text field with JSON content
-          if (responseData.content && responseData.content.text) {
+          if (responseData.content?.text) {
             try {
               jsonData = JSON.parse(responseData.content.text);
-            } catch (error) {
+            } catch (_error) {
               // Not valid JSON, skip
               continue;
             }
@@ -748,7 +856,7 @@ export class WrapperScriptOrchestrator {
 
           if (jsonData && typeof jsonData === "object") {
             // Generate interface name from URL or node ID
-            const request = node.content.key as any;
+            const request = node.content.key as RequestModel;
             const interfaceName = this.generateInterfaceNameFromUrl(
               request.url || `Node${nodeId}`
             );
@@ -787,10 +895,10 @@ export class WrapperScriptOrchestrator {
         const lastPart = pathParts[pathParts.length - 1];
         if (lastPart) {
           const cleanName = lastPart.replace(/[^a-zA-Z0-9]/g, "");
-          return this.capitalize(cleanName) + "Response";
+          return `${this.capitalize(cleanName)}Response`;
         }
       }
-    } catch (error) {
+    } catch (_error) {
       // Invalid URL, fallback to generic name
     }
 
@@ -801,7 +909,7 @@ export class WrapperScriptOrchestrator {
    * Infer TypeScript field types from JSON data structure
    */
   private inferFieldsFromJson(
-    jsonData: any
+    jsonData: unknown
   ): Array<{ name: string; type: string; optional: boolean }> {
     const fields: Array<{ name: string; type: string; optional: boolean }> = [];
 
@@ -825,7 +933,7 @@ export class WrapperScriptOrchestrator {
   /**
    * Infer TypeScript type from a JSON value
    */
-  private inferTypeFromValue(value: any): string {
+  private inferTypeFromValue(value: unknown): string {
     if (value === null || value === undefined) {
       return "unknown";
     }
@@ -893,7 +1001,7 @@ export class WrapperScriptOrchestrator {
   ): string {
     // Try to find a matching interface for this node
     if (node.content.key && typeof node.content.key === "object") {
-      const request = node.content.key as any;
+      const request = node.content.key as RequestModel;
 
       // Find interface by matching URL
       for (const inferredType of inferredTypes) {
@@ -1333,12 +1441,20 @@ export class WrapperScriptOrchestrator {
   /**
    * Infer TypeScript type from parameter value
    */
-  private inferParameterType(value: any): string {
-    if (typeof value === "string") return "string";
-    if (typeof value === "number") return "number";
-    if (typeof value === "boolean") return "boolean";
+  private inferParameterType(value: unknown): string {
+    if (typeof value === "string") {
+      return "string";
+    }
+    if (typeof value === "number") {
+      return "number";
+    }
+    if (typeof value === "boolean") {
+      return "boolean";
+    }
     if (Array.isArray(value)) {
-      if (value.length === 0) return "any[]";
+      if (value.length === 0) {
+        return "any[]";
+      }
       return `${this.inferParameterType(value[0])}[]`;
     }
     if (typeof value === "object" && value !== null) {
@@ -1350,7 +1466,7 @@ export class WrapperScriptOrchestrator {
   /**
    * Determine if a parameter should be optional
    */
-  private isOptionalParameter(key: string, value: any): boolean {
+  private isOptionalParameter(key: string, value: unknown): boolean {
     // Common optional parameter patterns
     const optionalPatterns = [
       "remember",
@@ -1424,7 +1540,7 @@ export class WrapperScriptOrchestrator {
    * Generate parameter interface name for complex parameter objects
    */
   private generateParameterInterfaceName(node: DAGNode): string {
-    const request = node.content.key as any;
+    const request = node.content.key as RequestModel;
     if (request?.url) {
       const urlParts = request.url.split("/").filter(Boolean);
       const lastPart = urlParts[urlParts.length - 1];
@@ -1462,7 +1578,7 @@ export class WrapperScriptOrchestrator {
         // Avoid duplicate interfaces
         if (!processedInterfaces.has(interfaceName)) {
           // Extract the actual parameter fields for the interface
-          const request = node.content.key as any;
+          const request = node.content.key as RequestModel;
           const interfaceFields: Array<{
             name: string;
             type: string;
@@ -1472,7 +1588,7 @@ export class WrapperScriptOrchestrator {
           // Add body parameters
           if (request?.body && typeof request.body === "object") {
             const bodyFields = this.extractParametersFromObject(
-              request.body,
+              request.body as Record<string, unknown>,
               "body"
             );
             interfaceFields.push(
@@ -1487,7 +1603,7 @@ export class WrapperScriptOrchestrator {
           // Add query parameters
           if (request?.queryParams) {
             const queryFields = this.extractParametersFromObject(
-              request.queryParams,
+              request.queryParams as Record<string, unknown>,
               "query"
             );
             interfaceFields.push(

@@ -59,29 +59,43 @@ export interface AuthConfig {
 
 /** Authentication error for retry logic */
 export class AuthenticationError extends Error {
-  constructor(
-    message: string,
-    public readonly status: number,
-    public readonly response?: unknown
-  ) {
+  public readonly status: number;
+  public readonly response?: unknown;
+
+  constructor(message: string, status: number, response?: unknown) {
     super(message);
     this.name = "AuthenticationError";
+    this.status = status;
+    this.response = response;
   }
 }
 
 /** Network request error with contextual information */
 export class NetworkRequestError extends Error {
+  public readonly status: number;
+  public readonly url: string;
+  public readonly method: string;
+  public readonly headers?: Record<string, string> | undefined;
+  public readonly body?: string | undefined;
+  public readonly response?: unknown;
+
   constructor(
     message: string,
-    public readonly status: number,
-    public readonly url: string,
-    public readonly method: string,
-    public readonly headers?: Record<string, string>,
-    public readonly body?: string,
-    public readonly response?: unknown
+    status: number,
+    url: string,
+    method: string,
+    headers?: Record<string, string>,
+    body?: string,
+    response?: unknown
   ) {
     super(message);
     this.name = "NetworkRequestError";
+    this.status = status;
+    this.url = url;
+    this.method = method;
+    this.headers = headers;
+    this.body = body;
+    this.response = response;
   }
 
   /** Get a detailed error summary for debugging */
@@ -97,15 +111,24 @@ ${this.response ? `Response: ${JSON.stringify(this.response, null, 2)}` : ""}`.t
 
 /** Workflow execution error with step context */
 export class WorkflowExecutionError extends Error {
+  public readonly stepName: string;
+  public readonly stepType: "cookie" | "auth" | "api_call";
+  public readonly status?: number | undefined;
+  public readonly originalError?: Error | undefined;
+
   constructor(
     message: string,
-    public readonly stepName: string,
-    public readonly stepType: "cookie" | "auth" | "api_call",
-    public readonly status?: number,
-    public readonly originalError?: Error
+    stepName: string,
+    stepType: "cookie" | "auth" | "api_call",
+    status?: number,
+    originalError?: Error
   ) {
     super(message);
     this.name = "WorkflowExecutionError";
+    this.stepName = stepName;
+    this.stepType = stepType;
+    this.status = status;
+    this.originalError = originalError;
   }
 
   /** Get a detailed error summary for debugging */
@@ -119,14 +142,21 @@ ${this.originalError ? `Original Error: ${this.originalError.message}` : ""}`.tr
 
 /** Cookie management error */
 export class CookieError extends Error {
+  public readonly cookieName: string;
+  public readonly operation: "set" | "get" | "delete";
+  public readonly originalError?: Error | undefined;
+
   constructor(
     message: string,
-    public readonly cookieName: string,
-    public readonly operation: "set" | "get" | "delete",
-    public readonly originalError?: Error
+    cookieName: string,
+    operation: "set" | "get" | "delete",
+    originalError?: Error
   ) {
     super(message);
     this.name = "CookieError";
+    this.cookieName = cookieName;
+    this.operation = operation;
+    this.originalError = originalError;
   }
 }
 

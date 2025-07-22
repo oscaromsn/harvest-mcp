@@ -9,6 +9,8 @@ import {
   HARQualityError,
   type HarvestSession,
   type LogEntry,
+  type ParsedHARData,
+  type RequestModel,
   type SessionInfo,
   SessionNotFoundError,
   type SessionStartParams,
@@ -18,7 +20,7 @@ import { createComponentLogger } from "../utils/logger.js";
 // AuthenticationAnalyzer replaced with AuthenticationAgent
 import { parseCookieFile } from "./CookieParser.js";
 import { DAGManager } from "./DAGManager.js";
-import { parseHARFile } from "./HARParser.js";
+import { type HARParsingOptions, parseHARFile } from "./HARParser.js";
 
 // Extended DAGManager interface to include our new methods
 interface ExtendedDAGManager extends DAGManager {
@@ -58,235 +60,372 @@ export class SessionManager {
    * Create a new analysis session
    */
   async createSession(params: SessionStartParams): Promise<string> {
-    // Clean up if we're at max capacity
-    if (this.sessions.size >= this.maxSessions) {
-      this.cleanupExpiredSessions();
-
-      // If still at capacity, remove oldest session
-      if (this.sessions.size >= this.maxSessions) {
-        this.removeOldestSession();
-      }
-    }
+    this.ensureCapacity();
 
     const sessionId = uuidv4();
     const now = new Date();
 
     try {
-      // Parse HAR file with validation and options
-      // Transform Zod schema to match HARParsingOptions interface
-      const harParsingOptions = params.harParsingOptions
-        ? {
-            ...(params.harParsingOptions.excludeKeywords !== undefined && {
-              excludeKeywords: params.harParsingOptions.excludeKeywords,
-            }),
-            ...(params.harParsingOptions.includeAllApiRequests !==
-              undefined && {
-              includeAllApiRequests:
-                params.harParsingOptions.includeAllApiRequests,
-            }),
-            ...(params.harParsingOptions.minQualityThreshold !== undefined && {
-              minQualityThreshold: params.harParsingOptions.minQualityThreshold,
-            }),
-            ...(params.harParsingOptions.preserveAnalyticsRequests !==
-              undefined && {
-              preserveAnalyticsRequests:
-                params.harParsingOptions.preserveAnalyticsRequests,
-            }),
-          }
-        : undefined;
-
-      const harData = await parseHARFile(params.harPath, harParsingOptions);
-
-      // Log HAR validation results
-      if (harData.validation) {
-        const validation = harData.validation;
-        logger.info(
-          `HAR validation for session ${sessionId}: quality=${validation.quality}, ` +
-            `relevant=${validation.stats.relevantEntries}/${validation.stats.totalEntries} requests`
-        );
-
-        if (validation.issues.length > 0) {
-          logger.warn(
-            `HAR issues for session ${sessionId}: ${validation.issues.join(", ")}`
-          );
-        }
-
-        // Phase 2.1: Enforce quality gates before analysis conversion
-        if (validation.quality === "empty") {
-          throw new HARQualityError(
-            validation.quality,
-            validation.issues,
-            [
-              ...validation.recommendations,
-              "Please capture more meaningful network activity before analysis.",
-            ],
-            {
-              harPath: params.harPath,
-              sessionId,
-              stats: validation.stats,
-            }
-          );
-        }
-
-        if (
-          validation.quality === "poor" &&
-          validation.stats.relevantEntries < 3
-        ) {
-          throw new HARQualityError(
-            validation.quality,
-            [
-              ...validation.issues,
-              `Insufficient meaningful requests: ${validation.stats.relevantEntries} entries`,
-            ],
-            [
-              ...validation.recommendations,
-              "Please interact more with the application to generate API requests.",
-            ],
-            {
-              harPath: params.harPath,
-              sessionId,
-              stats: validation.stats,
-            }
-          );
-        }
-
-        // Warn but allow "poor" quality with some minimal content
-        if (validation.quality === "poor") {
-          logger.warn(
-            "HAR file has poor quality but sufficient content to proceed with analysis. " +
-              "Quality issues may affect code generation accuracy."
-          );
-        }
-      }
-
-      // Parse cookie file if provided
-      let cookieData: CookieData | undefined;
-      if (params.cookiePath) {
-        cookieData = await parseCookieFile(params.cookiePath);
-      }
-
-      // Initialize session state
-      const sessionState: SessionState = {
-        toBeProcessedNodes: [],
-        inProcessNodeDynamicParts: [],
-        inputVariables: params.inputVariables || {},
-        isComplete: false,
-        logs: [],
-        workflowGroups: new Map(),
-      };
-
-      // Create DAG manager
-      const dagManager = new DAGManager();
-
-      // CRITICAL FIX: Convert parsed HAR requests into DAG nodes
-      // This was the missing step causing 0 nodes in the DAG
-      if (harData.requests && harData.requests.length > 0) {
-        logger.info(
-          `Converting ${harData.requests.length} HAR requests to DAG nodes`,
-          {
-            sessionId,
-            requestCount: harData.requests.length,
-          }
-        );
-
-        for (const request of harData.requests) {
-          try {
-            // Create node content from request (request is already a RequestModel)
-            const nodeContent = {
-              key: request, // request is already a RequestModel instance
-              value: request.response || null, // Include response data if available
-            };
-
-            // Add as curl node (will be analyzed later for dependencies and types)
-            const nodeId = dagManager.addNode("curl", nodeContent);
-            sessionState.toBeProcessedNodes.push(nodeId);
-
-            logger.debug(
-              `Added DAG node for ${request.method} ${request.url}`,
-              {
-                sessionId,
-                nodeId,
-                method: request.method,
-                url: request.url,
-              }
-            );
-          } catch (error) {
-            logger.warn("Failed to create DAG node for request", {
-              sessionId,
-              method: request.method,
-              url: request.url,
-              error: error instanceof Error ? error.message : "Unknown error",
-            });
-          }
-        }
-
-        logger.info(
-          `Successfully created ${sessionState.toBeProcessedNodes.length} DAG nodes`,
-          {
-            sessionId,
-            totalNodes: sessionState.toBeProcessedNodes.length,
-          }
-        );
-      } else {
-        logger.warn("No HAR requests found to convert to DAG nodes", {
-          sessionId,
-          harDataExists: !!harData,
-          requestsCount: harData.requests?.length || 0,
-        });
-      }
-
-      // Create session
-      const session: HarvestSession = {
-        id: sessionId,
-        prompt: params.prompt,
+      const harData = await this.parseHARWithValidation(params, sessionId);
+      const cookieData = await this.parseCookieData(params);
+      const { sessionState, dagManager } = this.initializeSession(
+        params,
         harData,
-        dagManager,
-        state: sessionState,
-        createdAt: now,
-        lastActivity: now,
-      };
-
-      if (cookieData !== undefined) {
-        session.cookieData = cookieData;
-      }
-
-      this.sessions.set(sessionId, session);
-
-      // Log session creation with HAR quality info
-      this.addLog(
-        sessionId,
-        "info",
-        `Session created with prompt: "${params.prompt}" | HAR quality: ${harData.validation?.quality || "unknown"}`
+        sessionId
       );
 
-      // Add HAR validation warnings to session logs if needed
-      if (harData.validation && harData.validation.quality === "poor") {
-        this.addLog(
-          sessionId,
-          "warn",
-          `HAR file has poor quality: ${harData.validation.issues.join(", ")}`
-        );
-        for (const rec of harData.validation.recommendations) {
-          this.addLog(sessionId, "info", `Recommendation: ${rec}`);
-        }
-      }
+      const session = this.createSessionObject(
+        sessionId,
+        params,
+        harData,
+        cookieData,
+        dagManager,
+        sessionState,
+        now
+      );
 
-      if (harData.validation && harData.validation.quality === "empty") {
-        this.addLog(
-          sessionId,
-          "error",
-          "HAR file is empty or contains no usable requests"
-        );
-        for (const rec of harData.validation.recommendations) {
-          this.addLog(sessionId, "info", `Recommendation: ${rec}`);
-        }
-      }
+      this.sessions.set(sessionId, session);
+      this.logSessionCreation(sessionId, params, harData);
 
       return sessionId;
     } catch (error) {
       throw new Error(
         `Failed to create session: ${error instanceof Error ? error.message : "Unknown error"}`
       );
+    }
+  }
+
+  /**
+   * Ensure session capacity by cleaning up expired sessions
+   */
+  private ensureCapacity(): void {
+    if (this.sessions.size >= this.maxSessions) {
+      this.cleanupExpiredSessions();
+
+      if (this.sessions.size >= this.maxSessions) {
+        this.removeOldestSession();
+      }
+    }
+  }
+
+  /**
+   * Parse HAR file with validation and quality checks
+   */
+  private async parseHARWithValidation(
+    params: SessionStartParams,
+    sessionId: string
+  ): Promise<ParsedHARData> {
+    const harParsingOptions = this.transformHARParsingOptions(
+      params.harParsingOptions
+    );
+    const harData = await parseHARFile(params.harPath, harParsingOptions);
+
+    this.validateHARQuality(harData, params, sessionId);
+
+    return harData;
+  }
+
+  /**
+   * Transform Zod schema to match HARParsingOptions interface
+   */
+  private transformHARParsingOptions(
+    options: SessionStartParams["harParsingOptions"]
+  ): HARParsingOptions | undefined {
+    if (!options) {
+      return undefined;
+    }
+
+    return {
+      ...(options.excludeKeywords !== undefined && {
+        excludeKeywords: options.excludeKeywords,
+      }),
+      ...(options.includeAllApiRequests !== undefined && {
+        includeAllApiRequests: options.includeAllApiRequests,
+      }),
+      ...(options.minQualityThreshold !== undefined && {
+        minQualityThreshold: options.minQualityThreshold,
+      }),
+      ...(options.preserveAnalyticsRequests !== undefined && {
+        preserveAnalyticsRequests: options.preserveAnalyticsRequests,
+      }),
+    };
+  }
+
+  /**
+   * Validate HAR file quality and enforce quality gates
+   */
+  private validateHARQuality(
+    harData: ParsedHARData,
+    params: SessionStartParams,
+    sessionId: string
+  ): void {
+    if (!harData.validation) {
+      return;
+    }
+
+    const validation = harData.validation;
+    logger.info(
+      `HAR validation for session ${sessionId}: quality=${validation.quality}, ` +
+        `relevant=${validation.stats.relevantEntries}/${validation.stats.totalEntries} requests`
+    );
+
+    if (validation.issues.length > 0) {
+      logger.warn(
+        `HAR issues for session ${sessionId}: ${validation.issues.join(", ")}`
+      );
+    }
+
+    this.enforceQualityGates(validation, params, sessionId);
+  }
+
+  /**
+   * Enforce quality gates before analysis conversion
+   */
+  private enforceQualityGates(
+    validation: ParsedHARData["validation"],
+    params: SessionStartParams,
+    sessionId: string
+  ): void {
+    if (!validation) {
+      return;
+    }
+
+    if (validation.quality === "empty") {
+      throw new HARQualityError(
+        validation.quality,
+        validation.issues,
+        [
+          ...validation.recommendations,
+          "Please capture more meaningful network activity before analysis.",
+        ],
+        {
+          harPath: params.harPath,
+          sessionId,
+          stats: validation.stats,
+        }
+      );
+    }
+
+    if (validation.quality === "poor" && validation.stats.relevantEntries < 3) {
+      throw new HARQualityError(
+        validation.quality,
+        [
+          ...validation.issues,
+          `Insufficient meaningful requests: ${validation.stats.relevantEntries} entries`,
+        ],
+        [
+          ...validation.recommendations,
+          "Please interact more with the application to generate API requests.",
+        ],
+        {
+          harPath: params.harPath,
+          sessionId,
+          stats: validation.stats,
+        }
+      );
+    }
+
+    if (validation.quality === "poor") {
+      logger.warn(
+        "HAR file has poor quality but sufficient content to proceed with analysis. " +
+          "Quality issues may affect code generation accuracy."
+      );
+    }
+  }
+
+  /**
+   * Parse cookie data if provided
+   */
+  private async parseCookieData(
+    params: SessionStartParams
+  ): Promise<CookieData | undefined> {
+    if (!params.cookiePath) {
+      return undefined;
+    }
+
+    return await parseCookieFile(params.cookiePath);
+  }
+
+  /**
+   * Initialize session state and DAG manager
+   */
+  private initializeSession(
+    params: SessionStartParams,
+    harData: ParsedHARData,
+    sessionId: string
+  ): { sessionState: SessionState; dagManager: DAGManager } {
+    const sessionState: SessionState = {
+      toBeProcessedNodes: [],
+      inProcessNodeDynamicParts: [],
+      inputVariables: params.inputVariables || {},
+      isComplete: false,
+      logs: [],
+      workflowGroups: new Map(),
+    };
+
+    const dagManager = new DAGManager();
+    this.convertHARRequestsToDAGNodes(
+      harData,
+      dagManager,
+      sessionState,
+      sessionId
+    );
+
+    return { sessionState, dagManager };
+  }
+
+  /**
+   * Convert parsed HAR requests into DAG nodes
+   */
+  private convertHARRequestsToDAGNodes(
+    harData: ParsedHARData,
+    dagManager: DAGManager,
+    sessionState: SessionState,
+    sessionId: string
+  ): void {
+    if (!harData.requests || harData.requests.length === 0) {
+      logger.warn("No HAR requests found to convert to DAG nodes", {
+        sessionId,
+        harDataExists: !!harData,
+        requestsCount: harData.requests?.length || 0,
+      });
+      return;
+    }
+
+    logger.info(
+      `Converting ${harData.requests.length} HAR requests to DAG nodes`,
+      {
+        sessionId,
+        requestCount: harData.requests.length,
+      }
+    );
+
+    for (const request of harData.requests) {
+      this.addRequestAsDAGNode(request, dagManager, sessionState, sessionId);
+    }
+
+    logger.info(
+      `Successfully created ${sessionState.toBeProcessedNodes.length} DAG nodes`,
+      {
+        sessionId,
+        totalNodes: sessionState.toBeProcessedNodes.length,
+      }
+    );
+  }
+
+  /**
+   * Add a single request as a DAG node
+   */
+  private addRequestAsDAGNode(
+    request: RequestModel,
+    dagManager: DAGManager,
+    sessionState: SessionState,
+    sessionId: string
+  ): void {
+    try {
+      const nodeContent = {
+        key: request,
+        value: request.response || null,
+      };
+
+      const nodeId = dagManager.addNode("curl", nodeContent);
+      sessionState.toBeProcessedNodes.push(nodeId);
+
+      logger.debug(`Added DAG node for ${request.method} ${request.url}`, {
+        sessionId,
+        nodeId,
+        method: request.method,
+        url: request.url,
+      });
+    } catch (error) {
+      logger.warn("Failed to create DAG node for request", {
+        sessionId,
+        method: request.method,
+        url: request.url,
+        error: error instanceof Error ? error.message : "Unknown error",
+      });
+    }
+  }
+
+  /**
+   * Create the session object
+   */
+  private createSessionObject(
+    sessionId: string,
+    params: SessionStartParams,
+    harData: ParsedHARData,
+    cookieData: CookieData | undefined,
+    dagManager: DAGManager,
+    sessionState: SessionState,
+    now: Date
+  ): HarvestSession {
+    const session: HarvestSession = {
+      id: sessionId,
+      prompt: params.prompt,
+      harData,
+      dagManager,
+      state: sessionState,
+      createdAt: now,
+      lastActivity: now,
+    };
+
+    if (cookieData !== undefined) {
+      session.cookieData = cookieData;
+    }
+
+    return session;
+  }
+
+  /**
+   * Log session creation and validation warnings
+   */
+  private logSessionCreation(
+    sessionId: string,
+    params: SessionStartParams,
+    harData: ParsedHARData
+  ): void {
+    this.addLog(
+      sessionId,
+      "info",
+      `Session created with prompt: "${params.prompt}" | HAR quality: ${harData.validation?.quality || "unknown"}`
+    );
+
+    if (harData.validation) {
+      this.logHARValidationWarnings(sessionId, harData.validation);
+    }
+  }
+
+  /**
+   * Log HAR validation warnings to session logs
+   */
+  private logHARValidationWarnings(
+    sessionId: string,
+    validation: ParsedHARData["validation"]
+  ): void {
+    if (!validation) {
+      return;
+    }
+
+    if (validation.quality === "poor") {
+      this.addLog(
+        sessionId,
+        "warn",
+        `HAR file has poor quality: ${validation.issues.join(", ")}`
+      );
+      for (const rec of validation.recommendations) {
+        this.addLog(sessionId, "info", `Recommendation: ${rec}`);
+      }
+    }
+
+    if (validation.quality === "empty") {
+      this.addLog(
+        sessionId,
+        "error",
+        "HAR file is empty or contains no usable requests"
+      );
+      for (const rec of validation.recommendations) {
+        this.addLog(sessionId, "info", `Recommendation: ${rec}`);
+      }
     }
   }
 

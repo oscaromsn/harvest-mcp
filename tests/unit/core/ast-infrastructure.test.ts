@@ -1,7 +1,13 @@
 import type { SourceFile } from "ts-morph";
 import { beforeEach, describe, expect, it } from "vitest";
 import { ASTProject } from "../../../src/core/ast/ASTProject.js";
-import { ASTUtils, BaseBuilder } from "../../../src/core/ast/BaseBuilder.js";
+import {
+  BaseBuilder,
+  cleanWhitespace,
+  extractImports,
+  formatMultilineString,
+  isValidTypeScriptCode,
+} from "../../../src/core/ast/BaseBuilder.js";
 
 /**
  * Test implementation of BaseBuilder for testing purposes
@@ -199,7 +205,7 @@ describe("AST Infrastructure", () => {
   describe("ASTUtils", () => {
     it("should format multi-line strings with indentation", () => {
       const input = "line1\nline2\nline3";
-      const formatted = ASTUtils.formatMultilineString(input, 2);
+      const formatted = formatMultilineString(input, 2);
 
       expect(formatted).toContain("line1");
       expect(formatted).toContain("    line2"); // 2 levels * 2 spaces
@@ -208,7 +214,7 @@ describe("AST Infrastructure", () => {
 
     it("should clean whitespace in code", () => {
       const messyCode = "  line1  \n\n\n  \n  line2  \n  ";
-      const cleaned = ASTUtils.cleanWhitespace(messyCode);
+      const cleaned = cleanWhitespace(messyCode);
 
       expect(cleaned).not.toContain("\n\n\n");
       // The function removes trailing whitespace but preserves leading content indentation
@@ -219,8 +225,8 @@ describe("AST Infrastructure", () => {
       const validCode = "function test() { return true; }";
       const invalidCode = "function test() { return true;";
 
-      expect(ASTUtils.isValidTypeScriptCode(validCode)).toBe(true);
-      expect(ASTUtils.isValidTypeScriptCode(invalidCode)).toBe(false);
+      expect(isValidTypeScriptCode(validCode)).toBe(true);
+      expect(isValidTypeScriptCode(invalidCode)).toBe(false);
     });
 
     it("should extract import statements", () => {
@@ -231,7 +237,7 @@ describe("AST Infrastructure", () => {
         import path from 'path';
       `;
 
-      const imports = ASTUtils.extractImports(code);
+      const imports = extractImports(code);
       expect(imports).toHaveLength(3);
       expect(imports).toContain("import fs from 'fs';");
       expect(imports).toContain("import { readFile } from 'fs/promises';");
