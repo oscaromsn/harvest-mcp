@@ -225,7 +225,7 @@ describe("SessionManager", () => {
       const analysis = sessionManager.analyzeCompletionState(sessionId);
 
       expect(analysis.recommendations).toContain(
-        "Run 'analysis_run_initial_analysis' to identify the target action URL"
+        "Run 'analysis_start_primary_workflow' to identify the target action URL"
       );
       expect(analysis.recommendations.length).toBeGreaterThan(0);
     });
@@ -355,7 +355,7 @@ describe("SessionManager", () => {
       // Test different states and their recommendations
       let analysis = sessionManager.analyzeCompletionState(sessionId);
       expect(analysis.recommendations).toContain(
-        "Run 'analysis_run_initial_analysis' to identify the target action URL"
+        "Run 'analysis_start_primary_workflow' to identify the target action URL"
       );
 
       // After initial analysis - still has "No nodes found" blocker

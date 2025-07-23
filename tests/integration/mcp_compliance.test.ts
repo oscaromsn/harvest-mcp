@@ -187,7 +187,7 @@ describe("MCP Server Compliance", () => {
         "session_start",
         "session_list",
         "session_delete",
-        "analysis_run_initial_analysis",
+        "analysis_start_primary_workflow",
         "analysis_process_next_node",
         "analysis_is_complete",
         "debug_get_unresolved_nodes",
