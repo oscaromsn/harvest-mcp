@@ -284,73 +284,108 @@ function analyzeSessionPatterns(
 
   // Extract all parameters and their values from requests
   for (const request of requests) {
-    const url = new URL(request.url);
-    const searchParams = url.searchParams;
-
-    // Analyze URL parameters
-    for (const [key, value] of searchParams.entries()) {
-      if (!patterns.has(key)) {
-        patterns.set(key, { values: new Set(), occurrences: 0 });
-      }
-      const pattern = patterns.get(key)!;
-      pattern.values.add(value);
-      pattern.occurrences++;
-    }
-
-    // Analyze headers for authentication tokens
-    if (request.headers) {
-      for (const [headerName, headerValue] of Object.entries(request.headers)) {
-        if (isAuthenticationHeader(headerName)) {
-          const key = `header_${headerName}`;
-          if (!patterns.has(key)) {
-            patterns.set(key, { values: new Set(), occurrences: 0 });
-          }
-          const pattern = patterns.get(key)!;
-          pattern.values.add(headerValue);
-          pattern.occurrences++;
-        }
-      }
-    }
-
-    // Analyze cookies
-    const cookieHeader = request.headers?.cookie || request.headers?.Cookie;
-    if (cookieHeader) {
-      const cookies = parseCookieHeader(cookieHeader);
-      for (const [cookieName, cookieValue] of Object.entries(cookies)) {
-        if (isAuthenticationCookie(cookieName)) {
-          const key = `cookie_${cookieName}`;
-          if (!patterns.has(key)) {
-            patterns.set(key, { values: new Set(), occurrences: 0 });
-          }
-          const pattern = patterns.get(key)!;
-          pattern.values.add(cookieValue);
-          pattern.occurrences++;
-        }
-      }
-    }
+    extractUrlParameters(request, patterns);
+    extractHeaderParameters(request, patterns);
+    extractCookieParameters(request, patterns);
   }
 
-  // Convert to SessionPattern objects and filter for consistent patterns
+  return convertPatternsToSessionPatterns(patterns, requests.length);
+}
+
+/**
+ * Extract URL parameters from a request
+ */
+function extractUrlParameters(
+  request: RequestModel,
+  patterns: Map<string, { values: Set<string>; occurrences: number }>
+): void {
+  const url = new URL(request.url);
+  const searchParams = url.searchParams;
+
+  for (const [key, value] of searchParams.entries()) {
+    addToPatterns(patterns, key, value);
+  }
+}
+
+/**
+ * Extract authentication headers from a request
+ */
+function extractHeaderParameters(
+  request: RequestModel,
+  patterns: Map<string, { values: Set<string>; occurrences: number }>
+): void {
+  if (!request.headers) {
+    return;
+  }
+
+  for (const [headerName, headerValue] of Object.entries(request.headers)) {
+    if (isAuthenticationHeader(headerName)) {
+      const key = `header_${headerName}`;
+      addToPatterns(patterns, key, headerValue);
+    }
+  }
+}
+
+/**
+ * Extract authentication cookies from a request
+ */
+function extractCookieParameters(
+  request: RequestModel,
+  patterns: Map<string, { values: Set<string>; occurrences: number }>
+): void {
+  const cookieHeader = request.headers?.cookie || request.headers?.Cookie;
+  if (!cookieHeader) {
+    return;
+  }
+
+  const cookies = parseCookieHeader(cookieHeader);
+  for (const [cookieName, cookieValue] of Object.entries(cookies)) {
+    if (isAuthenticationCookie(cookieName)) {
+      const key = `cookie_${cookieName}`;
+      addToPatterns(patterns, key, cookieValue);
+    }
+  }
+}
+
+/**
+ * Add a parameter to the patterns map
+ */
+function addToPatterns(
+  patterns: Map<string, { values: Set<string>; occurrences: number }>,
+  key: string,
+  value: string
+): void {
+  if (!patterns.has(key)) {
+    patterns.set(key, { values: new Set(), occurrences: 0 });
+  }
+  const pattern = patterns.get(key);
+  if (!pattern) {
+    return;
+  }
+  pattern.values.add(value);
+  pattern.occurrences++;
+}
+
+/**
+ * Convert patterns map to SessionPattern objects
+ */
+function convertPatternsToSessionPatterns(
+  patterns: Map<string, { values: Set<string>; occurrences: number }>,
+  totalRequests: number
+): SessionPattern[] {
   const sessionPatterns: SessionPattern[] = [];
-  const totalRequests = requests.length;
 
   for (const [parameter, data] of patterns.entries()) {
-    // Calculate consistency (how often the same value appears)
-    const mostCommonValue = [...data.values].reduce((a, b) =>
-      [...data.values].filter((v) => v === a).length >=
-      [...data.values].filter((v) => v === b).length
-        ? a
-        : b
-    );
-
+    const mostCommonValue = findMostCommonValue(data.values);
     const consistency = data.occurrences / totalRequests;
     const isAuthenticationRelated = isLikelyAuthenticationParameter(parameter);
 
-    // Only include parameters that appear in at least 30% of requests
-    // and have authentication-related characteristics
     if (
-      consistency >= 0.3 &&
-      (isAuthenticationRelated || data.values.size === 1)
+      shouldIncludePattern(
+        consistency,
+        isAuthenticationRelated,
+        data.values.size
+      )
     ) {
       sessionPatterns.push({
         parameter,
@@ -363,6 +398,32 @@ function analyzeSessionPatterns(
   }
 
   return sessionPatterns.sort((a, b) => b.consistency - a.consistency);
+}
+
+/**
+ * Find the most common value in a set
+ */
+function findMostCommonValue(values: Set<string>): string {
+  const valueArray = [...values];
+  return valueArray.reduce((a, b) =>
+    valueArray.filter((v) => v === a).length >=
+    valueArray.filter((v) => v === b).length
+      ? a
+      : b
+  );
+}
+
+/**
+ * Determine if a pattern should be included based on consistency and characteristics
+ */
+function shouldIncludePattern(
+  consistency: number,
+  isAuthenticationRelated: boolean,
+  uniqueValuesCount: number
+): boolean {
+  return (
+    consistency >= 0.3 && (isAuthenticationRelated || uniqueValuesCount === 1)
+  );
 }
 
 /**
@@ -579,12 +640,12 @@ function isLikelyAuthenticationParameter(parameter: string): boolean {
 function parseCookieHeader(cookieHeader: string): Record<string, string> {
   const cookies: Record<string, string> = {};
 
-  cookieHeader.split(";").forEach((cookie) => {
+  for (const cookie of cookieHeader.split(";")) {
     const [name, ...valueParts] = cookie.trim().split("=");
     if (name && valueParts.length > 0) {
       cookies[name.trim()] = valueParts.join("=").trim();
     }
-  });
+  }
 
   return cookies;
 }

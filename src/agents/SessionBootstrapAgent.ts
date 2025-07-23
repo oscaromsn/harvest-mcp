@@ -630,12 +630,12 @@ function performFallbackAnalysis(
 function parseCookies(cookieHeader: string): Record<string, string> {
   const cookies: Record<string, string> = {};
 
-  cookieHeader.split(";").forEach((cookie) => {
+  for (const cookie of cookieHeader.split(";")) {
     const [name, ...valueParts] = cookie.trim().split("=");
     if (name && valueParts.length > 0) {
       cookies[name.trim()] = valueParts.join("=").trim();
     }
-  });
+  }
 
   return cookies;
 }

@@ -570,7 +570,9 @@ export class WrapperScriptOrchestrator {
   /**
    * Generate token extraction code from various sources
    */
-  private generateTokenExtractionCode(sessionTokens: any[]): string {
+  private generateTokenExtractionCode(
+    sessionTokens: import("../../types").SessionToken[]
+  ): string {
     if (sessionTokens.length === 0) {
       return "// No session tokens to extract";
     }

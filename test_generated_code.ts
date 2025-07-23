@@ -6,7 +6,7 @@
 // 4. Headers.entries() issue
 
 // Type definitions
-interface ApiResponse<T = any> {
+interface ApiResponse<T = unknown> {
   success: boolean;
   data: T;
   status: number;
@@ -34,13 +34,14 @@ interface AuthConfig {
 
 // Authentication error for retry logic
 class AuthenticationError extends Error {
-  constructor(
-    message: string,
-    public status: number,
-    public response?: any
-  ) {
+  public status: number;
+  public response?: unknown;
+
+  constructor(message: string, status: number, response?: unknown) {
     super(message);
     this.name = "AuthenticationError";
+    this.status = status;
+    this.response = response;
   }
 }
 
@@ -64,7 +65,7 @@ export { AuthenticationError };
 async function searchJurisprudenceAnalyze(
   params: SearchParams = {},
   authConfig?: AuthConfig
-): Promise<ApiResponse<any>> {
+): Promise<ApiResponse<unknown>> {
   try {
     const {
       texto = "7ª 8ª hora analista bancário",
@@ -184,9 +185,11 @@ async function searchJurisprudenceAnalyze(
 }
 
 // Helper function to process response
-async function processResponse(response: Response): Promise<ApiResponse<any>> {
+async function processResponse(
+  response: Response
+): Promise<ApiResponse<unknown>> {
   const contentType = response.headers.get("content-type") || "";
-  let data: any;
+  let data: unknown;
 
   if (contentType.includes("application/json")) {
     data = await response.json();
