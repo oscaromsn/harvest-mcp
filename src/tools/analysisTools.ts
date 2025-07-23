@@ -813,6 +813,188 @@ function handleNodeProcessingError(error: unknown): CallToolResult {
 }
 
 /**
+ * Handle starting primary workflow analysis
+ */
+export async function handleStartPrimaryWorkflow(
+  params: { sessionId: string },
+  context: AnalysisToolContext
+): Promise<CallToolResult> {
+  try {
+    const session = context.sessionManager.getSession(params.sessionId);
+    if (!session) {
+      throw new HarvestError(
+        `Session ${params.sessionId} not found`,
+        "SESSION_NOT_FOUND"
+      );
+    }
+
+    // Check HAR data quality before proceeding
+    if (session.harData.validation) {
+      const validation = session.harData.validation;
+
+      if (validation.quality === "empty") {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                error: "Cannot analyze empty HAR file",
+                message: "No meaningful network requests found in HAR file",
+                issues: validation.issues,
+                suggestion:
+                  "Ensure your HAR file contains API network requests",
+              }),
+            },
+          ],
+        };
+      }
+
+      if (validation.quality === "poor") {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                warning: "HAR file has quality issues",
+                quality: validation.quality,
+                issues: validation.issues,
+                message: "Analysis may have limited accuracy",
+                action:
+                  "Proceeding with workflow discovery despite quality issues",
+              }),
+            },
+          ],
+        };
+      }
+    }
+
+    // Discover workflows using the modern multi-workflow system
+    const workflowGroups = await discoverWorkflows(session);
+
+    if (workflowGroups.size === 0) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              error: "No workflows discovered",
+              message:
+                "Unable to identify any logical workflows in the HAR file",
+              suggestion:
+                "Check if the HAR file contains API requests with clear patterns",
+              fallback:
+                "Consider using 'analysis_run_initial_analysis' for simple cases",
+            }),
+          },
+        ],
+      };
+    }
+
+    // Get the primary workflow
+    const primaryWorkflow = getPrimaryWorkflow(workflowGroups);
+    if (!primaryWorkflow) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              error: "No primary workflow identified",
+              message:
+                "Discovered workflows but couldn't determine primary workflow",
+              discoveredWorkflows: Array.from(workflowGroups.entries()).map(
+                ([id, workflow]) => ({
+                  id,
+                  name: workflow.name,
+                  priority: workflow.priority,
+                  complexity: workflow.complexity,
+                })
+              ),
+              suggestion:
+                "Use 'analysis_select_workflow' to manually choose a workflow",
+            }),
+          },
+        ],
+      };
+    }
+
+    // Set up the session with the primary workflow
+    session.workflowGroups = workflowGroups;
+    session.selectedWorkflowId = primaryWorkflow.id;
+
+    // Get the master node URL from the primary workflow
+    const masterNodeUrl = primaryWorkflow.masterNodeId;
+    const harUrls = session.harData.urls;
+
+    // Find the actual URL from harUrls that matches the master node pattern
+    const masterUrl = harUrls.find(
+      (urlInfo) =>
+        masterNodeUrl.includes(urlInfo.url) ||
+        urlInfo.url.includes(masterNodeUrl.split(":")[1] || "")
+    );
+
+    if (!masterUrl) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              error: "Master URL not found in HAR data",
+              masterNodeId: masterNodeUrl,
+              workflowName: primaryWorkflow.name,
+              suggestion: "This may indicate a workflow discovery issue",
+            }),
+          },
+        ],
+      };
+    }
+
+    // Set master node using the workflow data
+    context.sessionManager.setMasterNodeId(params.sessionId, masterUrl.url);
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            success: true,
+            message: "Primary workflow analysis started successfully",
+            workflow: {
+              id: primaryWorkflow.id,
+              name: primaryWorkflow.name,
+              description: primaryWorkflow.description,
+              category: primaryWorkflow.category,
+              priority: primaryWorkflow.priority,
+              complexity: primaryWorkflow.complexity,
+              requiresUserInput: primaryWorkflow.requiresUserInput,
+            },
+            masterNode: {
+              url: masterUrl.url,
+              method: masterUrl.method,
+            },
+            totalWorkflowsDiscovered: workflowGroups.size,
+            nextSteps: [
+              "Use 'analysis_process_next_node' to continue dependency analysis",
+              "Use 'analysis_is_complete' to check progress",
+              "Use 'debug_list_all_requests' to inspect all nodes",
+            ],
+          }),
+        },
+      ],
+    };
+  } catch (error) {
+    if (error instanceof HarvestError) {
+      throw error;
+    }
+
+    throw new HarvestError(
+      `Primary workflow analysis failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+      "PRIMARY_WORKFLOW_ANALYSIS_FAILED",
+      { originalError: error }
+    );
+  }
+}
+
+/**
  * Register analysis tools with the MCP server
  */
 export function registerAnalysisTools(
@@ -821,11 +1003,20 @@ export function registerAnalysisTools(
 ): void {
   server.tool(
     "analysis_run_initial_analysis",
-    "Identify the target action URL and create the master node in the dependency graph. Configure API keys using CLI arguments: --provider and --api-key.",
+    "[DEPRECATED] Identify the target action URL and create the master node in the dependency graph. Use 'analysis_start_primary_workflow' for new implementations. Configure API keys using CLI arguments: --provider and --api-key.",
     {
       sessionId: SessionIdSchema.shape.sessionId,
     },
     async (params) => handleRunInitialAnalysisWithConfig(params, context)
+  );
+
+  server.tool(
+    "analysis_start_primary_workflow",
+    "Discover all workflows in the HAR file and automatically start analysis of the highest-priority workflow. This is the recommended way to begin analysis using the modern multi-workflow system. Configure API keys using CLI arguments: --provider and --api-key.",
+    {
+      sessionId: SessionIdSchema.shape.sessionId,
+    },
+    async (params) => handleStartPrimaryWorkflow(params, context)
   );
 
   server.tool(
