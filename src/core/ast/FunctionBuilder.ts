@@ -2,8 +2,8 @@
  * AST-Based Function Builder
  *
  * Provides fluent APIs for building TypeScript function declarations using AST.
- * This replaces the functionality from FunctionTemplateEngine.ts with a more
- * flexible and type-safe approach while supporting hybrid template/AST generation.
+ * This provides a flexible and type-safe approach for generating TypeScript
+ * functions through programmatic AST manipulation.
  */
 
 import type {
@@ -354,7 +354,7 @@ export class FunctionPatterns extends BaseBuilder {
 
 /**
  * Higher-level function builder that provides convenient methods for common patterns
- * This integrates with the existing template system for backward compatibility
+ * This provides a fluent API for generating TypeScript functions using AST manipulation
  */
 export class ASTFunctionEngine {
   private astProject: ASTProject;

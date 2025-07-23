@@ -342,19 +342,11 @@ export async function handleConfigValidation(
     testApiKey?: string | undefined;
     testProvider?: string | undefined;
   },
-  _context: SystemToolContext,
-  cliConfig: {
-    provider?: string;
-    apiKey?: string;
-    openaiApiKey?: string;
-    googleApiKey?: string;
-    model?: string;
-    help?: boolean;
-  }
+  _context: SystemToolContext
 ): Promise<CallToolResult> {
   try {
-    // Get configuration status including CLI config
-    const config = validateConfiguration(cliConfig);
+    // Get configuration status from centralized ConfigManager
+    const config = validateConfiguration();
 
     // Test API key if provided
     let testResults:
@@ -416,13 +408,8 @@ export async function handleConfigValidation(
               availableProviders: config.availableProviders,
               configuredProviders: config.configuredProviders,
               cliArguments: {
-                provider: cliConfig.provider,
-                hasApiKey: !!(
-                  cliConfig.apiKey ||
-                  cliConfig.openaiApiKey ||
-                  cliConfig.googleApiKey
-                ),
-                model: cliConfig.model,
+                // CLI arguments are now handled by ConfigManager during initialization
+                note: "CLI configuration is processed by ConfigManager during server startup",
               },
               environmentVariables: {
                 LLM_PROVIDER: !!process.env.LLM_PROVIDER,
@@ -633,15 +620,7 @@ function formatFileSize(bytes: number | undefined): string {
  */
 export function registerSystemTools(
   server: McpServer,
-  context: SystemToolContext,
-  cliConfig: {
-    provider?: string;
-    apiKey?: string;
-    openaiApiKey?: string;
-    googleApiKey?: string;
-    model?: string;
-    help?: boolean;
-  }
+  context: SystemToolContext
 ): void {
   server.tool(
     "session_status",
@@ -692,7 +671,7 @@ export function registerSystemTools(
         .optional()
         .describe("Provider to test with the API key (openai, google, gemini)"),
     },
-    async (params) => handleConfigValidation(params, context, cliConfig)
+    async (params) => handleConfigValidation(params, context)
   );
 
   server.tool(

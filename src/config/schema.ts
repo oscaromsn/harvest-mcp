@@ -146,12 +146,6 @@ export const ENVIRONMENT_VARIABLE_MAP = {
   HARVEST_LLM_TIMEOUT: "llm.providers.openai.timeout", // applies to active provider
   HARVEST_LLM_MAX_RETRIES: "llm.providers.openai.maxRetries",
 
-  // Legacy support (without HARVEST_ prefix)
-  LLM_PROVIDER: "llm.provider",
-  LLM_MODEL: "llm.model",
-  OPENAI_API_KEY: "llm.providers.openai.apiKey",
-  GOOGLE_API_KEY: "llm.providers.gemini.apiKey",
-
   // Session Configuration
   HARVEST_MAX_SESSIONS: "session.maxSessions",
   HARVEST_SESSION_TIMEOUT_MINUTES: "session.timeoutMinutes",
@@ -173,7 +167,6 @@ export const ENVIRONMENT_VARIABLE_MAP = {
 
   // Logging Configuration
   HARVEST_LOG_LEVEL: "logging.level",
-  LOG_LEVEL: "logging.level", // Legacy support
   MCP_STDIO: "logging.mcpStdio",
 
   // Memory Configuration

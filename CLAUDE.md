@@ -57,7 +57,6 @@ src/
 │   ├── DependencyAgent.ts      # Analyzes requests to identify dependencies between them
 │   ├── DynamicPartsAgent.ts    # Detects dynamic elements (timestamps, IDs) in requests
 │   ├── InputVariablesAgent.ts  # Identifies user input requirements in requests
-│   └── URLIdentificationAgent.ts # Finds the target action URL from HAR entries
 ├── core/               # Core business logic and services
 │   ├── CodeGenerator.ts         # Generates executable TypeScript code from analysis
 │   ├── CookieParser.ts          # Parses Netscape cookie files for authentication
@@ -98,7 +97,6 @@ tests/
    - `DependencyAgent`: Identifies request dependencies and builds DAG
    - `DynamicPartsAgent`: Detects dynamic elements in requests
    - `InputVariablesAgent`: Finds user input requirements
-   - `URLIdentificationAgent`: Identifies target action URLs
 
 2. **Core Services** (`src/core/`):
    - `SessionManager`: Manages stateful MCP sessions with FSM pattern

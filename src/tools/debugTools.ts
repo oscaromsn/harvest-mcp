@@ -9,14 +9,6 @@ import {
   type RequestModel,
   type URLInfo,
 } from "../types/index.js";
-import {
-  calculateApiPatternScore,
-  calculateKeywordRelevance,
-  calculateMethodScore,
-  calculateParameterComplexityScore,
-  calculateResponseTypeScore,
-  sortUrlsByRelevance,
-} from "../utils/urlScoring.js";
 
 /**
  * Handle debug_get_unresolved_nodes tool call
@@ -688,108 +680,6 @@ export async function handlePreviewHar(params: {
     throw new HarvestError(
       `HAR preview failed: ${error instanceof Error ? error.message : "Unknown error"}`,
       "HAR_PREVIEW_FAILED",
-      { originalError: error }
-    );
-  }
-}
-
-/**
- * Handle debug_test_url_identification tool call
- */
-export async function handleTestUrlIdentification(params: {
-  harPath: string;
-  prompt: string;
-  topN?: number;
-}): Promise<CallToolResult> {
-  try {
-    const topN = params.topN || 5;
-
-    // Parse HAR file
-    const parsedHar = await parseHARFile(params.harPath);
-
-    if (parsedHar.urls.length === 0) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({
-              success: false,
-              error: "No URLs found in HAR file",
-            }),
-          },
-        ],
-        isError: true,
-      };
-    }
-
-    // Use URL identification heuristics
-    const sortedUrls = sortUrlsByRelevance(parsedHar.urls, params.prompt);
-    const topUrls = sortedUrls.slice(0, topN);
-
-    // Calculate scores for each URL
-    const urlsWithScores = topUrls.map((url, index) => {
-      const keywordScore = calculateKeywordRelevance(url.url, params.prompt);
-      const apiPatternScore = calculateApiPatternScore(url.url);
-      const parameterScore = calculateParameterComplexityScore(url.url);
-      const methodScore = calculateMethodScore(url.method, params.prompt);
-      const responseTypeScore = calculateResponseTypeScore(url.responseType);
-
-      const totalScore =
-        keywordScore * 3 +
-        apiPatternScore * 2 +
-        parameterScore * 1.5 +
-        methodScore +
-        responseTypeScore * 0.8;
-
-      return {
-        rank: index + 1,
-        url: url.url,
-        method: url.method,
-        scores: {
-          total: Math.round(totalScore * 10) / 10,
-          keyword: keywordScore,
-          apiPattern: apiPatternScore,
-          parameters: parameterScore,
-          method: methodScore,
-          responseType: responseTypeScore,
-        },
-        analysis: {
-          hasKeywordMatch: keywordScore > 0,
-          isApiEndpoint: apiPatternScore > 0,
-          complexity:
-            parameterScore > 10
-              ? "high"
-              : parameterScore > 5
-                ? "medium"
-                : "low",
-        },
-      };
-    });
-
-    // Identify the most likely URL
-    const likelyUrl = topUrls[0];
-
-    return {
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify({
-            success: true,
-            prompt: params.prompt,
-            likelyUrl: likelyUrl?.url || "No suitable URL found",
-            topCandidates: urlsWithScores,
-            totalUrlsAnalyzed: parsedHar.urls.length,
-            recommendation: likelyUrl
-              ? `Most likely URL: ${likelyUrl.url} (${likelyUrl.method})`
-              : "No clear match found - consider manual URL selection with debug_set_master_node",
-          }),
-        },
-      ],
-    };
-  } catch (error) {
-    throw new HarvestError(
-      `URL identification test failed: ${error instanceof Error ? error.message : "Unknown error"}`,
-      "URL_TEST_FAILED",
       { originalError: error }
     );
   }

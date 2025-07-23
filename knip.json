@@ -24,14 +24,14 @@
     "devDependencies": "warn",
     "duplicates": "error",
     "enumMembers": "warn",
-    "exports": "warn",
-    "files": "warn",
+    "exports": "error",
+    "files": "error",
     "nsExports": "warn",
     "classMembers": "warn",
     "types": "warn",
     "nsTypes": "warn",
     "unlisted": "warn",
-    "unresolved": "warn"
+    "unresolved": "error"
   },
   "vitest": {
     "config": "vitest.config.ts"

@@ -225,13 +225,13 @@ export class ConfigManager {
       let source = "";
       if (path.startsWith("llm")) {
         source =
-          " (check LLM_PROVIDER, OPENAI_API_KEY, or --provider CLI arguments)";
+          " (check HARVEST_LLM_PROVIDER, HARVEST_OPENAI_API_KEY, or --provider CLI arguments)";
       } else if (path.startsWith("session")) {
         source = " (check HARVEST_MAX_SESSIONS or session configuration)";
       } else if (path.startsWith("paths")) {
         source = " (check HARVEST_SHARED_DIR or path configuration)";
       } else if (path.startsWith("logging")) {
-        source = " (check HARVEST_LOG_LEVEL or LOG_LEVEL)";
+        source = " (check HARVEST_LOG_LEVEL)";
       }
 
       return `  • ${path}: ${err.message}${source}`;

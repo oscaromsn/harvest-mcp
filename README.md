@@ -441,7 +441,6 @@ src/
 │   ├── LLMClient.ts      # OpenAI integration
 │   └── CodeGenerator.ts  # TypeScript code generation
 ├── agents/               # Analysis agents
-│   ├── URLIdentificationAgent.ts
 │   ├── DynamicPartsAgent.ts
 │   ├── InputVariablesAgent.ts
 │   └── DependencyAgent.ts

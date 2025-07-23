@@ -2,8 +2,8 @@
  * TypeScript Type Builder
  *
  * Provides fluent APIs for building TypeScript type definitions using AST.
- * This replaces the functionality from TypeDefinitionTemplateEngine.ts
- * with a more flexible and type-safe approach.
+ * This provides AST-based type definition generation
+ * with a flexible and type-safe approach.
  */
 
 import {
@@ -300,7 +300,7 @@ export class TypeAliasBuilder extends BaseBuilder {
 
 /**
  * High-level TypeBuilder that provides convenient methods for common type patterns
- * This replaces the functionality from TypeDefinitionTemplateEngine.ts
+ * This provides convenient methods for common type patterns
  */
 export class TypeBuilder extends BaseBuilder {
   /**
@@ -484,7 +484,7 @@ export class TypeBuilder extends BaseBuilder {
 
   /**
    * Generate all standard type definitions used by the generated code
-   * This replaces the generateTypeDefinitions function from TypeDefinitionTemplateEngine
+   * This generates all standard type definitions used by the generated code
    * Uses shared imports from SharedTypes.js for reduced boilerplate
    */
   generateStandardTypes(): void {

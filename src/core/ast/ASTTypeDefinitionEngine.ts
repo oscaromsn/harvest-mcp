@@ -1,16 +1,16 @@
 /**
  * AST-Based Type Definition Engine
  *
- * Drop-in replacement for TypeDefinitionTemplateEngine.ts that uses AST builders
- * instead of string templates. Provides the same interface for backward compatibility
- * while offering the benefits of AST-based generation.
+ * AST-based type definition engine that uses AST builders for generating
+ * TypeScript type definitions. Provides a clean interface for type generation
+ * with type-safe AST manipulation.
  */
 
 import { ASTProject } from "./ASTProject.js";
 import { TypeBuilder } from "./TypeBuilder.js";
 
 /**
- * AST-based type definition engine that replaces the template system
+ * AST-based type definition engine for generating TypeScript type definitions
  */
 export class ASTTypeDefinitionEngine {
   public astProject: ASTProject;

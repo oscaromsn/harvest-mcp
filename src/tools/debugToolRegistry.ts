@@ -26,7 +26,6 @@ import {
   handleResetAnalysis,
   handleSetMasterNode,
   handleSkipNode,
-  handleTestUrlIdentification,
 } from "./debugTools.js";
 
 /**
@@ -112,29 +111,6 @@ export function registerDebugTools(
         ...(params.showAuth !== undefined && { showAuth: params.showAuth }),
       };
       return handlePreviewHar(cleanParams);
-    }
-  );
-
-  server.tool(
-    "debug_test_url_identification",
-    "Test the URL identification logic to see which URLs are being detected as action endpoints vs. supporting requests.",
-    {
-      harPath: z
-        .string()
-        .describe("Path to HAR file to test URL identification"),
-      prompt: z.string().describe("Prompt describing the workflow goal"),
-      topN: z
-        .number()
-        .optional()
-        .describe("Number of top URLs to show (default: 10)"),
-    },
-    async (params) => {
-      const cleanParams = {
-        harPath: params.harPath,
-        prompt: params.prompt,
-        ...(params.topN !== undefined && { topN: params.topN }),
-      };
-      return handleTestUrlIdentification(cleanParams);
     }
   );
 
