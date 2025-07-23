@@ -10,14 +10,17 @@ import { fileURLToPath } from "node:url";
 import { findDependencies } from "../../src/agents/DependencyAgent.js";
 import { identifyDynamicParts } from "../../src/agents/DynamicPartsAgent.js";
 import { identifyInputVariables } from "../../src/agents/InputVariablesAgent.js";
-import { identifyEndUrl } from "../../src/agents/URLIdentificationAgent.js";
+import {
+  discoverWorkflows,
+  getPrimaryWorkflow,
+} from "../../src/agents/WorkflowDiscoveryAgent.js";
 import { SessionManager } from "../../src/core/SessionManager.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 async function testRealLLMIntegration() {
-  console.log("🚀 Testing Real LLM Integration for Sprint 3...\n");
+  console.log("🚀 Testing Modern Workflow Discovery and LLM Integration...\n");
 
   // Check API key
   if (!process.env.OPENAI_API_KEY) {
@@ -73,8 +76,8 @@ async function testRealLLMIntegration() {
       console.log(`  - ${key}: "${value}"`);
     }
 
-    // Test 3: Create a session and test URL identification
-    console.log("\n📝 Test 3: Session Creation and URL Identification");
+    // Test 3: Create a session and test modern workflow discovery
+    console.log("\n📝 Test 3: Session Creation and Workflow Discovery");
 
     const sessionManager = new SessionManager();
     const harPath = path.join(
@@ -141,12 +144,22 @@ async function testRealLLMIntegration() {
         lastActivity: new Date(),
       };
 
-      console.log("Testing URL identification with mock data...");
-      const actionUrl = await identifyEndUrl(
-        mockSession as import("../../src/types/index.js").HarvestSession,
-        mockSession.harData.urls
+      console.log("Testing workflow discovery with mock data...");
+      const workflows = await discoverWorkflows(
+        mockSession as import("../../src/types/index.js").HarvestSession
       );
-      console.log(`✅ Identified action URL: ${actionUrl}`);
+      console.log(`✅ Discovered ${workflows.size} workflows`);
+
+      if (workflows.size > 0) {
+        const primaryWorkflow = getPrimaryWorkflow(workflows);
+        if (primaryWorkflow) {
+          console.log(
+            `✅ Primary workflow: ${primaryWorkflow.name} (${primaryWorkflow.priority} priority)`
+          );
+          console.log(`   - Actions: ${primaryWorkflow.nodeIds.size}`);
+          console.log(`   - Description: ${primaryWorkflow.description}`);
+        }
+      }
 
       console.log("\n🎉 All tests completed successfully!");
       return;
@@ -159,19 +172,33 @@ async function testRealLLMIntegration() {
     );
 
     if (session.harData.urls.length > 0) {
-      console.log("Testing URL identification with real HAR data...");
-      const actionUrl = await identifyEndUrl(session, session.harData.urls);
-      console.log(`✅ Identified action URL: ${actionUrl}`);
+      console.log("Testing workflow discovery with real HAR data...");
+      const workflows = await discoverWorkflows(session);
+      console.log(`✅ Discovered ${workflows.size} workflows`);
 
-      // Verify the URL exists in the data
-      const urlExists = session.harData.urls.some(
-        (url) => url.url === actionUrl
-      );
-      if (urlExists) {
-        console.log("✅ URL validation passed");
+      if (workflows.size > 0) {
+        const primaryWorkflow = getPrimaryWorkflow(workflows);
+        if (primaryWorkflow) {
+          console.log(
+            `✅ Primary workflow: ${primaryWorkflow.name} (${primaryWorkflow.priority} priority)`
+          );
+          console.log(`   - Actions: ${primaryWorkflow.nodeIds.size}`);
+          console.log(`   - Description: ${primaryWorkflow.description}`);
+          console.log(`   - Master node: ${primaryWorkflow.masterNodeId}`);
+
+          // Simple validation that workflow is well-formed
+          if (
+            primaryWorkflow.nodeIds.size > 0 &&
+            primaryWorkflow.masterNodeId
+          ) {
+            console.log("✅ Workflow structure validation passed");
+          } else {
+            console.log("⚠️  Workflow structure may be incomplete");
+          }
+        }
       } else {
         console.log(
-          "⚠️  URL not found in HAR data (possible LLM hallucination)"
+          "⚠️  No workflows discovered - HAR data may be insufficient"
         );
       }
     }
@@ -224,9 +251,11 @@ async function testRealLLMIntegration() {
     console.log(
       `  ✅ Input variables identification: ${Object.keys(inputVarResult.identifiedVariables).length} variables found`
     );
-    console.log("  ✅ URL identification: Working");
+    console.log("  ✅ Modern workflow discovery: Working");
     console.log("  ✅ Dependency analysis: Working");
-    console.log("\n🚀 Sprint 3 LLM integration is fully functional!");
+    console.log(
+      "\n🚀 Modern workflow-based LLM integration is fully functional!"
+    );
   } catch (error) {
     console.error("\n❌ Test failed:", error);
     process.exit(1);
