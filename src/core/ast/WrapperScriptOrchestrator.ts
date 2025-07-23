@@ -340,7 +340,7 @@ export class WrapperScriptOrchestrator {
           "  // Fallback: try reading cookie directly in browser environment"
         );
         writer.writeLine("  if (typeof document !== 'undefined') {");
-        writer.writeLine("    const value = `; ${document.cookie}`;");
+        writer.writeLine("    const value = `; ` + document.cookie;");
         writer.writeLine(`    const parts = value.split(\`; ${cookieKey}=\`);`);
         writer.writeLine("    if (parts.length === 2) {");
         writer.writeLine(
