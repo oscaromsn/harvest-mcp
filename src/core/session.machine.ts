@@ -148,41 +148,50 @@ export const sessionMachine = setup({
   },
   actions: {
     initializeContext: assign(({ event }) => {
-      const startEvent = SessionEventSchema.parse(event);
-      if (startEvent.type === "START_SESSION") {
-        return {
-          sessionId: crypto.randomUUID(),
-          prompt: startEvent.prompt,
-          harPath: startEvent.harPath,
-          cookiePath: startEvent.cookiePath,
-          dagManager: new DAGManagerImpl() as DAGManager,
-          workflowGroups: new Map<string, WorkflowGroup>(),
-          toBeProcessedNodes: [],
-          inProcessNodeDynamicParts: [],
-          inputVariables: {},
-          logs: [],
-        };
+      // Only validate custom events, not XState internal events
+      if (!event.type.startsWith("xstate.")) {
+        const startEvent = SessionEventSchema.parse(event);
+        if (startEvent.type === "START_SESSION") {
+          return {
+            sessionId: crypto.randomUUID(),
+            prompt: startEvent.prompt,
+            harPath: startEvent.harPath,
+            cookiePath: startEvent.cookiePath,
+            dagManager: new DAGManagerImpl() as DAGManager,
+            workflowGroups: new Map<string, WorkflowGroup>(),
+            toBeProcessedNodes: [],
+            inProcessNodeDynamicParts: [],
+            inputVariables: {},
+            logs: [],
+          };
+        }
       }
       return {};
     }),
 
     storeHarData: assign(({ event }) => {
-      const harEvent = SessionEventSchema.parse(event);
-      if (harEvent.type === "HAR_PARSED") {
-        return {
-          harData: harEvent.harData,
-          cookieData: harEvent.cookieData,
-        };
+      // XState onDone event structure: { type: 'xstate.done.actor.parseHarFiles', output: { harData, cookieData } }
+      if (event.type.startsWith("xstate.done.actor.parseHarFiles")) {
+        const doneEvent = event as any; // XState internal event types
+        if (doneEvent.output) {
+          return {
+            harData: doneEvent.output.harData,
+            cookieData: doneEvent.output.cookieData,
+          };
+        }
       }
       return {};
     }),
 
     storeWorkflows: assign(({ event }) => {
-      const workflowEvent = SessionEventSchema.parse(event);
-      if (workflowEvent.type === "WORKFLOWS_DISCOVERED") {
-        return {
-          workflowGroups: workflowEvent.workflowGroups,
-        };
+      // XState onDone event structure: { type: 'xstate.done.actor.discoverWorkflows', output: { workflowGroups } }
+      if (event.type.startsWith("xstate.done.actor.discoverWorkflows")) {
+        const doneEvent = event as any; // XState internal event types
+        if (doneEvent.output) {
+          return {
+            workflowGroups: doneEvent.output.workflowGroups,
+          };
+        }
       }
       return {};
     }),
@@ -207,11 +216,14 @@ export const sessionMachine = setup({
     }),
 
     selectWorkflow: assign(({ event }) => {
-      const selectEvent = SessionEventSchema.parse(event);
-      if (selectEvent.type === "SELECT_WORKFLOW") {
-        return {
-          activeWorkflowId: selectEvent.workflowId,
-        };
+      // Only validate custom events, not XState internal events
+      if (!event.type.startsWith("xstate.")) {
+        const selectEvent = SessionEventSchema.parse(event);
+        if (selectEvent.type === "SELECT_WORKFLOW") {
+          return {
+            activeWorkflowId: selectEvent.workflowId,
+          };
+        }
       }
       return {};
     }),
@@ -276,21 +288,27 @@ export const sessionMachine = setup({
     })),
 
     storeGeneratedCode: assign(({ event }) => {
-      const codeEvent = SessionEventSchema.parse(event);
-      if (codeEvent.type === "CODE_GENERATED") {
-        return {
-          generatedCode: codeEvent.code,
-        };
+      // XState onDone event structure: { type: 'xstate.done.actor.generateCode', output: { code } }
+      if (event.type.startsWith("xstate.done.actor.generateCode")) {
+        const doneEvent = event as any; // XState internal event types
+        if (doneEvent.output) {
+          return {
+            generatedCode: doneEvent.output.code,
+          };
+        }
       }
       return {};
     }),
 
     storeError: assign(({ event }) => {
-      const failEvent = SessionEventSchema.parse(event);
-      if (failEvent.type === "FAIL") {
-        return {
-          error: failEvent.error,
-        };
+      // Only validate custom events, not XState internal events
+      if (!event.type.startsWith("xstate.")) {
+        const failEvent = SessionEventSchema.parse(event);
+        if (failEvent.type === "FAIL") {
+          return {
+            error: failEvent.error,
+          };
+        }
       }
       return {};
     }),
@@ -446,18 +464,7 @@ export const sessionMachine = setup({
         }
 
         // Import the CodeGenerator here to avoid circular dependencies
-        const CodeGeneratorModule = await import("./CodeGenerator.js");
-        const CodeGeneratorClass = (
-          CodeGeneratorModule as unknown as {
-            CodeGenerator: new () => {
-              generateWrapperScript: (
-                session: unknown,
-                prompt: string
-              ) => Promise<string>;
-            };
-          }
-        ).CodeGenerator;
-        const codeGenerator = new CodeGeneratorClass();
+        const { generateWrapperScript } = await import("./CodeGenerator.js");
 
         // Create a temporary session for code generation
         const tempSession = {
@@ -488,10 +495,7 @@ export const sessionMachine = setup({
           },
         } as HarvestSession;
 
-        const code = await codeGenerator.generateWrapperScript(
-          tempSession,
-          context.prompt
-        );
+        const code = await generateWrapperScript(tempSession);
         return { code };
       }
     ),
