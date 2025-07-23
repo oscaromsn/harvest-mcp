@@ -1225,10 +1225,18 @@ export class HarvestMCPServer {
 
   /**
    * Handle analysis_run_initial_analysis with API key support
+   *
+   * @deprecated This method uses the legacy single-URL identification approach.
+   * New code should use the modern workflow-based analysis via handleStartPrimaryWorkflow
+   * from analysisTools.ts which provides multi-workflow discovery and better HAR analysis.
    */
 
   /**
    * Handle analysis.run_initial_analysis tool
+   *
+   * @deprecated This method uses URLIdentificationAgent for single-URL analysis.
+   * Consider migrating to the workflow discovery approach via analysis_start_primary_workflow
+   * tool which provides more robust multi-workflow analysis capabilities.
    */
   public async handleRunInitialAnalysis(
     args: unknown
