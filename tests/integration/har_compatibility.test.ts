@@ -8,7 +8,7 @@ import { manualSessionManager } from "../../src/core/ManualSessionManager.js";
 import { HarvestMCPServer } from "../../src/server.js";
 import {
   handleIsComplete,
-  handleRunInitialAnalysisWithConfig,
+  handleStartPrimaryWorkflow,
 } from "../../src/tools/analysisTools.js";
 import { handleGetUnresolvedNodes } from "../../src/tools/debugTools.js";
 import {
@@ -294,10 +294,7 @@ describe("Sprint 6: HAR → Harvest Analysis Compatibility", () => {
 
       try {
         // Run initial analysis
-        await handleRunInitialAnalysisWithConfig(
-          { sessionId },
-          server.getContext()
-        );
+        await handleStartPrimaryWorkflow({ sessionId }, server.getContext());
 
         // Check if analysis can identify URLs and create nodes
         const statusResponse = await handleIsComplete(

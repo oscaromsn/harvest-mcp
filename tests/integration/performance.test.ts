@@ -5,7 +5,7 @@ import type { HarvestMCPServer } from "../../src/server.js";
 import {
   handleIsComplete,
   handleProcessNextNode,
-  handleRunInitialAnalysisWithConfig,
+  handleStartPrimaryWorkflow,
 } from "../../src/tools/analysisTools.js";
 import { handleSessionList } from "../../src/tools/sessionTools.js";
 import {
@@ -274,10 +274,7 @@ describe("Performance Benchmarking", () => {
             )
           );
           operations.push(
-            handleRunInitialAnalysisWithConfig(
-              { sessionId },
-              server.getContext()
-            )
+            handleStartPrimaryWorkflow({ sessionId }, server.getContext())
           );
         }
       }
