@@ -72,6 +72,19 @@ export async function discoverWorkflows(
       "discover_workflows"
     );
 
+    // Debug: Log all discovered workflows and their primary endpoints
+    for (let i = 0; i < response.workflows.length; i++) {
+      const workflow = response.workflows[i];
+      if (workflow) {
+        const primaryEndpoint = workflow.endpoints.find(
+          (ep) => ep.role === "primary"
+        );
+        logger.info(
+          `Workflow ${i + 1}: ${workflow.id} - PRIMARY: ${primaryEndpoint?.method || "N/A"} ${primaryEndpoint?.url || "N/A"}`
+        );
+      }
+    }
+
     // Convert LLM response to WorkflowGroup objects
     const workflowGroups = new Map<string, WorkflowGroup>();
 
@@ -95,11 +108,17 @@ export async function discoverWorkflows(
           continue;
         }
 
-        const matchingRequests = session.harData.requests.filter(
-          (req) =>
-            req.url?.includes(endpointBaseUrl) &&
-            req.method.toUpperCase() === endpoint.method.toUpperCase()
-        );
+        const matchingRequests = session.harData.requests.filter((req) => {
+          if (
+            !req.url ||
+            req.method.toUpperCase() !== endpoint.method.toUpperCase()
+          ) {
+            return false;
+          }
+          // Extract base URL (without query parameters) for exact matching
+          const reqBaseUrl = req.url.split("?")[0];
+          return reqBaseUrl === endpointBaseUrl;
+        });
 
         for (const req of matchingRequests) {
           // We'll use request URL as a temporary node ID - this will be replaced
@@ -433,10 +452,34 @@ function createWorkflowDiscoveryPrompt(
     .map(([path, urls]) => `${path}: ${urls.length} endpoints`)
     .join("\n");
 
+  // Create frequency analysis by grouping requests by method and base URL
+  const frequencyMap = new Map<string, number>();
+  for (const request of harData.requests) {
+    if (!request.url) {
+      continue;
+    }
+
+    // Extract base URL without query parameters
+    const baseUrl = request.url.split("?")[0];
+    const key = `${request.method.toUpperCase()} ${baseUrl}`;
+    frequencyMap.set(key, (frequencyMap.get(key) || 0) + 1);
+  }
+
+  // Sort by frequency (descending) and show top endpoints
+  const frequencyAnalysis = Array.from(frequencyMap.entries())
+    .sort(([, a], [, b]) => b - a)
+    .slice(0, 15)
+    .map(([endpoint, count]) => `${endpoint} (${count} requests)`)
+    .join("\n");
+
   return `Analyze the following API endpoints and identify distinct logical workflows.
 
 ## API Endpoints (${harData.urls.length} total)
 ${urlList}
+
+## CRITICAL: Request Frequency Analysis (PRIMARY ENDPOINT INDICATOR)
+The following shows actual request frequency - higher frequency usually indicates primary endpoints:
+${frequencyAnalysis}
 
 ## Path Groupings
 ${pathGroups}
@@ -467,9 +510,42 @@ Identify distinct logical workflows from these endpoints. Consider:
 - **Document workflows**: Include viewing, downloading, copying, citing document operations  
 - **CRUD workflows**: Group create/read/update/delete operations on the same resource
 - **Authentication workflows**: Group login, token refresh, session management
-- **Primary endpoints**: The main action endpoint users would call (e.g., search endpoint in a search workflow)
-- **Secondary endpoints**: Supporting endpoints called as part of the workflow (e.g., autocomplete in search)
-- **Supporting endpoints**: Utility endpoints (e.g., getting configuration, static data)
+
+## Endpoint Role Classification (CRITICAL)
+- **Primary endpoints**: The main action endpoint users would call to accomplish the workflow's core objective
+  * Example: /api/pesquisa or /api/search (core search functionality)
+  * Example: /api/create-order (main order creation)
+  * These endpoints typically accept the most parameters and drive the workflow
+- **Secondary endpoints**: Supporting endpoints called as part of the workflow  
+  * Example: /api/pesquisa/copiarInteiroTeor (copy full text after search)
+  * Example: /api/pesquisa/citarDecisao (cite decision after search) 
+- **Supporting endpoints**: Utility endpoints for configuration, metadata, etc.
+
+## CRITICAL: Primary Endpoint Selection Rules (MUST FOLLOW)
+**The primary endpoint is the MAIN ACTION endpoint that drives the workflow - not a secondary action!**
+
+1. **MANDATORY FIRST CHECK**: Use ONLY the frequency analysis above to determine primary endpoints
+   - The endpoint with the HIGHEST request count is almost always the primary endpoint
+   - Frequency analysis is the most reliable indicator of endpoint importance
+   
+2. **Base paths ONLY**: Primary endpoints should be base paths WITHOUT sub-actions
+   - ✅ CORRECT: "/api/pesquisa" (base search endpoint)  
+   - ❌ WRONG: "/api/pesquisa/copiarInteiroTeor" (secondary copy action)
+   - ✅ CORRECT: "/api/orders" (base orders endpoint)
+   - ❌ WRONG: "/api/orders/download" (secondary download action)
+   
+3. **Method preference**: GET for search/read operations, POST for create/submit operations
+4. **Path simplicity**: Avoid sub-paths containing action words like /copy, /cite, /download, /export, /citar
+5. **Parameter complexity**: Primary endpoints typically accept the most varied parameter combinations
+6. **User workflow**: Primary endpoints are what users call FIRST to start the workflow
+
+**CONCRETE EXAMPLE FROM THIS HAR FILE:**
+Looking at the frequency analysis, you should see "GET /api/no-auth/pesquisa" with 25+ requests, which makes it the CLEAR primary endpoint. Any sub-paths like "/copiarInteiroTeor" or "/citarDecisao" are secondary actions that happen AFTER the main search.
+
+**SELECTION ALGORITHM:**
+1. Find the endpoint with highest frequency from the analysis above
+2. Verify it's a base path (not a sub-action)  
+3. That's your primary endpoint - DO NOT choose lower-frequency endpoints
 
 Prioritize workflows by:
 - User impact (search/core functionality = high priority)
@@ -486,7 +562,35 @@ Set complexity based on:
 /**
  * Update workflow groups with actual DAG node IDs after nodes are created
  * This should be called after DAG nodes have been created
+ *
+ * @param workflowGroups - Map of workflow groups to update
+ * @param dagNodeMap - Map from temporary node IDs (GET:url) to actual DAG node IDs
  */
+export function updateWorkflowGroupsWithDagNodes(
+  workflowGroups: Map<string, WorkflowGroup>,
+  dagNodeMap: Map<string, string>
+): void {
+  for (const [_workflowId, workflow] of workflowGroups.entries()) {
+    // Update master node ID if we have a mapping
+    const actualMasterNodeId = dagNodeMap.get(workflow.masterNodeId);
+    if (actualMasterNodeId) {
+      workflow.masterNodeId = actualMasterNodeId;
+    }
+
+    // Update all node IDs in the set
+    const updatedNodeIds = new Set<string>();
+    for (const tempNodeId of workflow.nodeIds) {
+      const actualNodeId = dagNodeMap.get(tempNodeId);
+      if (actualNodeId) {
+        updatedNodeIds.add(actualNodeId);
+      } else {
+        // Keep the temporary ID if no mapping found (shouldn't happen but defensive)
+        updatedNodeIds.add(tempNodeId);
+      }
+    }
+    workflow.nodeIds = updatedNodeIds;
+  }
+}
 
 /**
  * Get the most important workflow from discovered workflows
