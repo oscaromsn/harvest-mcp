@@ -1067,6 +1067,11 @@ export interface AuthToolContext
 /**
  * Unified context interface that combines all focused interfaces for backward compatibility
  * This provides all capabilities needed by legacy code while maintaining type safety
+ *
+ * @deprecated For backward compatibility. New tools should use focused contexts
+ * like SessionToolContext, AnalysisToolContext, or DebugToolContext instead of this
+ * unified context. The unified approach violates the Interface Segregation Principle
+ * and makes dependency injection less clear.
  */
 export interface UnifiedToolContext
   extends SessionManagement,
