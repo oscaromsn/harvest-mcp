@@ -58,7 +58,10 @@ describe("Performance Benchmarking", () => {
 
       for (let i = 0; i < maxIterations; i++) {
         try {
-          await handleProcessNextNode({ sessionId }, server.getContext());
+          await handleProcessNextNode(
+            { sessionId },
+            server.getAnalysisToolContext()
+          );
           iterations++;
         } catch (_error) {
           // Expected to fail at some point with mock data
@@ -105,7 +108,9 @@ describe("Performance Benchmarking", () => {
 
       // Test session list response time
       const startTime = Date.now();
-      const listResult = await handleSessionList(server.getContext());
+      const listResult = await handleSessionList(
+        server.getSessionToolContext()
+      );
       const responseTime = Date.now() - startTime;
 
       expect(responseTime).toBeLessThan(200);
@@ -123,7 +128,10 @@ describe("Performance Benchmarking", () => {
       const sessionId = await createTestSession(server);
 
       const startTime = Date.now();
-      const result = await handleIsComplete({ sessionId }, server.getContext());
+      const result = await handleIsComplete(
+        { sessionId },
+        server.getAnalysisToolContext()
+      );
       const responseTime = Date.now() - startTime;
 
       expect(responseTime).toBeLessThan(200);
@@ -270,11 +278,14 @@ describe("Performance Benchmarking", () => {
         if (sessionId) {
           operations.push(
             Promise.resolve(
-              handleIsComplete({ sessionId }, server.getContext())
+              handleIsComplete({ sessionId }, server.getAnalysisToolContext())
             )
           );
           operations.push(
-            handleStartPrimaryWorkflow({ sessionId }, server.getContext())
+            handleStartPrimaryWorkflow(
+              { sessionId },
+              server.getAnalysisToolContext()
+            )
           );
         }
       }
@@ -339,7 +350,7 @@ describe("Performance Benchmarking", () => {
       // Measure multiple identical operations
       for (let i = 0; i < 10; i++) {
         const startTime = Date.now();
-        await handleIsComplete({ sessionId }, server.getContext());
+        await handleIsComplete({ sessionId }, server.getAnalysisToolContext());
         measurements.push(Date.now() - startTime);
       }
 

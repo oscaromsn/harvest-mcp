@@ -8,7 +8,7 @@
 
 import path from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-// URLIdentificationAgent removed - integration tests now use modern workflow discovery
+// Integration tests use modern workflow discovery
 import { validateConfiguration } from "../../src/core/providers/ProviderFactory.js";
 import { SessionManager } from "../../src/core/SessionManager.js";
 import type { SessionStartParams } from "../../src/types/index.js";
@@ -29,7 +29,7 @@ describe("Jurisprudencia State Synchronization Integration Test", () => {
   beforeEach(async () => {
     sessionManager = new SessionManager();
     // Validate LLM configuration before test
-    await validateConfiguration();
+    validateConfiguration();
   });
 
   it("should maintain consistent state between URL identification and completion analysis", async () => {

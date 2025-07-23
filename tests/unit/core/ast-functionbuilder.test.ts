@@ -312,9 +312,9 @@ return { success: true, data };`;
     });
   });
 
-  describe("Template System Compatibility", () => {
-    it("should produce function structures compatible with template system", () => {
-      // Create a function that mirrors the template system output
+  describe("Generated Code Structure", () => {
+    it("should produce well-structured function code", () => {
+      // Create a function with comprehensive structure
       const parameters: ParameterDefinition[] = [
         { name: "authConfig", type: "AuthConfig", optional: true },
         { name: "searchQuery", type: "string", defaultValue: "''" },
@@ -390,7 +390,7 @@ return { success: true, data };`;
 
       const code = astProject.generateCode("test-functions.ts");
 
-      // Verify structure matches template system patterns
+      // Verify structure matches expected patterns
       expect(code).toContain("/**");
       expect(code).toContain(
         "Main API call: GET https://api.example.com/search"
@@ -407,9 +407,7 @@ return { success: true, data };`;
       expect(code).toContain("success: true,");
       expect(code).toContain("} catch (error) {");
 
-      console.log(
-        "✅ AST function output structurally compatible with template system"
-      );
+      console.log("✅ AST function output has proper structure");
     });
   });
 

@@ -1,23 +1,69 @@
+import { existsSync, readFileSync } from "fs";
+import { resolve } from "path";
 import type { MockedFunction } from "vitest";
 import { vi } from "vitest";
 import { cleanupTestBrowserPool } from "../../src/browser/BrowserPool.js";
 import { resetLLMClient } from "../../src/core/LLMClient.js";
 import { setupBrowser, teardownBrowser } from "./global-browser-setup.js";
 
+// Load .env file if it exists
+function loadDotEnv() {
+  const envPath = resolve(process.cwd(), ".env");
+  if (existsSync(envPath)) {
+    const envContent = readFileSync(envPath, "utf8");
+
+    // Parse .env file
+    for (const line of envContent.split("\n")) {
+      const trimmedLine = line.trim();
+      if (trimmedLine && !trimmedLine.startsWith("#")) {
+        const [key, ...valueParts] = trimmedLine.split("=");
+        if (key && valueParts.length > 0) {
+          const value = valueParts.join("=").trim();
+          // Only set if not already defined
+          if (!process.env[key.trim()]) {
+            process.env[key.trim()] = value;
+          }
+        }
+      }
+    }
+
+    // Map standard env vars to HARVEST_ prefixed ones for the config system
+    if (process.env.OPENAI_API_KEY && !process.env.HARVEST_OPENAI_API_KEY) {
+      process.env.HARVEST_OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+    }
+    if (process.env.GOOGLE_API_KEY && !process.env.HARVEST_GOOGLE_API_KEY) {
+      process.env.HARVEST_GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
+    }
+    if (process.env.LLM_PROVIDER && !process.env.HARVEST_LLM_PROVIDER) {
+      process.env.HARVEST_LLM_PROVIDER = process.env.LLM_PROVIDER;
+    }
+    if (process.env.LLM_MODEL && !process.env.HARVEST_LLM_MODEL) {
+      process.env.HARVEST_LLM_MODEL = process.env.LLM_MODEL;
+    }
+  }
+}
+
 // Global test environment setup
 beforeAll(async () => {
-  // Set test environment variables
+  // Load .env configuration
+  loadDotEnv();
+
+  // Set test environment variables (only if not already set from .env)
   process.env.NODE_ENV = "test";
-  process.env.OPENAI_API_KEY = "test-api-key-for-testing";
+
+  // Fallback test API key only if no real keys are configured
+  if (
+    !process.env.HARVEST_OPENAI_API_KEY &&
+    !process.env.HARVEST_GOOGLE_API_KEY
+  ) {
+    process.env.HARVEST_OPENAI_API_KEY = "test-api-key-for-testing";
+  }
 
   // Setup shared browser instance for tests
   await setupBrowser();
 });
 
 afterAll(async () => {
-  // Clean up environment
-  process.env.OPENAI_API_KEY = undefined;
-
   // Clean up shared browser resources
   await teardownBrowser();
   await cleanupTestBrowserPool();

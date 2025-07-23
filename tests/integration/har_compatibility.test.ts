@@ -149,7 +149,7 @@ describe("Sprint 6: HAR → Harvest Analysis Compatibility", () => {
           harPath: harArtifact?.path ?? "",
           prompt: "Test analysis of manual session generated HAR file",
         },
-        server.getContext()
+        server.getSessionToolContext()
       );
 
       expect(analysisResponse.content).toHaveLength(1);
@@ -159,7 +159,9 @@ describe("Sprint 6: HAR → Harvest Analysis Compatibility", () => {
       expect(analysisData.sessionId).toBeDefined();
 
       // Verify the analysis session was created successfully
-      const sessionListResponse = await handleSessionList(server.getContext());
+      const sessionListResponse = await handleSessionList(
+        server.getSessionToolContext()
+      );
       const sessionListData = JSON.parse(
         sessionListResponse.content[0]?.text as string
       );
@@ -173,7 +175,7 @@ describe("Sprint 6: HAR → Harvest Analysis Compatibility", () => {
       // Clean up analysis session
       await handleSessionDelete(
         { sessionId: analysisData.sessionId },
-        server.getContext()
+        server.getSessionToolContext()
       );
     }, 25000);
 
@@ -284,7 +286,7 @@ describe("Sprint 6: HAR → Harvest Analysis Compatibility", () => {
           harPath: harArtifact?.path ?? "",
           prompt: "Generate code for HTML page interaction workflow",
         },
-        server.getContext()
+        server.getSessionToolContext()
       );
 
       const analysisData = JSON.parse(
@@ -294,12 +296,15 @@ describe("Sprint 6: HAR → Harvest Analysis Compatibility", () => {
 
       try {
         // Run initial analysis
-        await handleStartPrimaryWorkflow({ sessionId }, server.getContext());
+        await handleStartPrimaryWorkflow(
+          { sessionId },
+          server.getAnalysisToolContext()
+        );
 
         // Check if analysis can identify URLs and create nodes
         const statusResponse = await handleIsComplete(
           { sessionId },
-          server.getContext()
+          server.getAnalysisToolContext()
         );
         const statusData = JSON.parse(
           statusResponse.content[0]?.text as string
@@ -314,7 +319,7 @@ describe("Sprint 6: HAR → Harvest Analysis Compatibility", () => {
           {
             sessionId,
           },
-          server.getContext()
+          server.getDebugToolContext()
         );
         const unresolvedData = JSON.parse(
           unresolvedResponse.content[0]?.text as string
@@ -325,7 +330,10 @@ describe("Sprint 6: HAR → Harvest Analysis Compatibility", () => {
         expect(unresolvedData.totalUnresolved).toBeGreaterThanOrEqual(0);
       } finally {
         // Clean up analysis session
-        await handleSessionDelete({ sessionId }, server.getContext());
+        await handleSessionDelete(
+          { sessionId },
+          server.getSessionToolContext()
+        );
       }
     }, 30000);
 
@@ -427,7 +435,7 @@ describe("Sprint 6: HAR → Harvest Analysis Compatibility", () => {
             harPath,
             prompt: `Analyze session ${index} workflow`,
           },
-          server.getContext()
+          server.getSessionToolContext()
         );
 
         const analysisData = JSON.parse(
@@ -438,7 +446,7 @@ describe("Sprint 6: HAR → Harvest Analysis Compatibility", () => {
         // Clean up
         await handleSessionDelete(
           { sessionId: analysisData.sessionId },
-          server.getContext()
+          server.getSessionToolContext()
         );
       }
     }, 45000);

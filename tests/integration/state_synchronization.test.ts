@@ -26,7 +26,7 @@ describe("State Synchronization", () => {
         harPath: testHarPath,
         prompt: "Test session for state synchronization",
       },
-      server.getContext()
+      server.getSessionToolContext()
     );
 
     // Extract session ID from server response
@@ -174,7 +174,7 @@ describe("State Synchronization", () => {
         {
           sessionId: testSessionId,
         },
-        server.getContext()
+        server.getCodegenToolContext()
       );
 
       expect(result).toHaveProperty("content");
@@ -221,7 +221,7 @@ describe("State Synchronization", () => {
           {
             sessionId: testSessionId,
           },
-          server.getContext()
+          server.getCodegenToolContext()
         );
 
         // Should not throw and return valid code
@@ -269,7 +269,7 @@ describe("State Synchronization", () => {
       try {
         await handleGenerateWrapperScript(
           { sessionId: testSessionId },
-          server.getContext()
+          server.getCodegenToolContext()
         );
         // Should not reach here
         expect(true).toBe(false);

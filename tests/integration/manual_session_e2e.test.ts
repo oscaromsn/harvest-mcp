@@ -74,7 +74,7 @@ describe("Sprint 5.4: End-to-End Manual Session Workflow", () => {
             timeout: 2, // 2 minute timeout for testing
           },
         },
-        server.getContext()
+        server.getManualSessionToolContext()
       );
 
       expect(startResponse.content).toHaveLength(1);
@@ -88,7 +88,9 @@ describe("Sprint 5.4: End-to-End Manual Session Workflow", () => {
       const sessionId = startData.sessionId;
 
       // Step 2: Verify session is active
-      const listResponse = await handleListManualSessions(server.getContext());
+      const listResponse = await handleListManualSessions(
+        server.getManualSessionToolContext()
+      );
       const listData = parseToolResponse(listResponse);
       expect(listData.success).toBe(true);
       expect(listData.totalSessions).toBe(1);
@@ -104,7 +106,7 @@ describe("Sprint 5.4: End-to-End Manual Session Workflow", () => {
           takeScreenshot: true,
           reason: "test_completion",
         },
-        server.getContext()
+        server.getManualSessionToolContext()
       );
 
       expect(stopResponse.content).toHaveLength(1);
@@ -161,7 +163,7 @@ describe("Sprint 5.4: End-to-End Manual Session Workflow", () => {
 
       // Step 8: Verify no active sessions remain
       const finalListResponse = await handleListManualSessions(
-        server.getContext()
+        server.getManualSessionToolContext()
       );
       const finalListData = parseToolResponse(finalListResponse);
       expect(finalListData.totalSessions).toBe(0);
@@ -185,7 +187,7 @@ describe("Sprint 5.4: End-to-End Manual Session Workflow", () => {
             timeout: 2, // Increased timeout
           },
         },
-        server.getContext()
+        server.getManualSessionToolContext()
       );
 
       const startData = parseToolResponse(startResponse);
@@ -204,7 +206,7 @@ describe("Sprint 5.4: End-to-End Manual Session Workflow", () => {
             sessionId,
             reason: "url_test_completion",
           },
-          server.getContext()
+          server.getManualSessionToolContext()
         );
       } catch (error) {
         // If we get an execution context error, the session might have been terminated
@@ -348,7 +350,7 @@ describe("Sprint 5.4: End-to-End Manual Session Workflow", () => {
               harPath: harArtifact?.path ?? "",
               prompt: "Test analysis of manual session generated HAR file",
             },
-            server.getContext()
+            server.getManualSessionToolContext()
           );
 
           expect(analysisResponse.content).toHaveLength(1);
@@ -360,7 +362,7 @@ describe("Sprint 5.4: End-to-End Manual Session Workflow", () => {
             {
               sessionId: analysisData.sessionId,
             },
-            server.getContext()
+            server.getManualSessionToolContext()
           );
         } catch (_error) {
           // Analysis may fail due to various reasons, but HAR validation above should pass
@@ -399,7 +401,7 @@ describe("Sprint 5.4: End-to-End Manual Session Workflow", () => {
               },
             },
           },
-          server.getContext()
+          server.getManualSessionToolContext()
         );
       }).toThrow(/Invalid parameters for manual session start/);
     });
@@ -412,7 +414,7 @@ describe("Sprint 5.4: End-to-End Manual Session Workflow", () => {
           {
             sessionId: fakeSessionId,
           },
-          server.getContext()
+          server.getManualSessionToolContext()
         );
       }).toThrow(/Manual session not found/);
     });
@@ -437,7 +439,7 @@ describe("Sprint 5.4: End-to-End Manual Session Workflow", () => {
           artifactTypes: ["cookies"], // Only request cookies
           reason: "artifact_filter_test",
         },
-        server.getContext()
+        server.getManualSessionToolContext()
       );
 
       const stopData = parseToolResponse(stopResponse);

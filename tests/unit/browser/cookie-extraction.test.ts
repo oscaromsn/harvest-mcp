@@ -122,9 +122,8 @@ describe("Cookie Extraction", () => {
     expect(parsedCookies).toBeDefined();
     expect(typeof parsedCookies).toBe("object");
 
-    // The existing CookieParser expects a different format
-    // Our enhanced format should be backward compatible when needed
-    // For now, verify it contains expected cookies in the enhanced format
+    // Verify the extracted cookies are in the expected enhanced format
+    // The CookieParser handles this format natively (supports both array and object formats)
     const cookieContent = await readFile(outputPath, "utf-8");
     const cookieData = JSON.parse(cookieContent);
 

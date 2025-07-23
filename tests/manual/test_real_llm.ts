@@ -168,7 +168,7 @@ async function testRealLLMIntegration() {
     const session = sessionManager.getSession(sessionId);
 
     console.log(
-      `Session has ${session.harData.urls.length} URLs and ${session.harData.requests.length} requests`
+      `✅ Session has ${session.harData.urls.length} URLs and ${session.harData.requests.length} requests`
     );
 
     if (session.harData.urls.length > 0) {

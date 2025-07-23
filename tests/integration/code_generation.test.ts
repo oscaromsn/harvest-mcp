@@ -100,7 +100,7 @@ describe("Code Generation Integration Tests", () => {
       // Call the code generation tool
       const result = await handleGenerateWrapperScript(
         { sessionId },
-        server.getContext()
+        server.getCodegenToolContext()
       );
 
       const generatedCode = result.content?.[0]?.text as string;
@@ -139,7 +139,10 @@ describe("Code Generation Integration Tests", () => {
     it("should store generated code in session state", async () => {
       expect(session.state.generatedCode).toBeUndefined();
 
-      await handleGenerateWrapperScript({ sessionId }, server.getContext());
+      await handleGenerateWrapperScript(
+        { sessionId },
+        server.getCodegenToolContext()
+      );
 
       expect(session.state.generatedCode).toBeDefined();
       expect(session.state.generatedCode).toContain("async function");
@@ -158,7 +161,10 @@ describe("Code Generation Integration Tests", () => {
       }
 
       await expect(
-        handleGenerateWrapperScript({ sessionId }, server.getContext())
+        handleGenerateWrapperScript(
+          { sessionId },
+          server.getCodegenToolContext()
+        )
       ).rejects.toThrow(
         "Code generation failed - analysis prerequisites not met"
       );
@@ -167,7 +173,7 @@ describe("Code Generation Integration Tests", () => {
     it("should include proper session metadata in generated code", async () => {
       const result = await handleGenerateWrapperScript(
         { sessionId },
-        server.getContext()
+        server.getCodegenToolContext()
       );
       const generatedCode = result.content?.[0]?.text as string;
       if (!generatedCode) {
@@ -185,7 +191,10 @@ describe("Code Generation Integration Tests", () => {
   describe("harvest://{sessionId}/generated_code.ts resource", () => {
     it("should return generated code after generation", async () => {
       // Generate code first
-      await handleGenerateWrapperScript({ sessionId }, server.getContext());
+      await handleGenerateWrapperScript(
+        { sessionId },
+        server.getCodegenToolContext()
+      );
 
       // Check that generated code is stored in session
       expect(session.state.generatedCode).toBeDefined();
@@ -199,7 +208,10 @@ describe("Code Generation Integration Tests", () => {
 
     it("should provide access to generated code via session state", async () => {
       // Generate code
-      await handleGenerateWrapperScript({ sessionId }, server.getContext());
+      await handleGenerateWrapperScript(
+        { sessionId },
+        server.getCodegenToolContext()
+      );
 
       // Verify code is accessible
       const generatedCode = session.state.generatedCode;
@@ -212,7 +224,7 @@ describe("Code Generation Integration Tests", () => {
     it("should generate executable TypeScript code", async () => {
       const result = await handleGenerateWrapperScript(
         { sessionId },
-        server.getContext()
+        server.getCodegenToolContext()
       );
       const generatedCode = result.content?.[0]?.text as string;
       if (!generatedCode) {
@@ -276,7 +288,7 @@ describe("Code Generation Integration Tests", () => {
 
       const result = await handleGenerateWrapperScript(
         { sessionId },
-        server.getContext()
+        server.getCodegenToolContext()
       );
       const generatedCode = result.content?.[0]?.text as string;
       if (!generatedCode) {
@@ -316,7 +328,7 @@ describe("Code Generation Integration Tests", () => {
 
       const result = await handleGenerateWrapperScript(
         { sessionId },
-        server.getContext()
+        server.getCodegenToolContext()
       );
       const generatedCode = result.content?.[0]?.text as string;
       if (!generatedCode) {
@@ -335,7 +347,7 @@ describe("Code Generation Integration Tests", () => {
 
       const result = await handleGenerateWrapperScript(
         { sessionId },
-        server.getContext()
+        server.getCodegenToolContext()
       );
       const generatedCode = result.content?.[0]?.text as string;
       if (!generatedCode) {
@@ -354,7 +366,10 @@ describe("Code Generation Integration Tests", () => {
     it("should generate code quickly for typical sessions", async () => {
       const startTime = Date.now();
 
-      await handleGenerateWrapperScript({ sessionId }, server.getContext());
+      await handleGenerateWrapperScript(
+        { sessionId },
+        server.getCodegenToolContext()
+      );
 
       const duration = Date.now() - startTime;
       expect(duration).toBeLessThan(1000); // Should complete in under 1 second
@@ -363,7 +378,7 @@ describe("Code Generation Integration Tests", () => {
     it("should generate consistent code for the same session", async () => {
       const result1 = await handleGenerateWrapperScript(
         { sessionId },
-        server.getContext()
+        server.getCodegenToolContext()
       );
       const code1 = result1.content?.[0]?.text as string;
       if (!code1) {
@@ -373,7 +388,7 @@ describe("Code Generation Integration Tests", () => {
       // Generate again
       const result2 = await handleGenerateWrapperScript(
         { sessionId },
-        server.getContext()
+        server.getCodegenToolContext()
       );
       const code2 = result2.content?.[0]?.text as string;
       if (!code2) {
@@ -408,7 +423,7 @@ describe("Code Generation Integration Tests", () => {
       const startTime = Date.now();
       const result = await handleGenerateWrapperScript(
         { sessionId },
-        server.getContext()
+        server.getCodegenToolContext()
       );
       const duration = Date.now() - startTime;
 

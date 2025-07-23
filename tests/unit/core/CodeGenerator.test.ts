@@ -148,8 +148,7 @@ describe("CodeGenerator", () => {
     it("should generate proper variable extraction from responses", async () => {
       const code = await generateWrapperScript(session);
 
-      // The AST-based code generator should include some form of data extraction
-      // (Note: The specific implementation may differ from template-based approach)
+      // The AST-based code generator should include proper data extraction
       expect(code).toContain("API request"); // Basic structure verification
       expect(typeof code).toBe("string");
     });

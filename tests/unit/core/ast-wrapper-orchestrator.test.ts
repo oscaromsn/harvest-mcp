@@ -211,11 +211,11 @@ describe("AST WrapperScriptOrchestrator", () => {
     });
   });
 
-  describe("Backward Compatibility", () => {
-    it("should maintain similar structure to template-based generation", async () => {
+  describe("Generated Code Structure", () => {
+    it("should generate well-structured wrapper code", async () => {
       const result = await orchestrator.generateWrapperScript(mockSession);
 
-      // Should have similar patterns to existing generated code
+      // Should have proper code structure patterns
       expect(result).toContain("/**"); // JSDoc documentation
       expect(result).toContain("async function"); // Async functions
       expect(result).toContain("Promise"); // Promise return types

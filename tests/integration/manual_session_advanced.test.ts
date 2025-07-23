@@ -64,7 +64,7 @@ describe("Sprint 5.5: Advanced Manual Session Integration", () => {
             },
           },
         },
-        server.getContext()
+        server.getManualSessionToolContext()
       );
 
       const minData = parseToolResponse(minResponse);
@@ -76,7 +76,7 @@ describe("Sprint 5.5: Advanced Manual Session Integration", () => {
             sessionId: minData.sessionId,
             reason: "boundary_test",
           },
-          server.getContext()
+          server.getManualSessionToolContext()
         );
       } catch (_error) {
         // Ignore cleanup errors - test focuses on viewport validation
@@ -97,7 +97,7 @@ describe("Sprint 5.5: Advanced Manual Session Integration", () => {
             },
           },
         },
-        server.getContext()
+        server.getManualSessionToolContext()
       );
 
       const maxData = parseToolResponse(maxResponse);
@@ -109,7 +109,7 @@ describe("Sprint 5.5: Advanced Manual Session Integration", () => {
             sessionId: maxData.sessionId,
             reason: "boundary_test",
           },
-          server.getContext()
+          server.getManualSessionToolContext()
         );
       } catch (_error) {
         // Ignore cleanup errors - test focuses on viewport validation
@@ -132,7 +132,7 @@ describe("Sprint 5.5: Advanced Manual Session Integration", () => {
             },
           },
         },
-        server.getContext()
+        server.getManualSessionToolContext()
       );
 
       const data = parseToolResponse(response);
@@ -143,7 +143,7 @@ describe("Sprint 5.5: Advanced Manual Session Integration", () => {
           sessionId: data.sessionId,
           reason: "scale_test",
         },
-        server.getContext()
+        server.getManualSessionToolContext()
       );
     }, 10000);
 
@@ -158,7 +158,7 @@ describe("Sprint 5.5: Advanced Manual Session Integration", () => {
             },
           },
         },
-        server.getContext()
+        server.getManualSessionToolContext()
       );
 
       const data = parseToolResponse(response);
@@ -170,7 +170,7 @@ describe("Sprint 5.5: Advanced Manual Session Integration", () => {
             sessionId: data.sessionId,
             reason: "url_test",
           },
-          server.getContext()
+          server.getManualSessionToolContext()
         );
       } catch (_error) {
         // Ignore cleanup errors
@@ -182,7 +182,7 @@ describe("Sprint 5.5: Advanced Manual Session Integration", () => {
           {
             url: "not://a-url-at-all", // Invalid protocol
           },
-          server.getContext()
+          server.getManualSessionToolContext()
         );
       }).toThrow();
     }, 10000);
@@ -199,7 +199,7 @@ describe("Sprint 5.5: Advanced Manual Session Integration", () => {
             },
           },
         },
-        server.getContext()
+        server.getManualSessionToolContext()
       );
 
       const data = parseToolResponse(response);
@@ -210,7 +210,7 @@ describe("Sprint 5.5: Advanced Manual Session Integration", () => {
           sessionId: data.sessionId,
           reason: "timeout_boundary_test",
         },
-        server.getContext()
+        server.getManualSessionToolContext()
       );
 
       // Test invalid timeout (too large)
@@ -221,7 +221,7 @@ describe("Sprint 5.5: Advanced Manual Session Integration", () => {
               timeout: 1441, // Exceeds maximum
             },
           },
-          server.getContext()
+          server.getManualSessionToolContext()
         );
       }).toThrow(/Timeout cannot exceed 24 hours/);
     }, 10000);
@@ -247,7 +247,7 @@ describe("Sprint 5.5: Advanced Manual Session Integration", () => {
               },
             },
           },
-          server.getContext()
+          server.getManualSessionToolContext()
         );
 
         const data = parseToolResponse(response);
@@ -259,7 +259,9 @@ describe("Sprint 5.5: Advanced Manual Session Integration", () => {
       expect(new Set(sessionIds).size).toBe(2); // All unique
 
       // Verify session list shows all sessions
-      const listResponse = await handleListManualSessions(server.getContext());
+      const listResponse = await handleListManualSessions(
+        server.getManualSessionToolContext()
+      );
       const listData = parseToolResponse(listResponse);
       expect(listData.totalSessions).toBe(2);
 
@@ -271,7 +273,7 @@ describe("Sprint 5.5: Advanced Manual Session Integration", () => {
               sessionId,
               reason: "concurrent_test_cleanup",
             },
-            server.getContext()
+            server.getManualSessionToolContext()
           );
 
           const stopData = parseToolResponse(stopResponse);
@@ -283,7 +285,7 @@ describe("Sprint 5.5: Advanced Manual Session Integration", () => {
 
       // Verify no sessions remain
       const finalListResponse = await handleListManualSessions(
-        server.getContext()
+        server.getManualSessionToolContext()
       );
       const finalListData = parseToolResponse(finalListResponse);
       expect(finalListData.totalSessions).toBe(0);
@@ -300,14 +302,16 @@ describe("Sprint 5.5: Advanced Manual Session Integration", () => {
             },
           },
         },
-        server.getContext()
+        server.getManualSessionToolContext()
       );
 
       const data = parseToolResponse(response);
       const sessionId = data.sessionId;
 
       // Verify session is active
-      const listResponse = await handleListManualSessions(server.getContext());
+      const listResponse = await handleListManualSessions(
+        server.getManualSessionToolContext()
+      );
       const listData = parseToolResponse(listResponse);
       expect(listData.totalSessions).toBe(1);
 
@@ -316,7 +320,7 @@ describe("Sprint 5.5: Advanced Manual Session Integration", () => {
 
       // Verify session is cleaned up
       const finalListResponse = await handleListManualSessions(
-        server.getContext()
+        server.getManualSessionToolContext()
       );
       const finalListData = parseToolResponse(finalListResponse);
       expect(finalListData.totalSessions).toBe(0);
@@ -333,7 +337,7 @@ describe("Sprint 5.5: Advanced Manual Session Integration", () => {
             },
           },
         },
-        server.getContext()
+        server.getManualSessionToolContext()
       );
 
       const startData = parseToolResponse(response);
@@ -346,7 +350,7 @@ describe("Sprint 5.5: Advanced Manual Session Integration", () => {
           sessionId,
           reason: "disabled_artifacts_test",
         },
-        server.getContext()
+        server.getManualSessionToolContext()
       );
 
       const stopData = parseToolResponse(stopResponse);
@@ -367,7 +371,7 @@ describe("Sprint 5.5: Advanced Manual Session Integration", () => {
             },
           },
         },
-        server.getContext()
+        server.getManualSessionToolContext()
       );
 
       const startData = parseToolResponse(response);
@@ -379,7 +383,7 @@ describe("Sprint 5.5: Advanced Manual Session Integration", () => {
           artifactTypes: ["cookies", "screenshot"], // Only request specific types
           reason: "selective_artifacts_test",
         },
-        server.getContext()
+        server.getManualSessionToolContext()
       );
 
       const stopData = parseToolResponse(stopResponse);
@@ -415,7 +419,7 @@ describe("Sprint 5.5: Advanced Manual Session Integration", () => {
               },
             },
           },
-          server.getContext()
+          server.getManualSessionToolContext()
         );
       }).toThrow(/Output directory path cannot contain/);
     });
@@ -432,7 +436,7 @@ describe("Sprint 5.5: Advanced Manual Session Integration", () => {
             },
           },
         },
-        server.getContext()
+        server.getManualSessionToolContext()
       );
 
       const startData = parseToolResponse(response);
@@ -447,7 +451,7 @@ describe("Sprint 5.5: Advanced Manual Session Integration", () => {
             sessionId,
             reason: "duration_test",
           },
-          server.getContext()
+          server.getManualSessionToolContext()
         );
 
         const stopData = parseToolResponse(stopResponse);
@@ -471,7 +475,7 @@ describe("Sprint 5.5: Advanced Manual Session Integration", () => {
             },
           },
         },
-        server.getContext()
+        server.getManualSessionToolContext()
       );
 
       const startData = parseToolResponse(response);
@@ -483,7 +487,9 @@ describe("Sprint 5.5: Advanced Manual Session Integration", () => {
       expect(sessionInfo?.id).toBe(sessionId);
 
       // Test listing sessions
-      const listResponse = await handleListManualSessions(server.getContext());
+      const listResponse = await handleListManualSessions(
+        server.getManualSessionToolContext()
+      );
       const listData = parseToolResponse(listResponse);
       expect(listData.sessions[0]?.id).toBe(sessionId);
       expect(listData.summary.totalActiveSessions).toBe(1);
@@ -494,7 +500,7 @@ describe("Sprint 5.5: Advanced Manual Session Integration", () => {
             sessionId,
             reason: "info_query_test",
           },
-          server.getContext()
+          server.getManualSessionToolContext()
         );
       } catch (_error) {
         // Ignore cleanup errors
@@ -517,7 +523,7 @@ describe("Sprint 5.5: Advanced Manual Session Integration", () => {
               },
             },
           },
-          server.getContext()
+          server.getManualSessionToolContext()
         );
       }).toThrow(/Viewport width must be at least/);
     });
@@ -531,7 +537,7 @@ describe("Sprint 5.5: Advanced Manual Session Integration", () => {
               timeout: "not-a-number" as any,
             },
           },
-          server.getContext()
+          server.getManualSessionToolContext()
         );
       }).toThrow(/Invalid parameters for manual session start/);
 
@@ -546,7 +552,7 @@ describe("Sprint 5.5: Advanced Manual Session Integration", () => {
               },
             },
           },
-          server.getContext()
+          server.getManualSessionToolContext()
         );
       }).toThrow(/Auto-screenshot interval must be at least/);
     });
@@ -564,7 +570,7 @@ describe("Sprint 5.5: Advanced Manual Session Integration", () => {
           {
             sessionId: fakeSessionId,
           },
-          server.getContext()
+          server.getManualSessionToolContext()
         );
       }).toThrow(/Manual session not found/);
     });
@@ -586,7 +592,7 @@ describe("Sprint 5.5: Advanced Manual Session Integration", () => {
               },
             },
           },
-          server.getContext()
+          server.getManualSessionToolContext()
         );
 
         const data = parseToolResponse(response);
@@ -595,7 +601,9 @@ describe("Sprint 5.5: Advanced Manual Session Integration", () => {
       }
 
       // Verify all sessions are tracked
-      const listResponse = await handleListManualSessions(server.getContext());
+      const listResponse = await handleListManualSessions(
+        server.getManualSessionToolContext()
+      );
       const listData = parseToolResponse(listResponse);
       expect(listData.totalSessions).toBe(sessionCount);
 
@@ -606,7 +614,7 @@ describe("Sprint 5.5: Advanced Manual Session Integration", () => {
             sessionId,
             reason: "rapid_cleanup_test",
           },
-          server.getContext()
+          server.getManualSessionToolContext()
         );
 
         const stopData = parseToolResponse(stopResponse);
@@ -615,7 +623,7 @@ describe("Sprint 5.5: Advanced Manual Session Integration", () => {
 
       // Verify all sessions are cleaned up
       const finalListResponse = await handleListManualSessions(
-        server.getContext()
+        server.getManualSessionToolContext()
       );
       const finalListData = parseToolResponse(finalListResponse);
       expect(finalListData.totalSessions).toBe(0);

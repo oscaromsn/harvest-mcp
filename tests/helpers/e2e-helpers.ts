@@ -91,7 +91,7 @@ export async function createTestSession(
       cookiePath,
       prompt,
     },
-    server.getContext()
+    server.getSessionToolContext()
   );
 
   const firstContent = sessionResult.content?.[0];
@@ -111,7 +111,7 @@ export async function runInitialAnalysis(
   server: HarvestMCPServer,
   sessionId: string
 ): Promise<{ masterNodeId: string; actionUrl: string }> {
-  // Use modern workflow analysis instead of deprecated handleRunInitialAnalysis
+  // Use modern workflow analysis
   const analysisToolContext = server.getAnalysisToolContext();
   const initialAnalysisResult = await handleStartPrimaryWorkflow(
     { sessionId },

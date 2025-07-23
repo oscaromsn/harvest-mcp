@@ -15,7 +15,7 @@ import type {
  */
 
 export const DEFAULT_MOCK_RESPONSES = {
-  // URLIdentificationAgent removed - modern workflow discovery handles URL identification
+  // Modern workflow discovery handles URL identification
   identify_end_url: {
     url: "https://api.example.com/search" as const,
   },

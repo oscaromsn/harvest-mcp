@@ -263,14 +263,14 @@ describe("AST TypeBuilder", () => {
     });
   });
 
-  describe("Integration with Template System", () => {
-    it("should generate types that match template system output structure", () => {
+  describe("Generated Type Structure", () => {
+    it("should generate well-structured type definitions", () => {
       // Generate standard types
       typeBuilder.generateStandardTypes();
 
       const code = astProject.generateCode("test-types.ts");
 
-      // Verify the structure matches what the template system would generate
+      // Verify the structure matches expected patterns
       expect(code).toContain("interface ApiResponse<T = any>");
       expect(code).toContain("success: boolean");
       expect(code).toContain("data: T");
@@ -283,11 +283,11 @@ describe("AST TypeBuilder", () => {
       expect(code).toContain("interface AuthConfig");
       expect(code).toContain("class AuthenticationError extends Error");
 
-      console.log("✅ Generated types match template system structure");
+      console.log("✅ Generated types have proper structure");
     });
 
-    it("should support all type patterns used in existing generated code", () => {
-      // Create types that mirror the template system patterns
+    it("should support comprehensive type patterns", () => {
+      // Create types with various patterns
       typeBuilder
         .interface("SearchParams")
         .addProperty({ name: "query", type: "string" })
@@ -308,7 +308,7 @@ describe("AST TypeBuilder", () => {
         "export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE'"
       );
 
-      console.log("✅ All template system type patterns supported");
+      console.log("✅ All type patterns supported");
     });
   });
 

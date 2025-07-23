@@ -32,7 +32,7 @@ describe("One-Shot Prompt Integration Tests", () => {
           cookiePath: "tests/fixtures/test-data/pangea_cookies.json",
           prompt: "Search and download documents",
         },
-        server.getContext()
+        server.getSessionToolContext()
       );
 
       const sessionId = JSON.parse(
@@ -92,7 +92,7 @@ describe("One-Shot Prompt Integration Tests", () => {
       // Simulate what would happen in a successful automated analysis
       const result = await handleGenerateWrapperScript(
         { sessionId },
-        server.getContext()
+        server.getCodegenToolContext()
       );
       const generatedCode = result.content?.[0]?.text as string;
       if (!generatedCode) {
@@ -124,7 +124,7 @@ describe("One-Shot Prompt Integration Tests", () => {
             harPath: invalidParams.har_path,
             prompt: invalidParams.prompt,
           },
-          server.getContext()
+          server.getSessionToolContext()
         );
       } catch (error) {
         expect(error).toBeDefined();
@@ -141,7 +141,7 @@ describe("One-Shot Prompt Integration Tests", () => {
           cookiePath: "tests/fixtures/test-data/pangea_cookies.json",
           prompt: "Progress tracking test",
         },
-        server.getContext()
+        server.getSessionToolContext()
       );
 
       const sessionId = JSON.parse(
@@ -177,7 +177,7 @@ describe("One-Shot Prompt Integration Tests", () => {
           cookiePath: "tests/fixtures/test-data/pangea_cookies.json",
           prompt: "Results summary test",
         },
-        server.getContext()
+        server.getSessionToolContext()
       );
 
       const sessionId = JSON.parse(
@@ -218,7 +218,7 @@ describe("One-Shot Prompt Integration Tests", () => {
         {
           sessionId,
         },
-        server.getContext()
+        server.getCodegenToolContext()
       );
       const generatedCode = codeResult.content?.[0]?.text as string;
       if (!generatedCode) {
@@ -267,7 +267,7 @@ ${generatedCode}
           cookiePath: "tests/fixtures/test-data/pangea_cookies.json",
           prompt: "Debug information test",
         },
-        server.getContext()
+        server.getSessionToolContext()
       );
 
       const sessionId = JSON.parse(
@@ -305,7 +305,10 @@ ${generatedCode}
 
       // Try to generate code - should fail
       try {
-        await handleGenerateWrapperScript({ sessionId }, server.getContext());
+        await handleGenerateWrapperScript(
+          { sessionId },
+          server.getCodegenToolContext()
+        );
       } catch (error) {
         expect(error).toBeDefined();
         expect((error as Error).message).toContain("analysis not complete");
@@ -316,7 +319,7 @@ ${generatedCode}
         {
           sessionId,
         },
-        server.getContext()
+        server.getDebugToolContext()
       );
       const unresolvedData = JSON.parse(
         unresolvedResult.content?.[0]?.text as string
@@ -339,7 +342,7 @@ ${generatedCode}
           harPath: "tests/fixtures/test-data/pangea_search.har",
           prompt: "Minimal parameters test",
         },
-        server.getContext()
+        server.getSessionToolContext()
       );
 
       const minimalSessionId = JSON.parse(
@@ -355,7 +358,7 @@ ${generatedCode}
           prompt: "Variables test",
           inputVariables: { user_id: "12345", api_key: "test_key" },
         },
-        server.getContext()
+        server.getSessionToolContext()
       );
 
       const variablesSessionId = JSON.parse(
@@ -391,7 +394,7 @@ ${generatedCode}
           cookiePath: "tests/fixtures/test-data/pangea_cookies.json",
           prompt: "Complete workflow demonstration",
         },
-        server.getContext()
+        server.getSessionToolContext()
       );
 
       const sessionId = JSON.parse(
@@ -451,7 +454,7 @@ ${generatedCode}
         {
           sessionId,
         },
-        server.getContext()
+        server.getCodegenToolContext()
       );
       const generatedCode = codeResult.content?.[0]?.text as string;
       if (!generatedCode) {

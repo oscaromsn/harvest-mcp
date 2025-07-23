@@ -15,7 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { findDependencies } from "../../src/agents/DependencyAgent.js";
 import { identifyDynamicParts } from "../../src/agents/DynamicPartsAgent.js";
 import { identifyInputVariables } from "../../src/agents/InputVariablesAgent.js";
-// URLIdentificationAgent removed - integration tests now use modern workflow discovery
+// Integration tests use modern workflow discovery
 import type { LLMClient } from "../../src/core/LLMClient.js";
 import { resetLLMClient, setLLMClient } from "../../src/core/LLMClient.js";
 import { SessionManager } from "../../src/core/SessionManager.js";
