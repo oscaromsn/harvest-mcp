@@ -72,7 +72,6 @@ src/
 │   └── Request.ts          # HTTP request representation with headers, body, etc.
 ├── browser/            # Browser automation components
 │   ├── types.ts             # Browser-specific type definitions and interfaces
-│   ├── BrowserAgent.ts      # Browser automation interface (legacy)
 │   ├── BrowserProvider.ts   # Browser instance provider
 │   ├── logger.ts           # Browser operation logging
 │   └── AgentFactory.ts     # Browser agent creation utilities
@@ -119,7 +118,8 @@ tests/
    - `ManualSessionManager`: Manual browser session lifecycle management
    - `ArtifactCollector`: Real-time HAR, cookie, and screenshot collection
    - `BrowserAgentFactory`: Browser instance creation with Playwright
-   - `BrowserAgent`: Browser automation interface
+   - `BrowserProvider`: Browser instance provider
+   - `AgentFactory`: Browser agent creation utilities
 
 ### Session State Flow
 ```
