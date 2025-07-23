@@ -281,7 +281,7 @@ export interface HarvestSession {
   workflowGroups?: Map<string, WorkflowGroup> | undefined;
   selectedWorkflowId?: string | undefined;
   /** XState FSM interpreter instance for managing session state transitions */
-  fsm?: import("../core/SessionFsmService.js").SessionActor | undefined;
+  fsm: import("../core/SessionFsmService.js").SessionActor;
 }
 
 export interface SessionState {
@@ -500,13 +500,6 @@ export interface InputVariablesResponse {
 export interface InputVariablesResult {
   identifiedVariables: Record<string, string>;
   removedDynamicParts: string[];
-}
-
-/**
- * LLM response for simplest request selection
- */
-export interface SimplestRequestResponse {
-  index: number;
 }
 
 /**
@@ -1143,8 +1136,7 @@ export class SessionManagerAdapter
   }
 
   setMasterNodeId(sessionId: string, nodeId: string): void {
-    const session = this.getSession(sessionId);
-    session.state.masterNodeId = nodeId;
+    this.sessionManager.setMasterNodeId(sessionId, nodeId);
   }
 
   // ISessionManager compatibility methods
@@ -1153,8 +1145,27 @@ export class SessionManagerAdapter
   }
 
   setActionUrl(sessionId: string, url: string): void {
-    const session = this.getSession(sessionId);
-    session.state.actionUrl = url;
+    this.sessionManager.setActionUrl(sessionId, url);
+  }
+
+  // FSM access methods
+  getFsmContext(sessionId: string) {
+    return this.sessionManager.getFsmContext(sessionId);
+  }
+
+  getFsmService() {
+    return this.sessionManager.getFsmService();
+  }
+
+  getFsmState(sessionId: string): string {
+    return this.sessionManager.getFsmState(sessionId);
+  }
+
+  sendFsmEvent(
+    sessionId: string,
+    event: { type: string; [key: string]: unknown }
+  ): void {
+    this.sessionManager.sendFsmEvent(sessionId, event);
   }
 
   updateSessionState(sessionId: string, updates: Partial<SessionState>): void {

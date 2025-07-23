@@ -6,7 +6,6 @@ import type {
 import type {
   DynamicPartsResponse,
   InputVariablesResponse,
-  SimplestRequestResponse,
 } from "../../src/types/index.js";
 
 /**
@@ -15,11 +14,6 @@ import type {
  */
 
 export const DEFAULT_MOCK_RESPONSES = {
-  // Modern workflow discovery handles URL identification
-  identify_end_url: {
-    url: "https://api.example.com/search" as const,
-  },
-
   identify_dynamic_parts: {
     dynamic_parts: ["auth_token", "user_id", "session_key"],
   } as DynamicPartsResponse,
@@ -30,10 +24,6 @@ export const DEFAULT_MOCK_RESPONSES = {
       { variable_name: "user_input", variable_value: "test_value" },
     ],
   } as InputVariablesResponse,
-
-  get_simplest_curl_index: {
-    index: 0,
-  } as SimplestRequestResponse,
 };
 
 /**
@@ -57,14 +47,10 @@ export const createMockLLMClient = (
         await new Promise((resolve) => setTimeout(resolve, 10));
 
         switch (functionName) {
-          case "identify_end_url":
-            return responses.identify_end_url;
           case "identify_dynamic_parts":
             return responses.identify_dynamic_parts;
           case "identify_input_variables":
             return responses.identify_input_variables;
-          case "get_simplest_curl_index":
-            return responses.get_simplest_curl_index;
           default:
             throw new Error(`Unknown function: ${functionName}`);
         }
