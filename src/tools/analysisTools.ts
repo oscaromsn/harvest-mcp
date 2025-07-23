@@ -1,6 +1,17 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+
+/**
+ * Extract URL from temporary masterNodeId format (e.g., "GET:https://example.com/api")
+ */
+function extractUrlFromMasterNodeId(masterNodeId: string): string | null {
+  if (masterNodeId.includes(":")) {
+    return masterNodeId.split(":", 2)[1] || null;
+  }
+  return masterNodeId;
+}
+
 import { findDependencies } from "../agents/DependencyAgent.js";
 import { identifyDynamicParts } from "../agents/DynamicPartsAgent.js";
 import { identifyInputVariables } from "../agents/InputVariablesAgent.js";
@@ -16,6 +27,9 @@ import {
   type HarvestSession,
   SessionIdSchema,
 } from "../types/index.js";
+import { createComponentLogger } from "../utils/logger.js";
+
+const logger = createComponentLogger("analysis-tools");
 
 /**
  * Handle analysis.process_next_node tool
@@ -36,6 +50,12 @@ export async function handleProcessNextNode(
     // Check if there are nodes available for processing
     const noNodesResult = checkNoNodesToProcess(session);
     if (noNodesResult) {
+      // Debug: Log when no nodes are available for processing
+      logger.debug("No nodes to process", {
+        sessionId: params.sessionId,
+        queueLength: session.state.toBeProcessedNodes.length,
+        totalNodes: session.dagManager.getNodeCount(),
+      });
       return noNodesResult;
     }
 
@@ -116,6 +136,18 @@ export function handleIsComplete(
     const analysis = context.sessionManager.analyzeCompletionState(
       params.sessionId
     );
+
+    // Debug: Log completion analysis details
+    logger.debug("Completion analysis", {
+      sessionId: params.sessionId,
+      isComplete: analysis.isComplete,
+      blockers: analysis.blockers,
+      blockersCount: analysis.blockers.length,
+      pendingInQueue: analysis.diagnostics.pendingInQueue,
+      unresolvedNodes: analysis.diagnostics.unresolvedNodes,
+      queueEmpty: analysis.diagnostics.queueEmpty,
+      dagComplete: analysis.diagnostics.dagComplete,
+    });
 
     // Determine status and next actions based on comprehensive analysis
     let status: string;
@@ -308,14 +340,78 @@ export async function handleDiscoverWorkflows(
     // Update session state with discovered workflows
     session.state.workflowGroups = workflowGroups;
 
+    // Debug: Log discovered workflows
+    for (const [id, workflow] of workflowGroups.entries()) {
+      context.sessionManager.addLog(
+        params.sessionId,
+        "debug",
+        `Discovered workflow: ${id} - ${workflow.name} - Primary endpoint: ${extractUrlFromMasterNodeId(workflow.masterNodeId)}`
+      );
+    }
+
     // Select primary workflow if none specified
     const primaryWorkflow = getPrimaryWorkflow(workflowGroups);
     if (primaryWorkflow) {
       session.state.activeWorkflowId = primaryWorkflow.id;
+
+      // Create the initial DAG node for the primary workflow
+      const primaryUrl = extractUrlFromMasterNodeId(
+        primaryWorkflow.masterNodeId
+      );
+      if (primaryUrl) {
+        // Find the matching request from HAR data
+        const urlWithoutQuery = primaryUrl.split("?")[0];
+        const matchingRequest = session.harData.requests.find((req) => {
+          if (!req.url) {
+            return false;
+          }
+          const reqUrlWithoutQuery = req.url.split("?")[0];
+          return reqUrlWithoutQuery === urlWithoutQuery;
+        });
+
+        if (matchingRequest) {
+          // Create DAG node for the primary endpoint
+          const masterNodeId = session.dagManager.addNode("master_curl", {
+            key: matchingRequest,
+            value: matchingRequest.response || null,
+          });
+
+          // Update session state with the actual master node ID
+          session.state.masterNodeId = masterNodeId;
+          session.state.actionUrl = primaryUrl;
+
+          // Add to processing queue for dependency analysis
+          if (!session.state.toBeProcessedNodes.includes(masterNodeId)) {
+            session.state.toBeProcessedNodes.push(masterNodeId);
+          }
+
+          // Update the workflow group with the actual DAG node ID
+          primaryWorkflow.masterNodeId = masterNodeId;
+
+          context.sessionManager.addLog(
+            params.sessionId,
+            "info",
+            `Created master DAG node ${masterNodeId} for primary workflow: ${primaryWorkflow.name} - Endpoint: ${primaryUrl}`
+          );
+        } else {
+          context.sessionManager.addLog(
+            params.sessionId,
+            "warn",
+            `Could not find matching request for primary endpoint: ${primaryUrl}`
+          );
+        }
+      }
+
       context.sessionManager.addLog(
         params.sessionId,
         "info",
-        `Selected primary workflow: ${primaryWorkflow.name} (${primaryWorkflow.id})`
+        `Selected primary workflow: ${primaryWorkflow.name} (${primaryWorkflow.id}) - Primary endpoint: ${extractUrlFromMasterNodeId(primaryWorkflow.masterNodeId)}`
+      );
+    } else {
+      context.sessionManager.addLog(
+        params.sessionId,
+        "warn",
+        `No primary workflow found from ${workflowGroups.size} discovered workflows`
       );
     }
 
@@ -345,10 +441,14 @@ export async function handleDiscoverWorkflows(
         {
           type: "text",
           text: JSON.stringify({
+            success: true,
             status: "success",
             message: "Workflow discovery completed successfully",
             workflowCount: workflowGroups.size,
             primaryWorkflowId: session.state.activeWorkflowId,
+            actionUrl: primaryWorkflow
+              ? extractUrlFromMasterNodeId(primaryWorkflow.masterNodeId)
+              : null,
             workflows: workflowSummary,
             stats: {
               totalUrls: session.harData.urls.length,
@@ -737,11 +837,21 @@ export async function handleStartPrimaryWorkflow(
     const harUrls = session.harData.urls;
 
     // Find the actual URL from harUrls that matches the master node pattern
-    const masterUrl = harUrls.find(
-      (urlInfo) =>
-        masterNodeUrl.includes(urlInfo.url) ||
-        urlInfo.url.includes(masterNodeUrl.split(":")[1] || "")
-    );
+    // Extract URL from masterNodeUrl (format: "METHOD:URL")
+    const masterNodeUrlPart = masterNodeUrl.split(":").slice(1).join(":"); // Handle URLs with multiple colons
+
+    const masterUrl = harUrls.find((urlInfo) => {
+      // Extract base URL without query parameters for exact matching
+      const urlBase = urlInfo.url.split("?")[0];
+      const masterBase = masterNodeUrlPart.split("?")[0];
+
+      // Exact match of base URLs to avoid substring false positives
+      return (
+        urlBase === masterBase &&
+        urlInfo.method.toUpperCase() ===
+          masterNodeUrl?.split(":")[0]?.toUpperCase()
+      );
+    });
 
     if (!masterUrl) {
       return {
@@ -759,8 +869,55 @@ export async function handleStartPrimaryWorkflow(
       };
     }
 
-    // Set master node using the workflow data
-    context.sessionManager.setMasterNodeId(params.sessionId, masterUrl.url);
+    // Find the actual DAG node that corresponds to this master URL
+    const dagNodes = session.dagManager.getAllNodes();
+    const matchingDagNode = Array.from(dagNodes.values()).find((node) => {
+      if (node.nodeType === "curl" && node.content?.key?.url) {
+        const nodeUrl = node.content.key.url.split("?")[0];
+        const nodeMethod = node.content.key.method;
+        const masterUrlBase = masterUrl.url.split("?")[0];
+
+        return (
+          nodeUrl === masterUrlBase &&
+          nodeMethod.toUpperCase() === masterUrl.method.toUpperCase()
+        );
+      }
+      return false;
+    });
+
+    if (!matchingDagNode) {
+      logger.error("Could not find DAG node matching master URL", {
+        sessionId: params.sessionId,
+        masterUrl: masterUrl.url,
+        masterMethod: masterUrl.method,
+        totalDagNodes: dagNodes.size,
+      });
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              success: false,
+              error:
+                "Could not find DAG node matching the discovered primary endpoint",
+              masterUrl: masterUrl.url,
+              suggestion:
+                "This indicates a synchronization issue between workflow discovery and DAG creation",
+            }),
+          },
+        ],
+      };
+    }
+
+    // Set master node using the actual DAG node ID (UUID)
+    context.sessionManager.setMasterNodeId(
+      params.sessionId,
+      matchingDagNode.id
+    );
+
+    // Also set actionUrl for compatibility with E2E tests
+    context.sessionManager.setActionUrl(params.sessionId, masterUrl.url);
 
     return {
       content: [
@@ -769,6 +926,7 @@ export async function handleStartPrimaryWorkflow(
           text: JSON.stringify({
             success: true,
             message: "Primary workflow analysis started successfully",
+            actionUrl: masterUrl.url, // Add actionUrl field for E2E test compatibility
             workflow: {
               id: primaryWorkflow.id,
               name: primaryWorkflow.name,
