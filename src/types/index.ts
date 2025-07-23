@@ -273,40 +273,52 @@ export interface HarvestSession {
   id: string;
   prompt: string;
   harData: ParsedHARData;
-  cookieData?: CookieData;
+  cookieData?: CookieData | undefined;
   dagManager: DAGManager;
   state: SessionState;
   createdAt: Date;
   lastActivity: Date;
-  workflowGroups?: Map<string, WorkflowGroup>;
-  selectedWorkflowId?: string;
+  workflowGroups?: Map<string, WorkflowGroup> | undefined;
+  selectedWorkflowId?: string | undefined;
+  /** XState FSM interpreter instance for managing session state transitions */
+  fsm?: import("../core/SessionFsmService.js").SessionActor | undefined;
 }
 
 export interface SessionState {
-  actionUrl?: string;
-  masterNodeId?: string;
-  inProcessNodeId?: string;
+  // Legacy compatibility properties - these are maintained for backward compatibility
+  // The FSM context is now the single source of truth for active session state
+  actionUrl?: string | undefined;
+  masterNodeId?: string | undefined;
+  inProcessNodeId?: string | undefined;
   toBeProcessedNodes: string[];
   inProcessNodeDynamicParts: string[];
   inputVariables: Record<string, string>;
   isComplete: boolean;
   logs: LogEntry[];
-  generatedCode?: string;
-  authAnalysis?: AuthenticationAnalysis;
-  authReadiness?: {
-    isAuthComplete: boolean;
-    authBlockers: string[];
-    authRecommendations: string[];
-  };
-  bootstrapAnalysis?: {
-    isNeeded: boolean;
-    bootstrapUrl?: string; // The main page URL that starts the session
-    parameters: Array<{ name: string; source: BootstrapParameterSource }>;
-  };
+  generatedCode?: string | undefined;
+  authAnalysis?: AuthenticationAnalysis | undefined;
+
+  // Authentication and bootstrap analysis - these remain for compatibility
+  authReadiness?:
+    | {
+        isAuthComplete: boolean;
+        authBlockers: string[];
+        authRecommendations: string[];
+      }
+    | undefined;
+  bootstrapAnalysis?:
+    | {
+        isNeeded: boolean;
+        bootstrapUrl?: string | undefined; // The main page URL that starts the session
+        parameters: Array<{ name: string; source: BootstrapParameterSource }>;
+      }
+    | undefined;
+
+  // Workflow state - these are maintained in sync with FSM context
   /** Map of discovered workflow groups, supporting multi-workflow analysis */
   workflowGroups: Map<string, WorkflowGroup>;
   /** Currently selected workflow group for processing */
-  activeWorkflowId?: string;
+  activeWorkflowId?: string | undefined;
 }
 
 export interface LogEntry {
@@ -869,28 +881,6 @@ export class SessionNotFoundError extends HarvestError {
   }
 }
 
-export class HARQualityError extends HarvestError {
-  constructor(
-    quality: string,
-    issues: string[],
-    recommendations: string[],
-    context?: { harPath?: string; sessionId?: string; stats?: unknown }
-  ) {
-    const message = [
-      `HAR file quality is insufficient for analysis (${quality}).`,
-      `Issues: ${issues.join(", ")}.`,
-      `Recommendations: ${recommendations.join(", ")}.`,
-    ].join(" ");
-
-    super(message, "HAR_QUALITY_INSUFFICIENT", {
-      quality,
-      issues,
-      recommendations,
-      ...context,
-    });
-  }
-}
-
 export class HARGenerationError extends HarvestError {
   constructor(
     reason: string,
@@ -1420,4 +1410,44 @@ export interface CodeGenerationData {
   code: string;
   language: "typescript";
   characterCount: number;
+}
+
+// ========== FSM-specific Types ==========
+
+/**
+ * Interface for SessionManager with FSM-specific methods
+ */
+export interface SessionManagerWithFSM {
+  getFsmState: (sessionId: string) => string;
+  sendFsmEvent: (
+    sessionId: string,
+    event: { type: string; [key: string]: unknown }
+  ) => void;
+  fsmService: {
+    getContext: (sessionId: string) => {
+      sessionId: string;
+      prompt: string;
+      harPath?: string;
+      cookiePath?: string;
+      harData?: ParsedHARData;
+      cookieData?: CookieData;
+      dagManager: DAGManager;
+      workflowGroups: Map<string, WorkflowGroup>;
+      activeWorkflowId?: string;
+      toBeProcessedNodes: string[];
+      inProcessNodeId?: string;
+      inProcessNodeDynamicParts: string[];
+      inputVariables: Record<string, string>;
+      logs: LogEntry[];
+      generatedCode?: string;
+      authAnalysis?: AuthenticationAnalysis;
+      error?: { message: string };
+    };
+    getCurrentState: (sessionId: string) => string;
+    sendEvent: (
+      sessionId: string,
+      event: { type: string; [key: string]: unknown }
+    ) => void;
+  };
+  addLog: (sessionId: string, level: string, message: string) => void;
 }
