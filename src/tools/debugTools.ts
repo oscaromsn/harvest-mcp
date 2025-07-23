@@ -1,12 +1,4 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import {
-  calculateApiPatternScore,
-  calculateKeywordRelevance,
-  calculateMethodScore,
-  calculateParameterComplexityScore,
-  calculateResponseTypeScore,
-  sortUrlsByRelevance,
-} from "../agents/URLIdentificationAgent.js";
 import { DAGManager } from "../core/DAGManager.js";
 import { parseHARFile } from "../core/HARParser.js";
 import {
@@ -17,6 +9,14 @@ import {
   type RequestModel,
   type URLInfo,
 } from "../types/index.js";
+import {
+  calculateApiPatternScore,
+  calculateKeywordRelevance,
+  calculateMethodScore,
+  calculateParameterComplexityScore,
+  calculateResponseTypeScore,
+  sortUrlsByRelevance,
+} from "../utils/urlScoring.js";
 
 /**
  * Handle debug_get_unresolved_nodes tool call
