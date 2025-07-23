@@ -77,6 +77,20 @@ async function waitForStateTransition(
           return;
         }
 
+        // Auto-drive FSM for dependency processing
+        if (currentState === "processingDependencies") {
+          const canProcessNext = sessionManager.fsmService.canSendEvent(
+            sessionId,
+            "PROCESS_NEXT_NODE"
+          );
+          if (canProcessNext) {
+            console.log("🔧 Auto-sending PROCESS_NEXT_NODE event to drive FSM");
+            sessionManager.sendFsmEvent(sessionId, {
+              type: "PROCESS_NEXT_NODE",
+            });
+          }
+        }
+
         // Continue polling
         setTimeout(checkState, 100);
       } catch (error) {
