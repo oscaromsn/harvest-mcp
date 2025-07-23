@@ -101,6 +101,38 @@ export const MemoryConfigSchema = z.object({
   snapshotIntervalMs: z.number().min(5000).max(300000).default(30000), // 5s to 5min
 });
 
+// HAR Parsing Configuration
+export const HARParsingConfigSchema = z.object({
+  excludeKeywords: z
+    .array(z.string())
+    .default([
+      "google",
+      "taboola",
+      "datadog",
+      "sentry",
+      "facebook",
+      "twitter",
+      "linkedin",
+      "amplitude",
+      "mixpanel",
+      "segment",
+      "heap",
+      "hotjar",
+      "fullstory",
+      "pendo",
+      "optimizely",
+      "adobe",
+      "analytics",
+      "tracking",
+      "telemetry",
+      "clarity",
+      "matomo",
+      "plausible",
+    ]),
+  includeAllApiRequests: z.boolean().default(false),
+  minQualityThreshold: z.enum(["excellent", "good", "poor"]).default("good"),
+});
+
 // Development Configuration
 export const DevelopmentConfigSchema = z.object({
   enableHotReload: z.boolean().default(false),
@@ -115,6 +147,7 @@ export const ConfigSchema = z.object({
   session: SessionConfigSchema.default({}),
   manualSession: ManualSessionConfigSchema.default({}),
   artifacts: ArtifactConfigSchema.default({}),
+  harParsing: HARParsingConfigSchema.default({}),
   paths: PathConfigSchema.default({}),
   logging: LoggingConfigSchema.default({}),
   memory: MemoryConfigSchema.default({}),
@@ -172,6 +205,11 @@ export const ENVIRONMENT_VARIABLE_MAP = {
   // Memory Configuration
   HARVEST_MAX_HEAP_SIZE_MB: "memory.maxHeapSizeMB",
   HARVEST_MEMORY_WARNING_MB: "memory.warningThresholdMB",
+
+  // HAR Parsing Configuration
+  HARVEST_HAR_EXCLUDE_KEYWORDS: "harParsing.excludeKeywords",
+  HARVEST_HAR_INCLUDE_ALL_API: "harParsing.includeAllApiRequests",
+  HARVEST_MIN_QUALITY_THRESHOLD: "harParsing.minQualityThreshold",
 
   // Development Configuration
   NODE_ENV: "development.enableTestMode", // maps test/development to boolean

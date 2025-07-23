@@ -8,6 +8,7 @@ import type {
   Response as HarResponse,
 } from "har-format";
 import { analyzeAuthentication as analyzeAuthenticationAgent } from "../agents/AuthenticationAgent.js";
+import { getConfig } from "../config/index.js";
 import { Request } from "../models/Request.js";
 import type {
   AuthenticationAnalysis,
@@ -58,31 +59,41 @@ function createEmptyAuthAnalysis(
   };
 }
 
-// Default keywords to exclude from requests (analytics, tracking, etc.)
-const DEFAULT_EXCLUDED_KEYWORDS = [
-  "google",
-  "taboola",
-  "datadog",
-  "sentry",
-  "facebook",
-  "twitter",
-  "linkedin",
-  "amplitude",
-  "mixpanel",
-  "segment",
-  "heap",
-  "hotjar",
-  "fullstory",
-  "pendo",
-  "optimizely",
-  "adobe",
-  "analytics",
-  "tracking",
-  "telemetry",
-  "clarity",
-  "matomo",
-  "plausible",
-];
+/**
+ * Get exclude keywords from configuration with fallback
+ */
+function getExcludeKeywords(): string[] {
+  try {
+    const config = getConfig();
+    return config.harParsing.excludeKeywords;
+  } catch {
+    // Fallback if config is not available
+    return [
+      "google",
+      "taboola",
+      "datadog",
+      "sentry",
+      "facebook",
+      "twitter",
+      "linkedin",
+      "amplitude",
+      "mixpanel",
+      "segment",
+      "heap",
+      "hotjar",
+      "fullstory",
+      "pendo",
+      "optimizely",
+      "adobe",
+      "analytics",
+      "tracking",
+      "telemetry",
+      "clarity",
+      "matomo",
+      "plausible",
+    ];
+  }
+}
 
 // Configuration interface for HAR parsing
 export interface HARParsingOptions {
@@ -303,6 +314,7 @@ function createTemporarySessionForAuth(
     id: "temp-auth-session",
     prompt: "Authentication analysis",
     dagManager: {} as never, // Minimal DAG manager for auth analysis
+    fsm: {} as never, // Minimal FSM for auth analysis - not a real session
     harData: {
       requests,
       urls: [],
@@ -882,8 +894,8 @@ function shouldExcludeRequest(
     }
   }
 
-  // Use configured exclude keywords or default
-  const excludeKeywords = options?.excludeKeywords ?? DEFAULT_EXCLUDED_KEYWORDS;
+  // Use configured exclude keywords or from global configuration
+  const excludeKeywords = options?.excludeKeywords ?? getExcludeKeywords();
 
   return excludeKeywords.some((keyword) =>
     lowerUrl.includes(keyword.toLowerCase())
