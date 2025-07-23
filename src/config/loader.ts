@@ -26,7 +26,7 @@ export interface ConfigLoaderOptions {
 /**
  * Configuration file formats
  */
-export type ConfigFileFormat = "json" | "yaml" | "js";
+export type ConfigFileFormat = "json";
 
 /**
  * Load configuration from multiple sources with priority:
@@ -70,8 +70,8 @@ export class ConfigLoader {
   }
 
   /**
-   * Load configuration from file (JSON, YAML, or JS)
-   * Searches for harvest.config.{json,yaml,yml,js} in project root
+   * Load configuration from file (JSON only)
+   * Searches for harvest.config.json in project root
    */
   private loadConfigFile(configFilePath?: string): RawConfig {
     const filePaths = configFilePath
@@ -99,12 +99,7 @@ export class ConfigLoader {
    */
   private getDefaultConfigFilePaths(): string[] {
     const basePath = join(this.projectRoot, "harvest.config");
-    return [
-      `${basePath}.json`,
-      `${basePath}.yaml`,
-      `${basePath}.yml`,
-      `${basePath}.js`,
-    ];
+    return [`${basePath}.json`];
   }
 
   /**
@@ -116,13 +111,10 @@ export class ConfigLoader {
     switch (ext) {
       case "json":
         return "json";
-      case "yaml":
-      case "yml":
-        return "yaml";
-      case "js":
-        return "js";
       default:
-        return "json"; // Default to JSON
+        throw new Error(
+          `Unsupported configuration file format: ${ext}. Only JSON configuration files are supported.`
+        );
     }
   }
 
@@ -138,20 +130,6 @@ export class ConfigLoader {
     switch (format) {
       case "json":
         return JSON.parse(content);
-
-      case "yaml":
-        // For now, we'll treat YAML as JSON for simplicity
-        // In a full implementation, you'd use a YAML parser like 'js-yaml'
-        throw new Error(
-          "YAML configuration files are not yet supported. Please use JSON format."
-        );
-
-      case "js":
-        // For now, we'll skip JS config files for security/simplicity
-        // In a full implementation, you'd use dynamic import
-        throw new Error(
-          "JavaScript configuration files are not yet supported. Please use JSON format."
-        );
 
       default:
         throw new Error(`Unsupported configuration file format: ${format}`);
