@@ -972,7 +972,6 @@ export interface SessionLogging {
  */
 export interface SessionAnalysis {
   analyzeCompletionState(sessionId: string): CompletionAnalysis;
-  syncCompletionState(sessionId: string): void;
 }
 
 /**
@@ -1112,10 +1111,6 @@ export class SessionManagerAdapter
     return this.sessionManager.analyzeCompletionState(sessionId);
   }
 
-  syncCompletionState(sessionId: string): void {
-    this.sessionManager.syncCompletionState(sessionId);
-  }
-
   // ISessionManager compatibility methods
   isComplete(sessionId: string): boolean {
     return this.analyzeCompletionState(sessionId).isComplete;
@@ -1210,8 +1205,6 @@ export function createDebugToolContext(
     addLog: sessionAdapter.addLog.bind(sessionAdapter),
     analyzeCompletionState:
       sessionAdapter.analyzeCompletionState.bind(sessionAdapter),
-    syncCompletionState:
-      sessionAdapter.syncCompletionState.bind(sessionAdapter),
     sessionManager: sessionAdapter,
     completedSessionManager: completedSessionAdapter,
   };
@@ -1231,8 +1224,6 @@ export function createAnalysisToolContext(
     addLog: sessionAdapter.addLog.bind(sessionAdapter),
     analyzeCompletionState:
       sessionAdapter.analyzeCompletionState.bind(sessionAdapter),
-    syncCompletionState:
-      sessionAdapter.syncCompletionState.bind(sessionAdapter),
     sessionManager: sessionAdapter,
     completedSessionManager: completedSessionAdapter,
   };
@@ -1273,8 +1264,6 @@ export function createCodegenToolContext(
     addLog: sessionAdapter.addLog.bind(sessionAdapter),
     analyzeCompletionState:
       sessionAdapter.analyzeCompletionState.bind(sessionAdapter),
-    syncCompletionState:
-      sessionAdapter.syncCompletionState.bind(sessionAdapter),
     sessionManager: sessionAdapter,
     completedSessionManager: completedSessionAdapter,
   };
@@ -1293,8 +1282,6 @@ export function createSystemToolContext(
     getSession: sessionAdapter.getSession.bind(sessionAdapter),
     analyzeCompletionState:
       sessionAdapter.analyzeCompletionState.bind(sessionAdapter),
-    syncCompletionState:
-      sessionAdapter.syncCompletionState.bind(sessionAdapter),
     sessionManager: sessionAdapter,
     completedSessionManager: completedSessionAdapter,
   };
@@ -1339,8 +1326,6 @@ export function createWorkflowToolContext(
     deleteSession: sessionAdapter.deleteSession.bind(sessionAdapter),
     analyzeCompletionState:
       sessionAdapter.analyzeCompletionState.bind(sessionAdapter),
-    syncCompletionState:
-      sessionAdapter.syncCompletionState.bind(sessionAdapter),
     sessionManager: sessionAdapter,
     completedSessionManager: completedSessionAdapter,
   };
@@ -1360,8 +1345,6 @@ export function createAuthToolContext(
     addLog: sessionAdapter.addLog.bind(sessionAdapter),
     analyzeCompletionState:
       sessionAdapter.analyzeCompletionState.bind(sessionAdapter),
-    syncCompletionState:
-      sessionAdapter.syncCompletionState.bind(sessionAdapter),
     sessionManager: sessionAdapter,
     completedSessionManager: completedSessionAdapter,
   };
@@ -1385,8 +1368,6 @@ export function createUnifiedToolContext(
     deleteSession: sessionAdapter.deleteSession.bind(sessionAdapter),
     analyzeCompletionState:
       sessionAdapter.analyzeCompletionState.bind(sessionAdapter),
-    syncCompletionState:
-      sessionAdapter.syncCompletionState.bind(sessionAdapter),
     sessionManager: sessionAdapter,
     completedSessionManager: completedSessionAdapter,
   };
