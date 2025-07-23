@@ -12,6 +12,14 @@ const logger = createComponentLogger("url-identification-agent");
 
 /**
  * Identify the URL responsible for a specific action using LLM analysis
+ *
+ * @deprecated This single-URL identification approach has been functionally superseded
+ * by WorkflowDiscoveryAgent which provides multi-workflow analysis. While still functional,
+ * new development should prefer the workflow discovery approach via discoverWorkflows()
+ * and getPrimaryWorkflow() for more robust analysis of complex HAR files.
+ *
+ * This function remains available as a lower-level utility for simple single-URL scenarios
+ * or when explicit URL identification is required.
  */
 export async function identifyEndUrl(
   session: HarvestSession,
