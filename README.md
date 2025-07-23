@@ -70,8 +70,8 @@ bun run build
      prompt: 'Login to the application'
    });
 
-   // 2. Run analysis
-   await tools.analysis.run_initial_analysis({ sessionId: session.id });
+   // 2. Start primary workflow analysis
+   await tools.analysis_start_primary_workflow({ sessionId: session.id });
    
    // 3. Process dependencies
    while (!(await tools.analysis.is_complete({ sessionId: session.id }))) {
@@ -128,8 +128,8 @@ Deletes a session and cleans up resources.
 
 ### Analysis Tools
 
-#### `analysis.run_initial_analysis`
-Identifies the target action URL and creates the master node.
+#### `analysis_start_primary_workflow`
+Discover all workflows in the HAR file and automatically start analysis of the highest-priority workflow using the modern multi-workflow system.
 
 **Parameters:**
 - `sessionId` (string): Session ID
@@ -137,8 +137,16 @@ Identifies the target action URL and creates the master node.
 **Returns:**
 ```json
 {
-  "masterNodeId": "uuid",
-  "actionUrl": "https://api.example.com/login"
+  "success": true,
+  "workflow": {
+    "id": "workflow-uuid",
+    "name": "Login Flow",
+    "description": "User authentication workflow"
+  },
+  "masterNode": {
+    "url": "https://api.example.com/login",
+    "method": "POST"
+  }
 }
 ```
 
@@ -333,8 +341,8 @@ const session = await tools.session.start({
   prompt: 'Multi-step document processing'
 });
 
-// Start analysis
-await tools.analysis.run_initial_analysis({ sessionId: session.id });
+// Start analysis with modern workflow system
+await tools.analysis_start_primary_workflow({ sessionId: session.id });
 
 // Monitor progress
 while (true) {

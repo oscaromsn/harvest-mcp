@@ -108,7 +108,7 @@ tests/
    - `LLMClient`: OpenAI integration with function calling
 
 3. **MCP Server** (`src/server.ts`): Main entry point implementing MCP protocol with:
-   - **Analysis Tools**: session_start, analysis_run_initial_analysis, analysis_process_next_node, analysis_is_complete
+   - **Analysis Tools**: session_start, analysis_start_primary_workflow, analysis_process_next_node, analysis_is_complete
    - **Debug Tools**: debug_get_unresolved_nodes, debug_get_node_details, debug_list_all_requests, debug_force_dependency
    - **Code Generation**: codegen_generate_wrapper_script
    - **Manual Session Tools**: session_start_manual, session_stop_manual, session_list_manual
