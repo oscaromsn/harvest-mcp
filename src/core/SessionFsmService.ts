@@ -1,9 +1,5 @@
 import { type ActorRefFrom, createActor, type SnapshotFrom } from "xstate";
-import type {
-  CompletionAnalysis,
-  HarvestSession,
-  SessionStartParams,
-} from "../types";
+import type { CompletionAnalysis, SessionStartParams } from "../types";
 import { SessionNotFoundError } from "../types";
 import { createComponentLogger } from "../utils/logger.js";
 import {
@@ -207,48 +203,6 @@ export class SessionFsmService {
     }
 
     return analysis;
-  }
-
-  /**
-   * Convert FSM context to legacy HarvestSession format for backward compatibility
-   */
-  toHarvestSession(sessionId: string): HarvestSession {
-    const context = this.getContext(sessionId);
-
-    // Get the active workflow for legacy compatibility
-    const activeWorkflow = context.activeWorkflowId
-      ? context.workflowGroups.get(context.activeWorkflowId)
-      : undefined;
-
-    return {
-      id: context.sessionId,
-      prompt: context.prompt,
-      harData: context.harData || null,
-      cookieData: context.cookieData,
-      dagManager: context.dagManager,
-      createdAt: new Date(), // TODO: Store actual creation time
-      lastActivity: new Date(),
-      workflowGroups: context.workflowGroups,
-      selectedWorkflowId: context.activeWorkflowId,
-      fsm: this.getSessionMachine(sessionId),
-      state: {
-        // Legacy single-workflow state (for backward compatibility)
-        actionUrl: activeWorkflow?.masterNodeId || undefined,
-        masterNodeId: activeWorkflow?.masterNodeId || undefined,
-        inProcessNodeId: context.inProcessNodeId || undefined,
-        toBeProcessedNodes: context.toBeProcessedNodes,
-        inProcessNodeDynamicParts: context.inProcessNodeDynamicParts,
-        inputVariables: context.inputVariables,
-        isComplete: this.isAnalysisComplete(sessionId),
-        logs: context.logs,
-        generatedCode: context.generatedCode || undefined,
-        authAnalysis: context.authAnalysis || undefined,
-
-        // Modern workflow state
-        workflowGroups: context.workflowGroups,
-        activeWorkflowId: context.activeWorkflowId || undefined,
-      },
-    };
   }
 
   /**

@@ -1459,6 +1459,7 @@ export interface SessionManagerWithFSM {
       sessionId: string,
       event: { type: string; [key: string]: unknown }
     ) => void;
+    canSendEvent: (sessionId: string, eventType: string) => boolean;
   };
   addLog: (sessionId: string, level: string, message: string) => void;
 }

@@ -18,7 +18,7 @@ const logger = createComponentLogger("session-manager");
 export class SessionManager {
   private readonly maxSessions: number;
   private readonly cleanupIntervalMs: number;
-  private readonly fsmService: SessionFsmService;
+  public readonly fsmService: SessionFsmService;
 
   constructor() {
     // Initialize FSM service
@@ -96,10 +96,41 @@ export class SessionManager {
   getSession(sessionId: string): HarvestSession {
     // Query FSM service directly for session data
     try {
-      const session = this.fsmService.toHarvestSession(sessionId);
+      const context = this.fsmService.getContext(sessionId);
+      const state = this.fsmService.getCurrentState(sessionId);
 
-      // Update last activity
-      session.lastActivity = new Date();
+      // Construct HarvestSession directly from FSM context
+      const session: HarvestSession = {
+        id: sessionId,
+        prompt: context.prompt,
+        harData: context.harData as any, // Keep as any for backward compatibility
+        cookieData: context.cookieData as any,
+        dagManager: context.dagManager as any,
+        fsm: this.fsmService.getSessionMachine(sessionId),
+        workflowGroups: context.workflowGroups as any,
+        selectedWorkflowId: context.activeWorkflowId,
+        createdAt: new Date(), // Approximation - FSM doesn't track creation time
+        lastActivity: new Date(),
+        state: {
+          activeWorkflowId: context.activeWorkflowId,
+          workflowGroups: context.workflowGroups as any,
+          toBeProcessedNodes: context.toBeProcessedNodes,
+          inProcessNodeDynamicParts: context.inProcessNodeDynamicParts,
+          inputVariables: context.inputVariables,
+          authAnalysis: context.authAnalysis as any,
+          logs: context.logs as any,
+          isComplete: state === "codeGenerated" || state === "readyForCodeGen",
+          masterNodeId: context.activeWorkflowId
+            ? (context.workflowGroups as any)?.get(context.activeWorkflowId)
+                ?.masterNodeId
+            : undefined,
+          actionUrl: context.activeWorkflowId
+            ? (context.workflowGroups as any)?.get(context.activeWorkflowId)
+                ?.masterNodeId
+            : undefined,
+        },
+      };
+
       return session;
     } catch (_error) {
       throw new SessionNotFoundError(sessionId);
@@ -134,14 +165,14 @@ export class SessionManager {
 
     for (const sessionId of activeSessionIds) {
       try {
-        const session = this.fsmService.toHarvestSession(sessionId);
+        const context = this.fsmService.getContext(sessionId);
         sessionInfos.push({
           id: sessionId,
-          prompt: session.prompt,
-          createdAt: session.createdAt,
-          lastActivity: session.lastActivity,
+          prompt: context.prompt,
+          createdAt: new Date(), // Approximation - FSM doesn't track creation time
+          lastActivity: new Date(),
           isComplete: this.fsmService.isAnalysisComplete(sessionId),
-          nodeCount: session.dagManager.getNodeCount(),
+          nodeCount: (context.dagManager as any)?.getNodeCount() || 0,
         });
       } catch (_error) {
         // Skip invalid sessions
