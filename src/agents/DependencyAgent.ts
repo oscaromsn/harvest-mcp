@@ -54,8 +54,25 @@ export async function findDependencies(
   }
 
   try {
+    // Validate dynamic parts before processing to filter out invalid/static values
+    const validation = validateDynamicParts(dynamicParts);
+    const validDynamicParts = validation.valid;
+
+    // Log filtered out parts for debugging
+    if (validation.invalid.length > 0) {
+      logger.debug("Filtered out invalid dynamic parts", {
+        invalid: validation.invalid,
+        reasons: validation.reasons,
+      });
+    }
+
+    if (validDynamicParts.length === 0) {
+      logger.debug("No valid dynamic parts after validation");
+      return createEmptyDependencyResult();
+    }
+
     // First, check for cookie dependencies (priority over requests)
-    const cookieResult = findCookieDependencies(dynamicParts, cookieData);
+    const cookieResult = findCookieDependencies(validDynamicParts, cookieData);
 
     // Process request dependencies for remaining parts
     const { requestDependencies, notFoundParts } =
