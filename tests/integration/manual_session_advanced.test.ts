@@ -48,7 +48,7 @@ describe("Sprint 5.5: Advanced Manual Session Integration", () => {
   });
 
   describe("Schema Validation Edge Cases", () => {
-    test.skip("should handle boundary values in viewport configuration", async () => {
+    test("should handle boundary values in viewport configuration", async () => {
       // Test minimum valid viewport
       const minResponse = await handleStartManualSession(
         {
@@ -116,7 +116,7 @@ describe("Sprint 5.5: Advanced Manual Session Integration", () => {
       }
     }, 10000);
 
-    test.skip("should validate device scale factor boundaries", async () => {
+    test("should validate device scale factor boundaries", async () => {
       // Test minimum device scale factor
       const response = await handleStartManualSession(
         {
@@ -187,7 +187,7 @@ describe("Sprint 5.5: Advanced Manual Session Integration", () => {
       }).toThrow();
     }, 10000);
 
-    test.skip("should validate timeout boundaries", async () => {
+    test("should validate timeout boundaries", async () => {
       // Test valid timeout boundaries
       const response = await handleStartManualSession(
         {
