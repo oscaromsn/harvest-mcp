@@ -30,7 +30,9 @@ describe("AST FunctionBuilder", () => {
       const declaration = functionBuilder
         .create("testFunction")
         .setReturnType("string")
-        .setBodyText("return 'hello world';")
+        .setBody((writer) => {
+          writer.writeLine("return 'hello world';");
+        })
         .build();
 
       expect(declaration.getName()).toBe("testFunction");
@@ -124,14 +126,19 @@ describe("AST FunctionBuilder", () => {
     });
 
     it("should set body text (hybrid approach)", () => {
-      const bodyText = `  const result = await fetch('/api/test');
-  const data = await result.json();
-  return { success: true, data };`;
+      const bodyText = `const result = await fetch('/api/test');
+const data = await result.json();
+return { success: true, data };`;
 
       functionBuilder
         .createAsync("hybridFunction")
         .setReturnType("ApiResponse")
-        .setBodyText(bodyText);
+        .setBody((writer) => {
+          const lines = bodyText.split("\n");
+          for (const line of lines) {
+            writer.writeLine(line);
+          }
+        });
 
       const code = astProject.generateCode("test-functions.ts");
       expect(code).toContain("const result = await fetch('/api/test')");
@@ -141,7 +148,9 @@ describe("AST FunctionBuilder", () => {
     it("should wrap function body in try-catch", () => {
       functionBuilder
         .createAsync("errorHandlingFunction")
-        .setBodyText("const result = await riskyOperation();")
+        .setBody((writer) => {
+          writer.writeLine("const result = await riskyOperation();");
+        })
         .wrapInTryCatch("Custom error message");
 
       const code = astProject.generateCode("test-functions.ts");
@@ -154,7 +163,9 @@ describe("AST FunctionBuilder", () => {
     it("should add standard API response return", () => {
       functionBuilder
         .createAsync("apiFunction")
-        .setBodyText("const response = await fetch('/api');")
+        .setBody((writer) => {
+          writer.writeLine("const response = await fetch('/api');");
+        })
         .addApiResponseReturn();
 
       const code = astProject.generateCode("test-functions.ts");
@@ -179,12 +190,16 @@ describe("AST FunctionBuilder", () => {
       patterns
         .function("syncFunc")
         .setReturnType("void")
-        .setBodyText("console.log('hello');");
+        .setBody((writer) => {
+          writer.writeLine("console.log('hello');");
+        });
 
       patterns
         .asyncFunction("asyncFunc")
         .setReturnType("string")
-        .setBodyText("return 'async result';");
+        .setBody((writer) => {
+          writer.writeLine("return 'async result';");
+        });
 
       const code = astProject.generateCode("test-functions.ts");
       expect(code).toContain("function syncFunc(): void");
@@ -269,10 +284,20 @@ describe("AST FunctionBuilder", () => {
 
     it("should manage multiple source files", () => {
       engine.setSourceFile("functions1.ts");
-      engine.getFunctionPatterns().function("func1").setBodyText("return 1;");
+      engine
+        .getFunctionPatterns()
+        .function("func1")
+        .setBody((writer) => {
+          writer.writeLine("return 1;");
+        });
 
       engine.setSourceFile("functions2.ts");
-      engine.getFunctionPatterns().function("func2").setBodyText("return 2;");
+      engine
+        .getFunctionPatterns()
+        .function("func2")
+        .setBody((writer) => {
+          writer.writeLine("return 2;");
+        });
 
       engine.setSourceFile("functions1.ts");
       const code1 = engine.generateCode();
@@ -307,36 +332,60 @@ describe("AST FunctionBuilder", () => {
           ],
         })
         .addParameters(parameters)
-        .setBodyText(`  try {
-    const url = new URL('https://api.example.com/search');
-    url.searchParams.set('q', searchQuery);
-
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-    };
-
-    const options: RequestOptions = {
-      method: 'GET',
-      headers,
-    };
-
-    const response = await fetch(url.toString(), options);
-
-    if (!response.ok) {
-      throw new Error("Request failed: " + response.status + " " + response.statusText);
-    }
-
-    const data = await response.json();
-
-    return {
-      success: true,
-      data,
-      status: response.status,
-      headers: Object.fromEntries(response.headers.entries()),
-    };
-  } catch (error) {
-    throw new Error(\`searchDocuments failed: \${error instanceof Error ? error.message : 'Unknown error'}\`);
-  }`)
+        .setBody((writer) => {
+          writer.writeLine("try {");
+          writer.indent(() => {
+            writer.writeLine(
+              "const url = new URL('https://api.example.com/search');"
+            );
+            writer.writeLine("url.searchParams.set('q', searchQuery);");
+            writer.newLine();
+            writer.writeLine("const headers: Record<string, string> = {");
+            writer.indent(() => {
+              writer.writeLine("'Content-Type': 'application/json',");
+            });
+            writer.writeLine("};");
+            writer.newLine();
+            writer.writeLine("const options: RequestOptions = {");
+            writer.indent(() => {
+              writer.writeLine("method: 'GET',");
+              writer.writeLine("headers,");
+            });
+            writer.writeLine("};");
+            writer.newLine();
+            writer.writeLine(
+              "const response = await fetch(url.toString(), options);"
+            );
+            writer.newLine();
+            writer.writeLine("if (!response.ok) {");
+            writer.indent(() => {
+              writer.writeLine(
+                'throw new Error("Request failed: " + response.status + " " + response.statusText);'
+              );
+            });
+            writer.writeLine("}");
+            writer.newLine();
+            writer.writeLine("const data = await response.json();");
+            writer.newLine();
+            writer.writeLine("return {");
+            writer.indent(() => {
+              writer.writeLine("success: true,");
+              writer.writeLine("data,");
+              writer.writeLine("status: response.status,");
+              writer.writeLine(
+                "headers: Object.fromEntries(response.headers.entries()),"
+              );
+            });
+            writer.writeLine("};");
+          });
+          writer.writeLine("} catch (error) {");
+          writer.indent(() => {
+            writer.writeLine(
+              `throw new Error(\`searchDocuments failed: \${error instanceof Error ? error.message : 'Unknown error'}\`);`
+            );
+          });
+          writer.writeLine("}");
+        })
         .export();
 
       const code = astProject.generateCode("test-functions.ts");
@@ -404,11 +453,6 @@ describe("AST FunctionBuilder", () => {
   });
 
   describe("Integration with Existing System", () => {
-    it.skip("should work with ASTProject validation when types are available", () => {
-      // Skipping this test as it requires external type definitions
-      // The FunctionBuilder works correctly as proven by other tests
-    });
-
     it("should generate clean, formatted code", () => {
       functionBuilder
         .createAsync("formattedFunction")
@@ -417,7 +461,9 @@ describe("AST FunctionBuilder", () => {
           description: "A well-formatted function",
         })
         .addParameter({ name: "input", type: "string" })
-        .setBodyText("return input.toUpperCase();")
+        .setBody((writer) => {
+          writer.writeLine("return input.toUpperCase();");
+        })
         .export();
 
       const code = astProject.generateCode("test-functions.ts");
