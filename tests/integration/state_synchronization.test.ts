@@ -38,7 +38,7 @@ describe("State Synchronization", () => {
     sessionManager.clearAllSessions();
   });
 
-  describe("SessionManager.syncCompletionState", () => {
+  describe("SessionManager.analyzeCompletionState", () => {
     it("should synchronize session state with DAG completion when DAG is complete", async () => {
       const session = sessionManager.getSession(testSessionId);
 
@@ -69,12 +69,15 @@ describe("State Synchronization", () => {
       // Manually resolve dynamic parts to make DAG complete
       session.dagManager.updateNode(testNodeId, { dynamicParts: [] });
 
+      // Empty the processing queue since we've resolved all nodes manually
+      session.state.toBeProcessedNodes = [];
+
       // DAG should now be complete, but session state should still be false
       expect(session.dagManager.isComplete()).toBe(true);
       expect(session.state.isComplete).toBe(false);
 
       // Sync completion state
-      sessionManager.syncCompletionState(testSessionId);
+      sessionManager.analyzeCompletionState(testSessionId);
 
       // Both should now be true
       expect(session.dagManager.isComplete()).toBe(true);
@@ -109,7 +112,7 @@ describe("State Synchronization", () => {
       expect(session.dagManager.isComplete()).toBe(false);
 
       // Sync completion state
-      sessionManager.syncCompletionState(testSessionId);
+      sessionManager.analyzeCompletionState(testSessionId);
 
       // Both should still be false
       expect(session.dagManager.isComplete()).toBe(false);
@@ -119,7 +122,7 @@ describe("State Synchronization", () => {
     it("should handle invalid session ID gracefully", () => {
       // Should not throw for invalid session ID
       expect(() => {
-        sessionManager.syncCompletionState("invalid-session-id");
+        sessionManager.analyzeCompletionState("invalid-session-id");
       }).not.toThrow();
     });
   });
@@ -155,8 +158,11 @@ describe("State Synchronization", () => {
       // Manually resolve dynamic parts
       session.dagManager.updateNode(testNodeId, { dynamicParts: [] });
 
+      // Empty the processing queue since we've resolved all nodes manually
+      session.state.toBeProcessedNodes = [];
+
       // Sync completion state
-      sessionManager.syncCompletionState(testSessionId);
+      sessionManager.analyzeCompletionState(testSessionId);
 
       // Should now be complete
       expect(session.dagManager.isComplete()).toBe(true);
