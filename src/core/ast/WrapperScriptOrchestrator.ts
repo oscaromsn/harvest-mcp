@@ -6,7 +6,8 @@
  * generation using ts-morph for type safety and automatic import management.
  */
 
-import { findDependenciesWithAuthentication } from "../../agents/DependencyAgent.js";
+import { analyzeAuthentication } from "../../agents/AuthenticationAgent.js";
+import { identifyDynamicPartsWithSessionAwareness } from "../../agents/DynamicPartsAgent.js";
 import { analyzeSessionBootstrap } from "../../agents/SessionBootstrapAgent.js";
 import type {
   AuthenticationDependency,
@@ -178,26 +179,52 @@ export class WrapperScriptOrchestrator {
       // Get all requests from the session
       const allRequests = this.getAllRequestsFromSession(session);
 
-      // Perform enhanced dependency analysis with authentication
-      const dependencyResult = await findDependenciesWithAuthentication(
-        { requests: allRequests, urls: [] },
-        session.cookieData || {},
-        {}
-      );
+      // Perform authentication analysis using the AuthenticationAgent
+      const authAnalysis = await analyzeAuthentication(session);
 
-      // Analyze session bootstrap requirements
+      // Identify dynamic parts with session awareness for dependency analysis
+      const sessionAwareAnalysis =
+        await identifyDynamicPartsWithSessionAwareness(allRequests, {});
+
+      // Analyze session bootstrap requirements using extracted session tokens
       const bootstrapAnalysis = await analyzeSessionBootstrap(
         allRequests,
-        dependencyResult.sessionTokens,
-        dependencyResult.authenticationDependencies.map((dep) => dep.parameter)
+        sessionAwareAnalysis.sessionTokens,
+        sessionAwareAnalysis.authenticationParameters
       );
 
+      // Create authentication dependencies from the authentication analysis
+      const authDependencies: AuthenticationDependency[] =
+        authAnalysis.tokens.map((token) => ({
+          type:
+            token.type === "bearer"
+              ? "bearer-token"
+              : token.type === "api_key"
+                ? "api-key"
+                : token.type === "session"
+                  ? "session-token"
+                  : token.type === "csrf"
+                    ? "csrf-token"
+                    : "session-token",
+          parameter: token.name,
+          value: token.value,
+          source:
+            token.location === "header"
+              ? "header"
+              : token.location === "cookie"
+                ? "cookie"
+                : token.location === "url_param"
+                  ? "request"
+                  : "header",
+          required: true,
+          confidence: 0.8, // Default confidence from auth analysis
+        }));
+
       this.authenticationAnalysis = {
-        dependencies: dependencyResult.authenticationDependencies,
+        dependencies: authDependencies,
         bootstrapAnalysis,
         requiresAuthentication:
-          dependencyResult.requiresAuthentication ||
-          bootstrapAnalysis.requiresBootstrap,
+          authAnalysis.hasAuthentication || bootstrapAnalysis.requiresBootstrap,
       };
 
       logger.debug("Authentication analysis completed", {

@@ -1313,7 +1313,7 @@ export class HarvestMCPServer {
 
     const sessionContent = sessionResult.content?.[0]?.text;
     if (typeof sessionContent !== "string") {
-      throw new Error("Invalid session result format");
+      throw new HarvestError("Invalid session result format", "TOOL_ERROR");
     }
     const sessionData = JSON.parse(sessionContent);
     return sessionData.sessionId;
@@ -1336,12 +1336,18 @@ export class HarvestMCPServer {
       );
 
       if (startPrimaryResult.isError) {
-        throw new Error("Primary workflow analysis failed");
+        throw new HarvestError(
+          "Primary workflow analysis failed",
+          "ANALYSIS_ERROR"
+        );
       }
 
       const workflowContent = startPrimaryResult.content?.[0]?.text;
       if (typeof workflowContent !== "string") {
-        throw new Error("Invalid workflow analysis result format");
+        throw new HarvestError(
+          "Invalid workflow analysis result format",
+          "TOOL_ERROR"
+        );
       }
 
       const workflowData = JSON.parse(workflowContent);
@@ -1425,7 +1431,7 @@ export class HarvestMCPServer {
     );
     const completeContent = completeResult.content?.[0]?.text;
     if (typeof completeContent !== "string") {
-      throw new Error("Invalid completion result format");
+      throw new HarvestError("Invalid completion result format", "TOOL_ERROR");
     }
     const completeData = JSON.parse(completeContent);
     return completeData.isComplete;
@@ -1441,7 +1447,7 @@ export class HarvestMCPServer {
     );
     const processContent = processResult.content?.[0]?.text;
     if (typeof processContent !== "string") {
-      throw new Error("Invalid process result format");
+      throw new HarvestError("Invalid process result format", "TOOL_ERROR");
     }
     const processData = JSON.parse(processContent);
 
@@ -1470,7 +1476,10 @@ export class HarvestMCPServer {
       );
       const codeContent = codeResult.content?.[0]?.text;
       if (typeof codeContent !== "string") {
-        throw new Error("Invalid code generation result format");
+        throw new HarvestError(
+          "Invalid code generation result format",
+          "TOOL_ERROR"
+        );
       }
       const generatedCode = codeContent;
 
@@ -1528,7 +1537,10 @@ export class HarvestMCPServer {
       );
       const unresolvedContent = unresolvedResult.content?.[0]?.text;
       if (typeof unresolvedContent !== "string") {
-        throw new Error("Invalid unresolved result format");
+        throw new HarvestError(
+          "Invalid unresolved result format",
+          "TOOL_ERROR"
+        );
       }
       const unresolvedData = JSON.parse(unresolvedContent);
 

@@ -123,7 +123,7 @@ export async function handleQuickCaptureWorkflow(
     );
     const sessionContent = sessionResult.content?.[0]?.text;
     if (typeof sessionContent !== "string") {
-      throw new Error("Invalid session result format");
+      throw new HarvestError("Invalid session result format", "TOOL_ERROR");
     }
     const sessionData = JSON.parse(sessionContent);
 
@@ -204,7 +204,7 @@ export async function handleAnalyzeHarWorkflow(
 
     const sessionContent = sessionResult.content?.[0]?.text;
     if (typeof sessionContent !== "string") {
-      throw new Error("Invalid session result format");
+      throw new HarvestError("Invalid session result format", "TOOL_ERROR");
     }
     const sessionData = JSON.parse(sessionContent);
     const sessionId = sessionData.sessionId;
@@ -222,7 +222,7 @@ export async function handleAnalyzeHarWorkflow(
 
     const analysisContent = analysisResult.content?.[0]?.text;
     if (typeof analysisContent !== "string") {
-      throw new Error("Invalid analysis result format");
+      throw new HarvestError("Invalid analysis result format", "TOOL_ERROR");
     }
     const analysisData = JSON.parse(analysisContent);
 
@@ -468,7 +468,10 @@ async function generateCodeIfComplete(
       return { generatedCode: codeContent, codeGenerationSuccess: true };
     }
 
-    throw new Error("Invalid code generation result format");
+    throw new HarvestError(
+      "Invalid code generation result format",
+      "TOOL_ERROR"
+    );
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : "Unknown error";
     warnings.push(`Code generation failed: ${errorMsg}`);
