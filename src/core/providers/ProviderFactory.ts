@@ -33,7 +33,7 @@ const PROVIDER_REGISTRY: Record<string, ProviderRegistryEntry> = {
       return provider;
     },
     requiredEnvVar: "GOOGLE_API_KEY",
-    defaultModel: "gemini-2.0-flash",
+    defaultModel: "gemini-1.5-flash",
   },
 };
 
@@ -266,13 +266,7 @@ export function getAvailableProviders(): string[] {
  * Validate configuration status and provide setup guidance
  * Checks CLI arguments, environment variables, and provides detailed configuration status
  */
-export function validateConfiguration(cliConfig?: {
-  provider?: string;
-  apiKey?: string;
-  openaiApiKey?: string;
-  googleApiKey?: string;
-  model?: string;
-}): {
+export function validateConfiguration(): {
   isConfigured: boolean;
   availableProviders: string[];
   configuredProviders: string[];
@@ -281,21 +275,20 @@ export function validateConfiguration(cliConfig?: {
   configurationSource: string;
 } {
   const centralConfig = getConfig();
-  let hasOpenAI = !!process.env.OPENAI_API_KEY;
-  let hasGemini = !!process.env.GOOGLE_API_KEY;
-  let configurationSource = "environment";
 
-  // Check CLI configuration (highest priority)
-  if (cliConfig) {
-    if (cliConfig.openaiApiKey || cliConfig.apiKey?.startsWith("sk-")) {
-      hasOpenAI = true;
-      configurationSource = "cli";
-    }
-    if (cliConfig.googleApiKey || cliConfig.apiKey?.startsWith("AIza")) {
-      hasGemini = true;
-      configurationSource = "cli";
-    }
+  // Check configuration from all sources via ConfigManager
+  const hasOpenAI = !!centralConfig.llm.providers.openai.apiKey;
+  const hasGemini = !!centralConfig.llm.providers.gemini.apiKey;
+
+  // Determine configuration source based on what was loaded
+  let configurationSource = "config";
+  if (
+    process.env.HARVEST_OPENAI_API_KEY ||
+    process.env.HARVEST_GOOGLE_API_KEY
+  ) {
+    configurationSource = "environment";
   }
+  // CLI arguments would have been processed during ConfigManager initialization
 
   const availableProviders = getAvailableProviders();
   const configuredProviders: string[] = [];

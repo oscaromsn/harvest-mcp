@@ -105,7 +105,7 @@ export class GeminiProvider implements ILLMProvider {
   }
 
   getDefaultModel(): string {
-    return "gemini-2.0-flash";
+    return "gemini-1.5-flash";
   }
 
   getSupportedModels(): string[] {
