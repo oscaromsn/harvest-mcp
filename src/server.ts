@@ -10,7 +10,6 @@ import { CompletedSessionManager } from "./core/CompletedSessionManager.js";
 import { manualSessionManager } from "./core/ManualSessionManager.js";
 // validateConfiguration no longer needed - centralized config handles validation
 import { SessionManager } from "./core/SessionManager.js";
-import { registerTypeSafeDebugTools } from "./core/SimpleToolRegistry.js";
 import {
   handleIsComplete,
   handleProcessNextNode,
@@ -21,6 +20,7 @@ import {
   handleGenerateWrapperScript,
   registerCodegenTools,
 } from "./tools/codegenTools.js";
+import { registerDebugTools } from "./tools/debugToolRegistry.js";
 import { handleGetUnresolvedNodes } from "./tools/debugTools.js";
 // Debug tools now handled by the type-safe ToolRegistry system
 import { registerManualSessionTools } from "./tools/manualSessionTools.js";
@@ -282,7 +282,7 @@ export class HarvestMCPServer {
     registerAnalysisTools(this.server, analysisToolContext);
 
     // Debug Tools - Type-safe without any types
-    registerTypeSafeDebugTools(this.server, debugToolContext);
+    registerDebugTools(this.server, debugToolContext);
 
     // Code Generation Tools
     registerCodegenTools(this.server, codegenToolContext);

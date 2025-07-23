@@ -1,12 +1,16 @@
 /**
- * Simplified type-safe tool registry
+ * Debug tool registry
  *
- * This simplified approach eliminates `any` types while maintaining
- * easier-to-manage type safety for the debug tools.
+ * Registers all debug-specific MCP tools with type safety.
+ * These tools provide debugging capabilities for the analysis workflow.
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import type {
+  DebugToolContext,
+  ParameterClassification,
+} from "../types/index.js";
 // Import debug tool handlers with their actual types
 import {
   handleAnalyzeParameters,
@@ -23,16 +27,12 @@ import {
   handleSetMasterNode,
   handleSkipNode,
   handleTestUrlIdentification,
-} from "../tools/debugTools.js";
-import type {
-  DebugToolContext,
-  ParameterClassification,
-} from "../types/index.js";
+} from "./debugTools.js";
 
 /**
- * Type-safe debug tool registration that replaces the `any` types
+ * Register all debug tools for the MCP server
  */
-export function registerTypeSafeDebugTools(
+export function registerDebugTools(
   server: McpServer,
   context: DebugToolContext
 ): void {
