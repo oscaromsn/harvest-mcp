@@ -2,7 +2,6 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { type CLIArgs, initializeConfig } from "./config/index.js";
 import { CompletedSessionManager } from "./core/CompletedSessionManager.js";
@@ -38,12 +37,8 @@ import {
   createManualSessionToolContext,
   createSessionToolContext,
   createSystemToolContext,
-  createUnifiedToolContext,
   createWorkflowToolContext,
   HarvestError,
-  type RequestModel,
-  type UnifiedToolContext,
-  type URLInfo,
 } from "./types/index.js";
 import { serverLogger } from "./utils/logger.js";
 
@@ -150,7 +145,17 @@ export class HarvestMCPServer {
   private readonly codegenToolContext: ReturnType<
     typeof createCodegenToolContext
   >;
-  private readonly unifiedContext: UnifiedToolContext;
+  private readonly systemToolContext: ReturnType<
+    typeof createSystemToolContext
+  >;
+  private readonly manualSessionToolContext: ReturnType<
+    typeof createManualSessionToolContext
+  >;
+  private readonly debugToolContext: ReturnType<typeof createDebugToolContext>;
+  private readonly workflowToolContext: ReturnType<
+    typeof createWorkflowToolContext
+  >;
+  private readonly authToolContext: ReturnType<typeof createAuthToolContext>;
 
   /**
    * Get the session tool context for direct tool access in tests
@@ -176,11 +181,44 @@ export class HarvestMCPServer {
   }
 
   /**
-   * Get a universal context for test compatibility only
+   * Get the system tool context for direct tool access in tests
    */
-  public getContext(): UnifiedToolContext {
-    return this.unifiedContext;
+  public getSystemToolContext(): ReturnType<typeof createSystemToolContext> {
+    return this.systemToolContext;
   }
+
+  /**
+   * Get the manual session tool context for direct tool access in tests
+   */
+  public getManualSessionToolContext(): ReturnType<
+    typeof createManualSessionToolContext
+  > {
+    return this.manualSessionToolContext;
+  }
+
+  /**
+   * Get the debug tool context for direct tool access in tests
+   */
+  public getDebugToolContext(): ReturnType<typeof createDebugToolContext> {
+    return this.debugToolContext;
+  }
+
+  /**
+   * Get the workflow tool context for direct tool access in tests
+   */
+  public getWorkflowToolContext(): ReturnType<
+    typeof createWorkflowToolContext
+  > {
+    return this.workflowToolContext;
+  }
+
+  /**
+   * Get the auth tool context for direct tool access in tests
+   */
+  public getAuthToolContext(): ReturnType<typeof createAuthToolContext> {
+    return this.authToolContext;
+  }
+
   constructor() {
     this.sessionManager = new SessionManager();
     this.completedSessionManager = CompletedSessionManager.getInstance();
@@ -198,7 +236,23 @@ export class HarvestMCPServer {
       this.sessionManager,
       this.completedSessionManager
     );
-    this.unifiedContext = createUnifiedToolContext(
+    this.systemToolContext = createSystemToolContext(
+      this.sessionManager,
+      this.completedSessionManager
+    );
+    this.manualSessionToolContext = createManualSessionToolContext(
+      this.sessionManager,
+      this.completedSessionManager
+    );
+    this.debugToolContext = createDebugToolContext(
+      this.sessionManager,
+      this.completedSessionManager
+    );
+    this.workflowToolContext = createWorkflowToolContext(
+      this.sessionManager,
+      this.completedSessionManager
+    );
+    this.authToolContext = createAuthToolContext(
       this.sessionManager,
       this.completedSessionManager
     );
@@ -241,63 +295,29 @@ export class HarvestMCPServer {
    * Set up MCP tools
    */
   private setupTools(): void {
-    // Create focused tool contexts using adapter pattern
-    const sessionToolContext = createSessionToolContext(
-      this.sessionManager,
-      this.completedSessionManager
-    );
-    const analysisToolContext = createAnalysisToolContext(
-      this.sessionManager,
-      this.completedSessionManager
-    );
-    const debugToolContext = createDebugToolContext(
-      this.sessionManager,
-      this.completedSessionManager
-    );
-    const codegenToolContext = createCodegenToolContext(
-      this.sessionManager,
-      this.completedSessionManager
-    );
-    const systemToolContext = createSystemToolContext(
-      this.sessionManager,
-      this.completedSessionManager
-    );
-    const manualSessionToolContext = createManualSessionToolContext(
-      this.sessionManager,
-      this.completedSessionManager
-    );
-    const workflowToolContext = createWorkflowToolContext(
-      this.sessionManager,
-      this.completedSessionManager
-    );
-    const authToolContext = createAuthToolContext(
-      this.sessionManager,
-      this.completedSessionManager
-    );
-
     // Session Management Tools
-    registerSessionTools(this.server, sessionToolContext);
+    registerSessionTools(this.server, this.sessionToolContext);
 
     // Analysis Tools
-    registerAnalysisTools(this.server, analysisToolContext);
+    registerAnalysisTools(this.server, this.analysisToolContext);
 
     // Debug Tools - Type-safe without any types
-    registerDebugTools(this.server, debugToolContext);
+    registerDebugTools(this.server, this.debugToolContext);
 
     // Code Generation Tools
-    registerCodegenTools(this.server, codegenToolContext);
+    registerCodegenTools(this.server, this.codegenToolContext);
 
     // Manual Session Tools
-    registerManualSessionTools(this.server, manualSessionToolContext);
+    registerManualSessionTools(this.server, this.manualSessionToolContext);
 
     // Workflow Tools
-    registerWorkflowTools(this.server, workflowToolContext);
+    registerWorkflowTools(this.server, this.workflowToolContext);
 
     // System Tools
-    registerSystemTools(this.server, systemToolContext, {});
+    registerSystemTools(this.server, this.systemToolContext);
 
     // Authentication Tools
-    registerAuthTools(this.server, authToolContext);
+    registerAuthTools(this.server, this.authToolContext);
   }
 
   /**
@@ -1224,314 +1244,6 @@ export class HarvestMCPServer {
   }
 
   /**
-   * Handle analysis_run_initial_analysis with API key support
-   *
-   * @deprecated This method uses the legacy single-URL identification approach.
-   * New code should use the modern workflow-based analysis via handleStartPrimaryWorkflow
-   * from analysisTools.ts which provides multi-workflow discovery and better HAR analysis.
-   */
-
-  /**
-   * Handle analysis.run_initial_analysis tool
-   *
-   * @deprecated This method uses URLIdentificationAgent for single-URL analysis.
-   * Consider migrating to the workflow discovery approach via analysis_start_primary_workflow
-   * tool which provides more robust multi-workflow analysis capabilities.
-   */
-  public async handleRunInitialAnalysis(
-    args: unknown
-  ): Promise<CallToolResult> {
-    try {
-      const argsObj = args as { sessionId: string };
-      const session = this.sessionManager.getSession(argsObj.sessionId);
-
-      // Check HAR data quality before proceeding
-      if (session.harData.validation) {
-        const validation = session.harData.validation;
-
-        if (validation.quality === "empty") {
-          return {
-            content: [
-              {
-                type: "text",
-                text: JSON.stringify({
-                  error: "Cannot analyze empty HAR file",
-                  message: "No meaningful network requests found in HAR file",
-                  issues: validation.issues,
-                  recommendations: validation.recommendations,
-                  stats: validation.stats,
-                  nextSteps: [
-                    "1. Capture a new HAR file with meaningful interactions",
-                    "2. Ensure you interact with the website's main functionality",
-                    "3. Look for forms, buttons, or API calls to capture",
-                  ],
-                }),
-              },
-            ],
-            isError: true,
-          };
-        }
-
-        if (validation.quality === "poor") {
-          this.sessionManager.addLog(
-            argsObj.sessionId,
-            "warn",
-            `Proceeding with poor quality HAR file: ${validation.issues.join(", ")}`
-          );
-        }
-      }
-
-      // Check if we have any URLs available
-      if (!session.harData.urls || session.harData.urls.length === 0) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify({
-                error: "No URLs available for analysis",
-                message: "HAR file contains no analyzable requests",
-                recommendations: [
-                  "Ensure the HAR file was captured during meaningful interactions",
-                  "Try capturing network traffic while submitting forms or loading data",
-                  "Check that the website makes API calls or form submissions",
-                ],
-                debugInfo: {
-                  totalRequests: session.harData.requests.length,
-                  totalUrls: session.harData.urls.length,
-                  harValidation: session.harData.validation,
-                },
-              }),
-            },
-          ],
-          isError: true,
-        };
-      }
-
-      // Log the start of initial analysis
-      this.sessionManager.addLog(
-        argsObj.sessionId,
-        "info",
-        "Starting initial analysis - identifying action URL"
-      );
-
-      // Use heuristic URL selection (URLIdentificationAgent deprecated)
-      // Modern workflow discovery handles URL identification automatically
-      this.sessionManager.addLog(
-        argsObj.sessionId,
-        "info",
-        "Using heuristic URL selection for backward compatibility"
-      );
-      const actionUrl = this.selectUrlHeuristically(session.harData.urls);
-
-      // Find the corresponding request in HAR data using flexible URL matching
-      const targetRequest = this.findRequestByFlexibleUrl(
-        session.harData.requests,
-        actionUrl
-      );
-      if (!targetRequest) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify({
-                error: "Target request not found",
-                message: `No request found for identified URL: ${actionUrl}`,
-                actionUrl,
-                availableUrls: session.harData.requests.map((r) => r.url),
-                recommendations: [
-                  "The HAR file may not contain the complete workflow",
-                  "Try capturing a longer interaction sequence",
-                  "Ensure all form submissions and API calls are included",
-                ],
-                debugInfo: {
-                  identifiedUrl: actionUrl,
-                  totalRequests: session.harData.requests.length,
-                  harQuality: session.harData.validation?.quality,
-                },
-              }),
-            },
-          ],
-          isError: true,
-        };
-      }
-
-      // Create master node in DAG
-      const masterNodeId = session.dagManager.addNode(
-        "master_curl",
-        {
-          key: targetRequest,
-          value: targetRequest.response || null,
-        },
-        {
-          dynamicParts: ["None"], // Will be updated in next step
-          extractedParts: ["None"],
-        }
-      );
-
-      // Update session state
-      session.state.actionUrl = actionUrl;
-      session.state.masterNodeId = masterNodeId;
-      session.state.toBeProcessedNodes.push(masterNodeId);
-
-      // Ensure atomic state validation after master node creation
-      const completionAnalysis = this.sessionManager.analyzeCompletionState(
-        argsObj.sessionId
-      );
-      this.sessionManager.addLog(
-        argsObj.sessionId,
-        "debug",
-        `Post-creation state analysis: ${completionAnalysis.isComplete ? "Complete" : `Blockers: ${completionAnalysis.blockers.join(", ")}`}`
-      );
-
-      this.sessionManager.addLog(
-        argsObj.sessionId,
-        "info",
-        `Initial analysis complete - identified URL: ${actionUrl}, created master node: ${masterNodeId}`
-      );
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({
-              masterNodeId,
-              actionUrl,
-              message: "Initial analysis completed successfully",
-              nodeCount: session.dagManager.getNodeCount(),
-              harQuality: session.harData.validation?.quality,
-              nextStep:
-                "Use analysis.process_next_node to begin dependency analysis",
-            }),
-          },
-        ],
-      };
-    } catch (error) {
-      if (error instanceof HarvestError) {
-        throw error;
-      }
-
-      throw new HarvestError(
-        `Initial analysis failed: ${error instanceof Error ? error.message : "Unknown error"}`,
-        "INITIAL_ANALYSIS_FAILED",
-        { originalError: error }
-      );
-    }
-  }
-
-  /**
-   * Find a request by flexible URL matching (base path comparison with tie-breaking)
-   */
-  private findRequestByFlexibleUrl(
-    requests: RequestModel[],
-    targetUrl: string
-  ): RequestModel | null {
-    try {
-      const targetParsed = new URL(targetUrl);
-
-      // First try exact match for backward compatibility
-      const exactMatch = requests.find((req) => req.url === targetUrl);
-      if (exactMatch) {
-        return exactMatch;
-      }
-
-      // Find candidates that match base path (protocol + hostname + pathname)
-      const candidates = requests.filter((req) => {
-        try {
-          const reqParsed = new URL(req.url);
-          return (
-            reqParsed.protocol === targetParsed.protocol &&
-            reqParsed.hostname === targetParsed.hostname &&
-            reqParsed.pathname === targetParsed.pathname
-          );
-        } catch {
-          return false; // Skip invalid URLs
-        }
-      });
-
-      if (candidates.length === 0) {
-        return null;
-      }
-
-      if (candidates.length === 1) {
-        const firstCandidate = candidates[0];
-        return firstCandidate || null;
-      }
-
-      // Apply tie-breaking heuristics
-      return this.selectBestUrlCandidate(candidates, targetParsed);
-    } catch {
-      // If URL parsing fails, fall back to exact string matching
-      return requests.find((req) => req.url === targetUrl) || null;
-    }
-  }
-
-  /**
-   * Select the best candidate from multiple URL matches using heuristics
-   */
-  private selectBestUrlCandidate(
-    candidates: RequestModel[],
-    targetParsed: URL
-  ): RequestModel {
-    // Ensure we have candidates
-    if (candidates.length === 0) {
-      throw new Error("No candidates provided for URL selection");
-    }
-
-    // Heuristic 1: Prefer request with most overlapping query parameter keys
-    const targetParams = new URLSearchParams(targetParsed.search);
-    const targetParamKeys = Array.from(targetParams.keys());
-
-    if (targetParamKeys.length > 0) {
-      let bestMatch = candidates[0];
-      if (!bestMatch) {
-        // This should never happen due to length check above, but provide safe fallback
-        const validCandidate = candidates.find((c) => c);
-        if (!validCandidate) {
-          throw new Error("No valid candidates found despite length check");
-        }
-        return validCandidate;
-      }
-      let maxOverlap = 0;
-
-      for (const candidate of candidates) {
-        try {
-          const candidateParsed = new URL(candidate.url);
-          const candidateParams = new URLSearchParams(candidateParsed.search);
-          const candidateParamKeys = Array.from(candidateParams.keys());
-
-          const overlap = targetParamKeys.filter((key) =>
-            candidateParamKeys.includes(key)
-          ).length;
-          if (overlap > maxOverlap) {
-            maxOverlap = overlap;
-            bestMatch = candidate;
-          }
-        } catch {
-          // Skip invalid URLs that cannot be parsed
-        }
-      }
-
-      if (maxOverlap > 0) {
-        return bestMatch;
-      }
-    }
-
-    // Heuristic 2: Prefer request with most query parameters (most complex interaction)
-    return candidates.reduce((best, current) => {
-      try {
-        const bestParams = new URL(best.url).searchParams;
-        const currentParams = new URL(current.url).searchParams;
-        return Array.from(currentParams.keys()).length >
-          Array.from(bestParams.keys()).length
-          ? current
-          : best;
-      } catch {
-        return best;
-      }
-    });
-  }
-
-  /**
    * Execute full analysis workflow for the prompt
    */
   private async executeFullAnalysisWorkflow(request: {
@@ -1614,7 +1326,7 @@ export class HarvestMCPServer {
     sessionId: string,
     analysisResults: string[]
   ): Promise<boolean> {
-    // Use modern workflow analysis instead of deprecated handleRunInitialAnalysis
+    // Use modern workflow analysis
     try {
       const analysisToolContext = this.getAnalysisToolContext();
 
@@ -1810,13 +1522,9 @@ export class HarvestMCPServer {
 
     // Attempt debug information
     try {
-      const debugContext = createDebugToolContext(
-        this.sessionManager,
-        this.completedSessionManager
-      );
       const unresolvedResult = await handleGetUnresolvedNodes(
         { sessionId },
-        debugContext
+        this.debugToolContext
       );
       const unresolvedContent = unresolvedResult.content?.[0]?.text;
       if (typeof unresolvedContent !== "string") {
@@ -1885,106 +1593,6 @@ export class HarvestMCPServer {
         },
       ],
     };
-  }
-
-  /**
-   * Calculate score for a URL based on heuristics
-   */
-  private calculateUrlScore(urlInfo: URLInfo): number {
-    let score = 0;
-    const url = urlInfo.url.toLowerCase();
-
-    // Method preferences
-    if (urlInfo.method === "POST") {
-      score += 10;
-    }
-
-    // API endpoint preferences
-    if (url.includes("/api/")) {
-      score += 8;
-    }
-    if (url.includes("/v1/") || url.includes("/v2/")) {
-      score += 6;
-    }
-
-    // Action keyword preferences
-    const actionKeywords = [
-      "search",
-      "submit",
-      "create",
-      "update",
-      "delete",
-      "login",
-      "auth",
-    ];
-    const actionScores = [7, 7, 6, 6, 6, 5, 5];
-
-    for (let i = 0; i < actionKeywords.length; i++) {
-      const keyword = actionKeywords[i];
-      const actionScore = actionScores[i];
-      if (keyword && actionScore !== undefined && url.includes(keyword)) {
-        score += actionScore;
-      }
-    }
-
-    // JSON endpoint preference
-    if (url.includes(".json")) {
-      score += 4;
-    }
-
-    // Static resource penalties
-    const staticExtensions = [".css", ".js", ".png", ".jpg", ".ico"];
-    const staticKeywords = ["favicon", "analytics", "tracking"];
-
-    for (const ext of staticExtensions) {
-      if (url.includes(ext)) {
-        score -= 10;
-      }
-    }
-
-    for (const keyword of staticKeywords) {
-      if (url.includes(keyword)) {
-        score -= 8;
-      }
-    }
-
-    // URL length preference
-    if (url.length < 100) {
-      score += 2;
-    }
-
-    return score;
-  }
-
-  /**
-   * Heuristic URL selection when LLM is not available
-   */
-  private selectUrlHeuristically(urls: URLInfo[]): string {
-    if (urls.length === 0) {
-      throw new HarvestError(
-        "No URLs available for heuristic selection",
-        "NO_URLS_AVAILABLE"
-      );
-    }
-
-    // Score URLs based on patterns that indicate they're likely action URLs
-    const scoredUrls = urls.map((urlInfo) => {
-      const score = this.calculateUrlScore(urlInfo);
-      return { url: urlInfo.url, score };
-    });
-
-    // Sort by score and return the highest scoring URL
-    scoredUrls.sort((a, b) => b.score - a.score);
-
-    const selectedUrl = scoredUrls[0]?.url;
-    if (!selectedUrl) {
-      throw new HarvestError(
-        "Could not select a URL heuristically",
-        "HEURISTIC_SELECTION_FAILED"
-      );
-    }
-
-    return selectedUrl;
   }
 
   /**

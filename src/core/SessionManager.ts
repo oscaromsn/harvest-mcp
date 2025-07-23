@@ -873,6 +873,16 @@ export class SessionManager {
       // Verify master node actually exists in DAG
       const masterNode = session.dagManager.getNode(session.state.masterNodeId);
       if (!masterNode) {
+        // Debug: Show what master node ID we're looking for vs. what's available
+        const allNodeIds = Array.from(session.dagManager.getAllNodes().values())
+          .map((n) => n.id)
+          .slice(0, 5);
+        logger.warn("Master node mismatch", {
+          sessionId,
+          masterNodeId: session.state.masterNodeId,
+          sampleDagNodeIds: allNodeIds,
+        });
+
         blockers.push("Master node ID is set but node does not exist in DAG");
         recommendations.push(
           "Re-run 'analysis_start_primary_workflow' to properly create master node"

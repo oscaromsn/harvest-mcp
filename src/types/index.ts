@@ -122,6 +122,72 @@ export interface AuthenticationAnalysis {
   };
 }
 
+// ========== Authentication Dependency Types ==========
+
+/**
+ * Enhanced authentication dependency information
+ */
+export interface AuthenticationDependency {
+  type:
+    | "session-token"
+    | "api-key"
+    | "bearer-token"
+    | "csrf-token"
+    | "cookie-auth";
+  parameter: string;
+  value: string;
+  source?: "bootstrap" | "request" | "cookie" | "header";
+  required: boolean;
+  confidence: number;
+}
+
+/**
+ * Enhanced dependency result with authentication information
+ */
+export interface EnhancedDependencyResult extends DependencyResult {
+  authenticationDependencies: AuthenticationDependency[];
+  sessionTokens: string[];
+  requiresAuthentication: boolean;
+}
+
+/**
+ * Session bootstrap analysis result
+ */
+export interface SessionBootstrapAnalysis {
+  requiresBootstrap: boolean;
+  bootstrapRequests: BootstrapRequest[];
+  sessionTokens: SessionToken[];
+  establishmentPattern:
+    | "initial-page"
+    | "login-endpoint"
+    | "spa-initialization"
+    | "cookie-based"
+    | "none";
+  confidence: number;
+  analysis: string;
+}
+
+/**
+ * Bootstrap request that establishes session state
+ */
+export interface BootstrapRequest {
+  request: RequestModel;
+  establishesTokens: string[];
+  priority: number;
+  method: "page-load" | "api-call" | "authentication";
+}
+
+/**
+ * Session token information
+ */
+export interface SessionToken {
+  parameter: string;
+  value: string;
+  source: "url-param" | "header" | "cookie" | "response-body";
+  establishedBy?: RequestModel;
+  required: boolean;
+}
+
 // ========== Parameter Classification Types ==========
 
 /**
@@ -401,7 +467,6 @@ export interface DAGExport {
 
 // ========== LLM Response Types ==========
 
-// URLIdentificationResponse removed - URLIdentificationAgent deprecated
 // Modern workflow discovery handles URL identification
 
 /**
@@ -1061,23 +1126,6 @@ export interface AuthToolContext
   completedSessionManager: CompletedSessionManagerAdapter;
 }
 
-/**
- * Unified context interface that combines all focused interfaces for backward compatibility
- * This provides all capabilities needed by legacy code while maintaining type safety
- *
- * @deprecated For backward compatibility. New tools should use focused contexts
- * like SessionToolContext, AnalysisToolContext, or DebugToolContext instead of this
- * unified context. The unified approach violates the Interface Segregation Principle
- * and makes dependency injection less clear.
- */
-export interface UnifiedToolContext
-  extends SessionManagement,
-    SessionLogging,
-    SessionAnalysis {
-  sessionManager: SessionManagerAdapter;
-  completedSessionManager: CompletedSessionManagerAdapter;
-}
-
 // ========== Adapter Pattern Implementation ==========
 
 /**
@@ -1350,30 +1398,6 @@ export function createAuthToolContext(
   return {
     getSession: sessionAdapter.getSession.bind(sessionAdapter),
     addLog: sessionAdapter.addLog.bind(sessionAdapter),
-    analyzeCompletionState:
-      sessionAdapter.analyzeCompletionState.bind(sessionAdapter),
-    setMasterNodeId: sessionAdapter.setMasterNodeId.bind(sessionAdapter),
-    sessionManager: sessionAdapter,
-    completedSessionManager: completedSessionAdapter,
-  };
-}
-
-export function createUnifiedToolContext(
-  sessionManager: SessionManager,
-  completedSessionManager: CompletedSessionManager
-): UnifiedToolContext {
-  const sessionAdapter = new SessionManagerAdapter(sessionManager);
-  const completedSessionAdapter = new CompletedSessionManagerAdapter(
-    completedSessionManager
-  );
-
-  return {
-    getSession: sessionAdapter.getSession.bind(sessionAdapter),
-    addLog: sessionAdapter.addLog.bind(sessionAdapter),
-    createSession: sessionAdapter.createSession.bind(sessionAdapter),
-    listSessions: sessionAdapter.listSessions.bind(sessionAdapter),
-    getStats: sessionAdapter.getStats.bind(sessionAdapter),
-    deleteSession: sessionAdapter.deleteSession.bind(sessionAdapter),
     analyzeCompletionState:
       sessionAdapter.analyzeCompletionState.bind(sessionAdapter),
     setMasterNodeId: sessionAdapter.setMasterNodeId.bind(sessionAdapter),
