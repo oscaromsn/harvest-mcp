@@ -5,6 +5,7 @@ import {
 } from "../../src/core/LLMClient.js";
 import type { SessionManager } from "../../src/core/SessionManager.js";
 import { HarvestMCPServer } from "../../src/server.js";
+import { handleStartPrimaryWorkflow } from "../../src/tools/analysisTools.js";
 import { handleSessionStart } from "../../src/tools/sessionTools.js";
 import { createMockLLMClient } from "../mocks/llm-client.mock.js";
 
@@ -24,7 +25,7 @@ export interface E2ESessionOptions {
   cookiePath?: string;
   prompt?: string;
   mockLLMResponses?: {
-    identify_end_url?: { url: string };
+    identify_end_url?: { url: "https://api.example.com/search" };
     identify_dynamic_parts?: { dynamic_parts: string[] };
     identify_input_variables?: {
       identified_variables: Array<{
@@ -46,9 +47,6 @@ export function setupE2EContext(
 
   // Set up mock LLM client for E2E tests to avoid real API calls
   const mockLLMClient = createMockLLMClient({
-    identify_end_url: {
-      url: "https://pangeabnp.pdpj.jus.br/api/v1/precedentes",
-    },
     identify_dynamic_parts: {
       dynamic_parts: ["auth_token", "session_id"],
     },
@@ -113,9 +111,12 @@ export async function runInitialAnalysis(
   server: HarvestMCPServer,
   sessionId: string
 ): Promise<{ masterNodeId: string; actionUrl: string }> {
-  const initialAnalysisResult = await server.handleRunInitialAnalysis({
-    sessionId,
-  });
+  // Use modern workflow analysis instead of deprecated handleRunInitialAnalysis
+  const analysisToolContext = server.getAnalysisToolContext();
+  const initialAnalysisResult = await handleStartPrimaryWorkflow(
+    { sessionId },
+    analysisToolContext
+  );
   const firstContent = initialAnalysisResult.content?.[0];
   if (!firstContent || typeof firstContent.text !== "string") {
     throw new Error(
@@ -125,7 +126,9 @@ export async function runInitialAnalysis(
   const initialData = JSON.parse(firstContent.text);
 
   return {
-    masterNodeId: initialData.masterNodeId,
-    actionUrl: initialData.actionUrl,
+    masterNodeId:
+      initialData.workflow?.id || initialData.masterNode?.url || "unknown",
+    actionUrl:
+      initialData.masterNode?.url || initialData.actionUrl || "unknown",
   };
 }

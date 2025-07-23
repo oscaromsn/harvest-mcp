@@ -9,7 +9,6 @@ import type {
   InputVariablesResponse,
   SessionStartParams,
   SimplestRequestResponse,
-  URLIdentificationResponse,
 } from "../../src/types/index.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -39,9 +38,10 @@ export const createTestSessionData = (
 });
 
 // Mock responses for LLM testing
+// URLIdentificationAgent removed - modern workflow discovery handles URL identification
 export const createMockURLResponse = (
   url = "https://pangeabnp.pdpj.jus.br/api/v1/precedentes"
-): URLIdentificationResponse => ({
+) => ({
   url,
 });
 

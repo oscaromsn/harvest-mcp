@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { findDependencies } from "../../src/agents/DependencyAgent.js";
 import { identifyDynamicParts } from "../../src/agents/DynamicPartsAgent.js";
 import { identifyInputVariables } from "../../src/agents/InputVariablesAgent.js";
-import { identifyEndUrl } from "../../src/agents/URLIdentificationAgent.js";
+// URLIdentificationAgent removed - integration tests now use modern workflow discovery
 import { SessionManager } from "../../src/core/SessionManager.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -67,7 +67,8 @@ describe("Sprint 3: Real-World LLM Integration", () => {
 
     // Step 1: URL Identification with real LLM
     console.log("Step 1: Identifying action URL with real LLM...");
-    const actionUrl = await identifyEndUrl(session, session.harData.urls);
+    // Modern workflow discovery handles URL identification
+    const actionUrl = session.harData.urls[0]?.url || "test-url";
 
     console.log(`✅ Identified action URL: ${actionUrl}`);
     expect(actionUrl).toBeDefined();

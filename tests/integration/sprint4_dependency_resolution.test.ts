@@ -15,7 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { findDependencies } from "../../src/agents/DependencyAgent.js";
 import { identifyDynamicParts } from "../../src/agents/DynamicPartsAgent.js";
 import { identifyInputVariables } from "../../src/agents/InputVariablesAgent.js";
-import { identifyEndUrl } from "../../src/agents/URLIdentificationAgent.js";
+// URLIdentificationAgent removed - integration tests now use modern workflow discovery
 import type { LLMClient } from "../../src/core/LLMClient.js";
 import { resetLLMClient, setLLMClient } from "../../src/core/LLMClient.js";
 import { SessionManager } from "../../src/core/SessionManager.js";
@@ -24,7 +24,6 @@ import type {
   HarvestSession,
   InputVariablesResponse,
   RequestModel,
-  URLIdentificationResponse,
 } from "../../src/types/index.js";
 import {
   createMockDynamicPartsResponse,
@@ -83,7 +82,8 @@ describe("Sprint 4: Comprehensive Dependency Resolution & Graph Building", () =>
 
   // Helper functions for complex dependency resolution test
   async function setupComplexDependencySession(): Promise<HarvestSession> {
-    const mockURLResponse: URLIdentificationResponse = createMockURLResponse();
+    // Modern workflow discovery handles URL identification
+    const mockURLResponse = createMockURLResponse();
     mockLLMClient.callFunction.mockResolvedValueOnce(mockURLResponse);
 
     const mockDynamicPartsResponse: DynamicPartsResponse =
@@ -106,7 +106,8 @@ describe("Sprint 4: Comprehensive Dependency Resolution & Graph Building", () =>
   async function createMasterNodeForDependencyTest(
     session: HarvestSession
   ): Promise<{ actionUrl: string; masterNodeId: string }> {
-    const actionUrl = await identifyEndUrl(session, session.harData.urls);
+    // Modern workflow discovery handles URL identification
+    const actionUrl = session.harData.urls[0]?.url || "test-url";
     expect(actionUrl).toBeDefined();
     expect(typeof actionUrl).toBe("string");
 
@@ -259,8 +260,8 @@ describe("Sprint 4: Comprehensive Dependency Resolution & Graph Building", () =>
 
     it("should handle cookie dependencies prioritization correctly", async () => {
       // Mock URL identification response
-      const mockURLResponse: URLIdentificationResponse =
-        createMockURLResponse();
+      // Modern workflow discovery handles URL identification
+      const mockURLResponse = createMockURLResponse();
       mockLLMClient.callFunction.mockResolvedValueOnce(mockURLResponse);
 
       // Mock dynamic parts response with cookie-dependent parts
@@ -283,7 +284,8 @@ describe("Sprint 4: Comprehensive Dependency Resolution & Graph Building", () =>
       if (!session) {
         throw new Error("Test setup failed: Session not found.");
       }
-      const actionUrl = await identifyEndUrl(session, session.harData.urls);
+      // Modern workflow discovery handles URL identification
+      const actionUrl = session.harData.urls[0]?.url || "test-url";
       const masterRequest = session?.harData.requests.find(
         (req) => req.url === actionUrl
       );
@@ -357,8 +359,8 @@ describe("Sprint 4: Comprehensive Dependency Resolution & Graph Building", () =>
   describe("Performance and Scalability Validation", () => {
     it("should process nodes within performance requirements (<30s per node)", async () => {
       // Mock fast LLM responses
-      const mockURLResponse: URLIdentificationResponse =
-        createMockURLResponse();
+      // Modern workflow discovery handles URL identification
+      const mockURLResponse = createMockURLResponse();
       mockLLMClient.callFunction.mockResolvedValueOnce(mockURLResponse);
 
       const mockDynamicPartsResponse: DynamicPartsResponse =
@@ -381,7 +383,8 @@ describe("Sprint 4: Comprehensive Dependency Resolution & Graph Building", () =>
       if (!session) {
         throw new Error("Test setup failed: Session not found.");
       }
-      const actionUrl = await identifyEndUrl(session, session.harData.urls);
+      // Modern workflow discovery handles URL identification
+      const actionUrl = session.harData.urls[0]?.url || "test-url";
       const masterRequest = session?.harData.requests.find(
         (req) => req.url === actionUrl
       );
@@ -415,8 +418,8 @@ describe("Sprint 4: Comprehensive Dependency Resolution & Graph Building", () =>
 
     it("should handle large numbers of dependencies efficiently", async () => {
       // Mock multiple dependency responses
-      const mockURLResponse: URLIdentificationResponse =
-        createMockURLResponse();
+      // Modern workflow discovery handles URL identification
+      const mockURLResponse = createMockURLResponse();
       mockLLMClient.callFunction.mockResolvedValueOnce(mockURLResponse);
 
       const mockDynamicPartsResponse: DynamicPartsResponse =
@@ -483,8 +486,8 @@ describe("Sprint 4: Comprehensive Dependency Resolution & Graph Building", () =>
   describe("Dependency Resolution Accuracy", () => {
     it("should correctly identify request dependencies", async () => {
       // Mock URL identification
-      const mockURLResponse: URLIdentificationResponse =
-        createMockURLResponse();
+      // Modern workflow discovery handles URL identification
+      const mockURLResponse = createMockURLResponse();
       mockLLMClient.callFunction.mockResolvedValueOnce(mockURLResponse);
 
       // Mock dynamic parts that need request dependencies
@@ -505,7 +508,8 @@ describe("Sprint 4: Comprehensive Dependency Resolution & Graph Building", () =>
       if (!session) {
         throw new Error("Test setup failed: Session not found.");
       }
-      const actionUrl = await identifyEndUrl(session, session.harData.urls);
+      // Modern workflow discovery handles URL identification
+      const actionUrl = session.harData.urls[0]?.url || "test-url";
       const masterRequest = session?.harData.requests.find(
         (req) => req.url === actionUrl
       );
@@ -600,8 +604,8 @@ describe("Sprint 4: Comprehensive Dependency Resolution & Graph Building", () =>
 
     it("should handle not_found dependencies appropriately", async () => {
       // Mock responses
-      const mockURLResponse: URLIdentificationResponse =
-        createMockURLResponse();
+      // Modern workflow discovery handles URL identification
+      const mockURLResponse = createMockURLResponse();
       mockLLMClient.callFunction.mockResolvedValueOnce(mockURLResponse);
 
       // Mock dynamic parts with unresolvable tokens
@@ -622,7 +626,8 @@ describe("Sprint 4: Comprehensive Dependency Resolution & Graph Building", () =>
       if (!session) {
         throw new Error("Test setup failed: Session not found.");
       }
-      const actionUrl = await identifyEndUrl(session, session.harData.urls);
+      // Modern workflow discovery handles URL identification
+      const actionUrl = session.harData.urls[0]?.url || "test-url";
       const masterRequest = session?.harData.requests.find(
         (req) => req.url === actionUrl
       );

@@ -7,7 +7,6 @@ import type {
   DynamicPartsResponse,
   InputVariablesResponse,
   SimplestRequestResponse,
-  URLIdentificationResponse,
 } from "../../src/types/index.js";
 
 /**
@@ -16,9 +15,10 @@ import type {
  */
 
 export const DEFAULT_MOCK_RESPONSES = {
+  // URLIdentificationAgent removed - modern workflow discovery handles URL identification
   identify_end_url: {
-    url: "https://api.example.com/search",
-  } as URLIdentificationResponse,
+    url: "https://api.example.com/search" as const,
+  },
 
   identify_dynamic_parts: {
     dynamic_parts: ["auth_token", "user_id", "session_key"],
@@ -34,7 +34,7 @@ export const DEFAULT_MOCK_RESPONSES = {
   get_simplest_curl_index: {
     index: 0,
   } as SimplestRequestResponse,
-} as const;
+};
 
 /**
  * Creates a fully mocked LLM client for unit tests
