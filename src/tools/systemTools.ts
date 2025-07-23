@@ -6,7 +6,6 @@ import { getLLMClient } from "../core/LLMClient.js";
 import { manualSessionManager } from "../core/ManualSessionManager.js";
 import { validateConfiguration } from "../core/providers/ProviderFactory.js";
 import {
-  type AuthenticationAnalysis,
   type CleanupResult,
   HarvestError,
   type ParsedHARData,
@@ -200,168 +199,6 @@ export async function handleMemoryStatus(
 }
 
 /**
- * Calculate basic quality metrics from HAR data
- */
-function calculateBaseQuality(harData: ParsedHARData) {
-  const totalRequests = harData.requests.length;
-  const totalUrls = harData.urls.length;
-  const meaningfulRequests = harData.requests.filter(
-    (req) =>
-      req.method !== "OPTIONS" &&
-      !req.url.includes("favicon") &&
-      !req.url.includes("analytics") &&
-      !req.url.includes("tracking")
-  ).length;
-
-  const baseScore = meaningfulRequests / Math.max(totalRequests, 1);
-
-  return {
-    totalRequests,
-    totalUrls,
-    meaningfulRequests,
-    baseScore,
-  };
-}
-
-/**
- * Analyze authentication quality and generate suggestions
- */
-function analyzeAuthQuality(authAnalysis: AuthenticationAnalysis | undefined) {
-  let authQualityImpact = 0;
-  const authSuggestions: string[] = [];
-  const authIssues: string[] = [];
-
-  if (!authAnalysis) {
-    authSuggestions.push(
-      "Authentication analysis not performed - run session analysis to check auth requirements"
-    );
-    return { authQualityImpact, authSuggestions, authIssues };
-  }
-
-  // Check for authentication errors
-  if (
-    authAnalysis.failedAuthRequests &&
-    authAnalysis.failedAuthRequests.length > 0
-  ) {
-    authQualityImpact = -0.3;
-    authIssues.push(
-      `Found ${authAnalysis.failedAuthRequests.length} authentication failures (401/403 responses)`
-    );
-    authSuggestions.push(
-      "Fix authentication failures before using generated code",
-      "Verify authentication tokens are valid and not expired"
-    );
-  }
-
-  // Check for tokens that may be expired
-  if (
-    authAnalysis.tokens.length > 0 &&
-    authAnalysis.failedAuthRequests.length === 0
-  ) {
-    authQualityImpact = -0.1;
-    authSuggestions.push(
-      "Authentication tokens detected - ensure they are current and valid",
-      "Generated code will require authentication configuration"
-    );
-  }
-
-  // Add authentication type information
-  if (authAnalysis.authTypes && authAnalysis.authTypes.length > 0) {
-    authSuggestions.push(
-      `Authentication types detected: ${authAnalysis.authTypes?.join(", ") || ""}`
-    );
-  }
-
-  // Check for security concerns
-  if (authAnalysis.securityIssues.length > 0) {
-    authIssues.push(...authAnalysis.securityIssues);
-    authSuggestions.push(
-      "Address security concerns before deploying generated code"
-    );
-  }
-
-  // Check if no authentication detected
-  if (!authAnalysis.hasAuthentication) {
-    authSuggestions.push(
-      "No authentication mechanisms detected - API may be public"
-    );
-  }
-
-  return { authQualityImpact, authSuggestions, authIssues };
-}
-
-/**
- * Determine final quality based on score and auth analysis
- */
-function determineQuality(
-  baseQuality: string,
-  finalScore: number,
-  authAnalysis: AuthenticationAnalysis | undefined
-) {
-  if (baseQuality === "empty") {
-    return "empty";
-  }
-
-  if (
-    finalScore < 50 ||
-    (authAnalysis?.failedAuthRequests &&
-      authAnalysis.failedAuthRequests.length > 0)
-  ) {
-    return "poor";
-  }
-
-  if (
-    finalScore >= 80 &&
-    (!authAnalysis?.failedAuthRequests ||
-      authAnalysis.failedAuthRequests.length === 0)
-  ) {
-    return "excellent";
-  }
-
-  return "good";
-}
-
-/**
- * Generate general validation suggestions
- */
-function generateGeneralSuggestions(
-  quality: string,
-  totalRequests: number,
-  totalUrls: number
-) {
-  const suggestions: string[] = [];
-  const issues: string[] = [];
-
-  if (quality === "empty") {
-    issues.push("No meaningful requests found in HAR file");
-    suggestions.push(
-      "Capture a new HAR file while actively using the website",
-      "Ensure you submit forms, click buttons, or trigger API calls"
-    );
-  } else if (quality === "poor") {
-    issues.push("Very few meaningful requests captured");
-    suggestions.push(
-      "Try capturing more extensive interactions",
-      "Look for API calls, form submissions, or AJAX requests"
-    );
-  }
-
-  if (totalRequests > 1000) {
-    issues.push("HAR file is very large - may impact analysis performance");
-    suggestions.push(
-      "Consider filtering the HAR file to specific time periods"
-    );
-  }
-
-  if (totalUrls === 0) {
-    issues.push("No URLs found for analysis");
-    suggestions.push("Check if HAR file contains actual network requests");
-  }
-
-  return { suggestions, issues };
-}
-
-/**
  * Build detailed analysis if requested
  */
 function buildDetailedAnalysis(harData: ParsedHARData) {
@@ -400,68 +237,40 @@ function buildDetailedAnalysis(harData: ParsedHARData) {
 }
 
 /**
- * Handle har_validate tool call
+ * Handle har_validate tool call - Uses centralized validation from HARParser
  */
 export async function handleHarValidation(
   params: { harPath: string; detailed?: boolean },
   _context: SystemToolContext
 ): Promise<CallToolResult> {
   try {
-    // Parse HAR file to get validation results
+    // Parse HAR file to get comprehensive validation results from HARParser
     const harData = await parseHARFile(params.harPath);
+    const validation = harData.validation;
 
-    // Calculate base quality metrics
-    const { totalRequests, totalUrls, meaningfulRequests, baseScore } =
-      calculateBaseQuality(harData);
-
-    // Determine validation result with authentication awareness
-    const validation = harData.validation || {
-      quality: meaningfulRequests > 0 ? "good" : "empty",
-      issues: [],
-      recommendations: [],
-      stats: {
-        totalRequests,
-        meaningfulRequests,
-        score: Math.round(baseScore * 100),
-      },
-    };
-
-    // Analyze authentication quality
-    const { authQualityImpact, authSuggestions, authIssues } =
-      analyzeAuthQuality(validation.authAnalysis);
-
-    // Calculate final score
-    const finalScore = Math.max(
-      0,
-      Math.min(100, Math.round((baseScore + authQualityImpact) * 100))
-    );
-
-    // Update score in validation stats
-    (validation.stats as typeof validation.stats & { score: number }).score =
-      finalScore;
-
-    // Determine final quality
-    validation.quality = determineQuality(
-      validation.quality,
-      finalScore,
-      validation.authAnalysis
-    ) as "empty" | "poor" | "good" | "excellent";
-
-    // Generate general suggestions and issues
-    const { suggestions: generalSuggestions, issues: generalIssues } =
-      generateGeneralSuggestions(validation.quality, totalRequests, totalUrls);
-
-    // Combine all suggestions and issues
-    const suggestions = [...authSuggestions, ...generalSuggestions];
-    const issues = [...authIssues, ...generalIssues];
+    if (!validation) {
+      throw new HarvestError(
+        "HAR validation data not available",
+        "VALIDATION_MISSING"
+      );
+    }
 
     // Build detailed analysis if requested
     const detailedAnalysis = params.detailed
       ? buildDetailedAnalysis(harData)
       : {};
 
-    // Build response
+    // Calculate final score from validation stats
+    const finalScore = validation.stats
+      ? Math.round(
+          (validation.stats.relevantEntries /
+            Math.max(validation.stats.totalEntries, 1)) *
+            100
+        )
+      : 0;
     const authAnalysis = validation.authAnalysis;
+
+    // Build response using centralized validation results
     const response = {
       success: true,
       harPath: params.harPath,
@@ -470,23 +279,23 @@ export async function handleHarValidation(
         score: finalScore,
         isReady:
           validation.quality !== "empty" &&
-          authAnalysis?.failedAuthRequests.length === 0,
-        issues,
-        suggestions,
+          (authAnalysis?.failedAuthRequests?.length || 0) === 0,
+        issues: validation.issues,
+        suggestions: validation.recommendations,
         authAnalysis: authAnalysis
           ? {
               hasAuthentication: authAnalysis.hasAuthentication,
               authTypes: authAnalysis.authTypes,
-              authErrors: authAnalysis.failedAuthRequests.length,
-              tokenCount: authAnalysis.tokens.length,
-              securityConcerns: authAnalysis.securityIssues.length,
+              authErrors: authAnalysis.failedAuthRequests?.length || 0,
+              tokenCount: authAnalysis.tokens?.length || 0,
+              securityConcerns: authAnalysis.securityIssues?.length || 0,
             }
           : undefined,
       },
       metrics: {
-        totalRequests,
-        meaningfulRequests,
-        totalUrls,
+        totalRequests: validation.stats?.totalEntries || 0,
+        meaningfulRequests: validation.stats?.relevantEntries || 0,
+        totalUrls: harData.urls?.length || 0,
         requestScore: finalScore,
       },
       ...(params.detailed && { detailed: detailedAnalysis }),
@@ -498,8 +307,8 @@ export async function handleHarValidation(
             : validation.quality === "poor"
               ? "⚠️ HAR file has issues that may affect code generation"
               : "❌ HAR file needs significant improvements",
-        ...suggestions,
-        ...(authAnalysis?.failedAuthRequests.length > 0
+        ...validation.recommendations,
+        ...((authAnalysis?.failedAuthRequests?.length || 0) > 0
           ? [
               "🔐 Authentication issues detected - generated code may fail at runtime",
               "🔧 Fix authentication problems before proceeding with code generation",
