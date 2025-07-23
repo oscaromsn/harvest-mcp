@@ -5,7 +5,6 @@ import { findDependencies } from "../agents/DependencyAgent.js";
 import { identifyDynamicParts } from "../agents/DynamicPartsAgent.js";
 import { identifyInputVariables } from "../agents/InputVariablesAgent.js";
 import { classifyParameters } from "../agents/ParameterClassificationAgent.js";
-import { identifyEndUrl } from "../agents/URLIdentificationAgent.js";
 import {
   discoverWorkflows,
   getPrimaryWorkflow,
@@ -16,176 +15,7 @@ import {
   HarvestError,
   type HarvestSession,
   SessionIdSchema,
-  type URLInfo,
 } from "../types/index.js";
-
-/**
- * Handle initial analysis with CLI configuration
- */
-export async function handleRunInitialAnalysisWithConfig(
-  params: { sessionId: string },
-  context: AnalysisToolContext
-): Promise<CallToolResult> {
-  try {
-    const session = context.sessionManager.getSession(params.sessionId);
-    if (!session) {
-      throw new HarvestError(
-        `Session ${params.sessionId} not found`,
-        "SESSION_NOT_FOUND"
-      );
-    }
-
-    // Check HAR data quality before proceeding
-    if (session.harData.validation) {
-      const validation = session.harData.validation;
-
-      if (validation.quality === "empty") {
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify({
-                error: "Cannot analyze empty HAR file",
-                message: "No meaningful network requests found in HAR file",
-                issues: validation.issues,
-                recommendations: validation.recommendations,
-                stats: validation.stats,
-                nextSteps: [
-                  "1. Capture a new HAR file with meaningful interactions",
-                  "2. Ensure you interact with the website's main functionality",
-                  "3. Look for forms, buttons, or API calls to capture",
-                ],
-              }),
-            },
-          ],
-          isError: true,
-        };
-      }
-
-      if (validation.quality === "poor") {
-        context.sessionManager.addLog(
-          params.sessionId,
-          "warn",
-          `Proceeding with poor quality HAR file: ${validation.issues.join(", ")}`
-        );
-      }
-    }
-
-    // Check if we have any URLs available
-    if (!session.harData.urls || session.harData.urls.length === 0) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({
-              error: "Cannot analyze - no URLs found",
-              message: "No URLs available for analysis",
-              nextSteps: [
-                "1. Capture a new HAR file with website interactions",
-                "2. Ensure network requests are recorded during capture",
-                "3. Use session_start with a valid HAR file",
-              ],
-            }),
-          },
-        ],
-        isError: true,
-      };
-    }
-
-    // Identify end URL using CLI-configured LLM client
-    let actionUrl: string;
-    try {
-      actionUrl = await identifyEndUrl(session, session.harData.urls);
-    } catch (error) {
-      // If LLM-based identification fails, use heuristic fallback
-      if (
-        error instanceof HarvestError &&
-        error.code === "NO_PROVIDER_CONFIGURED"
-      ) {
-        context.sessionManager.addLog(
-          params.sessionId,
-          "warn",
-          "LLM provider not configured, using heuristic URL selection"
-        );
-        actionUrl = selectUrlHeuristically(session.harData.urls);
-      } else {
-        throw error;
-      }
-    }
-
-    // Find the corresponding request in HAR data
-    const targetRequest = session.harData.requests.find(
-      (req) => req.url === actionUrl
-    );
-
-    if (!targetRequest) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({
-              error: "Target request not found",
-              message: `URL ${actionUrl} not found in HAR data`,
-              nextSteps: [
-                "1. Check HAR file contains the expected requests",
-                "2. Verify the URL identification is working correctly",
-                "3. Try with a different HAR file",
-              ],
-            }),
-          },
-        ],
-        isError: true,
-      };
-    }
-
-    // Create DAG node for the target request
-    const nodeId = session.dagManager.addNode("master_curl", {
-      key: targetRequest,
-    });
-
-    // Set as master node
-    session.state.masterNodeId = nodeId;
-
-    // Sync completion state after master node creation
-    context.sessionManager.syncCompletionState(params.sessionId);
-
-    context.sessionManager.addLog(
-      params.sessionId,
-      "info",
-      `Initial analysis complete. Master node created: ${nodeId}`
-    );
-
-    return {
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify({
-            status: "success",
-            message: "Initial analysis completed successfully",
-            actionUrl,
-            masterNodeId: nodeId,
-            targetRequest: {
-              url: targetRequest.url,
-              method: targetRequest.method,
-              headers: targetRequest.headers,
-              body: targetRequest.body,
-            },
-          }),
-        },
-      ],
-    };
-  } catch (error) {
-    if (error instanceof HarvestError) {
-      throw error;
-    }
-
-    throw new HarvestError(
-      `Initial analysis failed: ${error instanceof Error ? error.message : "Unknown error"}`,
-      "INITIAL_ANALYSIS_FAILED",
-      { originalError: error }
-    );
-  }
-}
 
 /**
  * Handle analysis.process_next_node tool
@@ -316,7 +146,7 @@ export function handleIsComplete(
     ) {
       status = "analysis_not_started";
       nextActions = [
-        "Use 'analysis_run_initial_analysis' to identify the target action URL",
+        "Use 'analysis_start_primary_workflow' to identify the target action URL",
         "Or use 'debug_set_master_node' to manually specify the target URL",
       ];
     } else {
@@ -462,7 +292,7 @@ export async function handleDiscoverWorkflows(
               recommendations: [
                 "The HAR file may contain only simple requests without complex workflows",
                 "Try capturing a more comprehensive user interaction sequence",
-                "Consider using the legacy analysis_run_initial_analysis for simple APIs",
+                "Consider using 'analysis_start_primary_workflow' for simpler workflow discovery",
               ],
               stats: {
                 totalUrls: session.harData.urls.length,
@@ -550,25 +380,6 @@ export async function handleDiscoverWorkflows(
 }
 
 // Helper functions that were used in the original handlers
-
-function selectUrlHeuristically(urls: URLInfo[]): string {
-  // Simple heuristic: prioritize POST requests, then by URL complexity
-  const postUrls = urls.filter((url) => url.method === "POST");
-  if (postUrls.length > 0) {
-    return postUrls[0]?.url || "";
-  }
-
-  // If no POST, take the first non-GET with query params
-  const nonGetWithParams = urls.filter(
-    (url) => url.method !== "GET" && url.url.includes("?")
-  );
-  if (nonGetWithParams.length > 0) {
-    return nonGetWithParams[0]?.url || "";
-  }
-
-  // Fallback to first URL
-  return urls[0]?.url || "";
-}
 
 function checkNoNodesToProcess(session: HarvestSession): CallToolResult | null {
   if (session.state.toBeProcessedNodes.length === 0) {
@@ -883,7 +694,7 @@ export async function handleStartPrimaryWorkflow(
               suggestion:
                 "Check if the HAR file contains API requests with clear patterns",
               fallback:
-                "Consider using 'analysis_run_initial_analysis' for simple cases",
+                "Consider using 'analysis_start_primary_workflow' for workflow discovery",
             }),
           },
         ],
@@ -1002,15 +813,6 @@ export function registerAnalysisTools(
   context: AnalysisToolContext
 ): void {
   server.tool(
-    "analysis_run_initial_analysis",
-    "[DEPRECATED] Identify the target action URL and create the master node in the dependency graph. Use 'analysis_start_primary_workflow' for new implementations. Configure API keys using CLI arguments: --provider and --api-key.",
-    {
-      sessionId: SessionIdSchema.shape.sessionId,
-    },
-    async (params) => handleRunInitialAnalysisWithConfig(params, context)
-  );
-
-  server.tool(
     "analysis_start_primary_workflow",
     "Discover all workflows in the HAR file and automatically start analysis of the highest-priority workflow. This is the recommended way to begin analysis using the modern multi-workflow system. Configure API keys using CLI arguments: --provider and --api-key.",
     {
@@ -1027,7 +829,7 @@ export function registerAnalysisTools(
         .string()
         .uuid()
         .describe(
-          "UUID of the session containing nodes to process. The session must have been initialized with analysis_run_initial_analysis."
+          "UUID of the session containing nodes to process. The session must have been initialized with analysis_start_primary_workflow."
         ),
     },
     async (params) => handleProcessNextNode(params, context)
