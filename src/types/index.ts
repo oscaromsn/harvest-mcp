@@ -142,15 +142,6 @@ export interface AuthenticationDependency {
 }
 
 /**
- * Enhanced dependency result with authentication information
- */
-export interface EnhancedDependencyResult extends DependencyResult {
-  authenticationDependencies: AuthenticationDependency[];
-  sessionTokens: string[];
-  requiresAuthentication: boolean;
-}
-
-/**
  * Session bootstrap analysis result
  */
 export interface SessionBootstrapAnalysis {
