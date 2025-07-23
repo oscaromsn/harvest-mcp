@@ -4,7 +4,6 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { identifyEndUrl } from "./agents/URLIdentificationAgent.js";
 import { type CLIArgs, initializeConfig } from "./config/index.js";
 import { CompletedSessionManager } from "./core/CompletedSessionManager.js";
 import { manualSessionManager } from "./core/ManualSessionManager.js";
@@ -13,6 +12,7 @@ import { SessionManager } from "./core/SessionManager.js";
 import {
   handleIsComplete,
   handleProcessNextNode,
+  handleStartPrimaryWorkflow,
   registerAnalysisTools,
 } from "./tools/analysisTools.js";
 import { registerAuthTools } from "./tools/authTools.js";
@@ -1314,26 +1314,14 @@ export class HarvestMCPServer {
         "Starting initial analysis - identifying action URL"
       );
 
-      // Use URLIdentificationAgent to identify the target URL with fallback
-      let actionUrl: string;
-      try {
-        actionUrl = await identifyEndUrl(session, session.harData.urls);
-      } catch (error) {
-        // If LLM-based identification fails, use heuristic fallback
-        if (
-          error instanceof HarvestError &&
-          error.code === "NO_PROVIDER_CONFIGURED"
-        ) {
-          this.sessionManager.addLog(
-            argsObj.sessionId,
-            "warn",
-            "LLM provider not configured, using heuristic URL selection"
-          );
-          actionUrl = this.selectUrlHeuristically(session.harData.urls);
-        } else {
-          throw error;
-        }
-      }
+      // Use heuristic URL selection (URLIdentificationAgent deprecated)
+      // Modern workflow discovery handles URL identification automatically
+      this.sessionManager.addLog(
+        argsObj.sessionId,
+        "info",
+        "Using heuristic URL selection for backward compatibility"
+      );
+      const actionUrl = this.selectUrlHeuristically(session.harData.urls);
 
       // Find the corresponding request in HAR data using flexible URL matching
       const targetRequest = this.findRequestByFlexibleUrl(
@@ -1626,22 +1614,36 @@ export class HarvestMCPServer {
     sessionId: string,
     analysisResults: string[]
   ): Promise<boolean> {
+    // Use modern workflow analysis instead of deprecated handleRunInitialAnalysis
     try {
-      const initialResult = await this.handleRunInitialAnalysis({ sessionId });
-      const initialContent = initialResult.content?.[0]?.text;
-      if (typeof initialContent !== "string") {
-        throw new Error("Invalid initial analysis result format");
+      const analysisToolContext = this.getAnalysisToolContext();
+
+      const startPrimaryResult = await handleStartPrimaryWorkflow(
+        { sessionId },
+        analysisToolContext
+      );
+
+      if (startPrimaryResult.isError) {
+        throw new Error("Primary workflow analysis failed");
       }
-      const initialData = JSON.parse(initialContent);
+
+      const workflowContent = startPrimaryResult.content?.[0]?.text;
+      if (typeof workflowContent !== "string") {
+        throw new Error("Invalid workflow analysis result format");
+      }
+
+      const workflowData = JSON.parse(workflowContent);
       analysisResults.push(
-        `✅ Initial analysis complete - Action URL: ${initialData.actionUrl}`
+        `✅ Modern workflow analysis complete - Master Node URL: ${workflowData.masterNode?.url || "Unknown"}`
       );
       return true;
     } catch (error) {
       analysisResults.push(
-        `⚠️ Initial analysis failed: ${error instanceof Error ? error.message : "Unknown error"}`
+        `⚠️ Workflow analysis failed: ${error instanceof Error ? error.message : "Unknown error"}`
       );
-      analysisResults.push("📋 Proceeding with manual session setup...");
+      analysisResults.push(
+        "📋 Consider using individual analysis tools for manual workflow..."
+      );
       return false;
     }
   }
