@@ -187,7 +187,9 @@ describe("SessionManager", () => {
       expect(analysis.blockers).toContain(
         "Target action URL has not been identified"
       );
-      expect(analysis.blockers).toContain("No nodes found in dependency graph");
+      expect(analysis.blockers).toContain(
+        "2 nodes are still pending in the processing queue"
+      );
       expect(analysis.diagnostics.hasMasterNode).toBe(false);
       expect(analysis.diagnostics.hasActionUrl).toBe(false);
       expect(analysis.diagnostics.dagComplete).toBe(true); // Empty DAG is considered "complete"
@@ -209,7 +211,9 @@ describe("SessionManager", () => {
       const analysis = sessionManager.analyzeCompletionState(sessionId);
 
       expect(analysis.isComplete).toBe(false);
-      expect(analysis.blockers).toContain("No nodes found in dependency graph");
+      expect(analysis.blockers).toContain(
+        "2 nodes are still pending in the processing queue"
+      );
       expect(analysis.diagnostics.hasMasterNode).toBe(true);
       expect(analysis.diagnostics.hasActionUrl).toBe(true);
       expect(analysis.diagnostics.dagComplete).toBe(true); // Empty DAG is considered "complete"
@@ -242,6 +246,7 @@ describe("SessionManager", () => {
       // Simulate complete session state
       session.state.masterNodeId = "test-master-node";
       session.state.actionUrl = "https://example.com/api/search";
+      session.state.toBeProcessedNodes = []; // Clear processing queue for complete state
 
       // Mock DAG manager to return complete state with at least one node
       const mockDAGManager = {
@@ -364,7 +369,7 @@ describe("SessionManager", () => {
 
       analysis = sessionManager.analyzeCompletionState(sessionId);
       expect(analysis.recommendations).toContain(
-        "Verify HAR file contains valid HTTP requests"
+        "Continue processing with 'analysis_process_next_node' until queue is empty"
       );
     });
 
@@ -381,6 +386,7 @@ describe("SessionManager", () => {
       session.state.masterNodeId = "test-master-node";
       session.state.actionUrl =
         "https://jurisprudencia.jt.jus.br/jurisprudencia-nacional-backend/api/no-auth/pesquisa?sessionId=_95b8n8u&latitude=0&longitude=0";
+      session.state.toBeProcessedNodes = []; // Clear processing queue for complete state
 
       // Mock DAG manager to simulate having a master node
       const mockDAGManager = {

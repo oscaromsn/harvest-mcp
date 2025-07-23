@@ -749,206 +749,37 @@ export class SessionManager {
       // Ensure DAG state is refreshed before analysis to reflect latest parameter classifications
       this.refreshDAGStateForParameterClassifications(sessionId);
 
-      // Gather diagnostic information
-      const dagComplete = session.dagManager.isComplete();
-      const unresolvedNodes = session.dagManager.getUnresolvedNodes();
-      const hasMasterNode = !!session.state.masterNodeId;
-      let hasActionUrl = !!session.state.actionUrl;
-      const queueEmpty = session.state.toBeProcessedNodes.length === 0;
-
       // Enhanced debugging for actionUrl state tracking
       logger.debug("analyzeCompletionState - actionUrl diagnostic details", {
         sessionId,
         actionUrlValue: session.state.actionUrl,
         actionUrlType: typeof session.state.actionUrl,
         actionUrlLength: session.state.actionUrl?.length || 0,
-        hasActionUrl,
+        hasActionUrl: !!session.state.actionUrl,
         masterNodeId: session.state.masterNodeId,
-        hasMasterNode,
+        hasMasterNode: !!session.state.masterNodeId,
       });
-      const totalNodes = session.dagManager.getNodeCount();
-      const allNodesClassified = (
-        session.dagManager as ExtendedDAGManager
-      ).areAllNodesParameterClassified();
-      const nodesNeedingClassification = (
-        session.dagManager as ExtendedDAGManager
-      ).getNodesNeedingClassification();
 
-      // Analyze authentication readiness
-      const authReadinessAnalysis =
-        this.analyzeAuthenticationReadiness(session);
+      // Use helper methods to check different aspects of completion state
+      const masterNodeCheck = this._checkMasterNodeState(session, sessionId);
+      const dagCheck = this._checkDagResolutionState(session);
+      const authCheck = this._checkAuthenticationReadiness(session, sessionId);
+      const bootstrapCheck = this._checkBootstrapReadiness(session);
 
-      // Analyze bootstrap readiness
-      const bootstrapAnalysis = this.analyzeBootstrapReadiness(session);
+      // Combine all blockers and recommendations
+      const blockers = [
+        ...masterNodeCheck.blockers,
+        ...dagCheck.blockers,
+        ...authCheck.blockers,
+        ...bootstrapCheck.blockers,
+      ];
 
-      const blockers: string[] = [];
-      const recommendations: string[] = [];
-
-      // Condition 1: Master node must be identified and exist in DAG
-      if (hasMasterNode && session.state.masterNodeId) {
-        // Verify master node actually exists in DAG
-        const masterNode = session.dagManager.getNode(
-          session.state.masterNodeId
-        );
-        if (!masterNode) {
-          blockers.push("Master node ID is set but node does not exist in DAG");
-          recommendations.push(
-            "Re-run 'analysis_start_primary_workflow' to properly create master node"
-          );
-        }
-      } else {
-        blockers.push("Master node has not been identified");
-        recommendations.push(
-          "Run 'analysis_start_primary_workflow' to identify the target action URL"
-        );
-
-        // Also check for actionUrl when there's no master node at all
-        if (!hasActionUrl) {
-          blockers.push("Target action URL has not been identified");
-        }
-      }
-
-      // Condition 2: Action URL must be identified (but avoid duplication with master node check)
-      if (!hasActionUrl && hasMasterNode && session.state.masterNodeId) {
-        // Only add this blocker if master node exists but action URL is missing
-        // This prevents contradictory status when initial analysis succeeded
-        const masterNode = session.dagManager.getNode(
-          session.state.masterNodeId
-        );
-        if (masterNode) {
-          // Get the URL from the master node content
-          const masterNodeUrl = (
-            masterNode.content as { key?: { url?: string } }
-          )?.key?.url;
-
-          logger.debug("Master node found, checking for actionUrl recovery", {
-            sessionId,
-            masterNodeUrl,
-            sessionActionUrl: session.state.actionUrl,
-            hasUrl: !!masterNodeUrl,
-            hasSessionActionUrl: !!session.state.actionUrl,
-            nodeType: masterNode.nodeType,
-            contentStructure: {
-              hasContent: !!masterNode.content,
-              hasKey: !!(masterNode.content as { key?: unknown })?.key,
-              hasUrl: !!(masterNode.content as { key?: { url?: string } })?.key
-                ?.url,
-            },
-          });
-
-          // Defensive fix: Check if we can recover the actionUrl from the master node
-          if (masterNodeUrl && !session.state.actionUrl) {
-            logger.warn(
-              "State synchronization issue detected: actionUrl missing but master node has URL, recovering",
-              {
-                sessionId,
-                masterNodeUrl,
-                sessionActionUrl: session.state.actionUrl,
-              }
-            );
-
-            // Recover the actionUrl from the master node
-            session.state.actionUrl = masterNodeUrl;
-
-            // Recalculate hasActionUrl with the recovered value
-            hasActionUrl = !!session.state.actionUrl;
-
-            logger.info("Successfully recovered actionUrl from master node", {
-              sessionId,
-              recoveredUrl: session.state.actionUrl,
-            });
-
-            // Don't add the blocker since we recovered the state
-          } else {
-            // Genuine case where actionUrl is missing and can't be recovered
-            blockers.push("Target action URL has not been identified");
-            recommendations.push(
-              "Ensure initial analysis successfully identifies the main workflow URL"
-            );
-          }
-        }
-      }
-
-      // Condition 3: All nodes with dynamic parts must have parameter classification
-      if (!allNodesClassified) {
-        blockers.push(
-          `${nodesNeedingClassification.length} nodes still need parameter classification`
-        );
-        recommendations.push(
-          "Continue processing with 'analysis_process_next_node' to classify parameters"
-        );
-        recommendations.push(
-          "Node IDs needing classification: " +
-            nodesNeedingClassification.join(", ")
-        );
-      }
-
-      // Condition 4: DAG must be fully resolved (after parameter classification)
-      if (!dagComplete) {
-        blockers.push(
-          `${unresolvedNodes.length} nodes still have unresolved dynamic parts`
-        );
-        recommendations.push(
-          "Continue processing with 'analysis_process_next_node'"
-        );
-        recommendations.push(
-          "Use 'debug_get_unresolved_nodes' to see specific unresolved parts"
-        );
-      }
-
-      // Condition 5: Processing queue must be empty
-      if (!queueEmpty) {
-        blockers.push(
-          `${session.state.toBeProcessedNodes.length} nodes are still pending in the processing queue`
-        );
-        recommendations.push(
-          "Continue processing with 'analysis_process_next_node' until queue is empty"
-        );
-      }
-
-      // Condition 6: Must have at least one node (not an empty analysis)
-      if (totalNodes === 0) {
-        blockers.push("No nodes found in dependency graph");
-        recommendations.push("Verify HAR file contains valid HTTP requests");
-        recommendations.push("Re-run initial analysis if needed");
-      }
-
-      // Condition 7: Authentication must be analyzed and ready for code generation
-      if (!authReadinessAnalysis.analysisComplete) {
-        blockers.push("Authentication analysis has not been completed");
-        recommendations.push(
-          "Run authentication analysis before code generation"
-        );
-        recommendations.push(
-          "Use 'auth_analyze_session' tool to analyze authentication requirements"
-        );
-      } else if (!authReadinessAnalysis.isReady) {
-        blockers.push(...authReadinessAnalysis.blockers);
-        recommendations.push(...authReadinessAnalysis.recommendations);
-      }
-
-      // Add authentication-specific warnings even if not blocking
-      if (authReadinessAnalysis.warnings.length > 0) {
-        for (const warning of authReadinessAnalysis.warnings) {
-          this.addLog(sessionId, "warn", `Authentication warning: ${warning}`);
-        }
-      }
-
-      // Condition 8: Session constants must have bootstrap sources resolved
-      if (
-        !bootstrapAnalysis.isComplete &&
-        bootstrapAnalysis.sessionConstantsCount > 0
-      ) {
-        blockers.push(
-          `${bootstrapAnalysis.unresolvedCount} session constants need bootstrap source resolution`
-        );
-        recommendations.push(
-          "Continue processing with 'analysis_process_next_node' to resolve bootstrap sources"
-        );
-        recommendations.push(
-          "Session constants require initialization from the main page load"
-        );
-      }
+      const recommendations = [
+        ...masterNodeCheck.recommendations,
+        ...dagCheck.recommendations,
+        ...authCheck.recommendations,
+        ...bootstrapCheck.recommendations,
+      ];
 
       const isComplete = blockers.length === 0;
 
@@ -971,23 +802,13 @@ export class SessionManager {
         }
       }
 
-      // Recreate diagnostics with updated values (especially hasActionUrl after recovery)
+      // Combine diagnostics from all helper methods
       const finalDiagnostics = {
-        hasMasterNode,
-        dagComplete,
-        queueEmpty,
-        totalNodes,
-        unresolvedNodes: unresolvedNodes.length,
-        pendingInQueue: session.state.toBeProcessedNodes.length,
-        hasActionUrl, // This now reflects any recovery that occurred
-        authAnalysisComplete: authReadinessAnalysis.analysisComplete,
-        authReadiness: authReadinessAnalysis.isReady,
-        authErrors: authReadinessAnalysis.errorCount,
-        allNodesClassified,
-        nodesNeedingClassification: nodesNeedingClassification.length,
-        bootstrapAnalysisComplete: bootstrapAnalysis.isComplete,
-        sessionConstantsCount: bootstrapAnalysis.sessionConstantsCount,
-        unresolvedSessionConstants: bootstrapAnalysis.unresolvedCount,
+        hasMasterNode: !!session.state.masterNodeId,
+        hasActionUrl: masterNodeCheck.hasActionUrl, // This reflects any recovery that occurred
+        ...dagCheck.diagnostics,
+        ...authCheck.diagnostics,
+        ...bootstrapCheck.diagnostics,
       };
 
       return {
@@ -1028,6 +849,297 @@ export class SessionManager {
         },
       };
     }
+  }
+
+  /**
+   * Check master node state and URL recovery
+   * Private helper method to reduce complexity in analyzeCompletionState
+   */
+  private _checkMasterNodeState(
+    session: HarvestSession,
+    sessionId: string
+  ): {
+    hasActionUrl: boolean;
+    blockers: string[];
+    recommendations: string[];
+  } {
+    const blockers: string[] = [];
+    const recommendations: string[] = [];
+    let hasActionUrl = !!session.state.actionUrl;
+    const hasMasterNode = !!session.state.masterNodeId;
+
+    // Condition 1: Master node must be identified and exist in DAG
+    if (hasMasterNode && session.state.masterNodeId) {
+      // Verify master node actually exists in DAG
+      const masterNode = session.dagManager.getNode(session.state.masterNodeId);
+      if (!masterNode) {
+        blockers.push("Master node ID is set but node does not exist in DAG");
+        recommendations.push(
+          "Re-run 'analysis_start_primary_workflow' to properly create master node"
+        );
+      }
+    } else {
+      blockers.push("Master node has not been identified");
+      recommendations.push(
+        "Run 'analysis_start_primary_workflow' to identify the target action URL"
+      );
+
+      // Also check for actionUrl when there's no master node at all
+      if (!hasActionUrl) {
+        blockers.push("Target action URL has not been identified");
+      }
+    }
+
+    // Condition 2: Action URL must be identified (but avoid duplication with master node check)
+    if (!hasActionUrl && hasMasterNode && session.state.masterNodeId) {
+      // Only add this blocker if master node exists but action URL is missing
+      // This prevents contradictory status when initial analysis succeeded
+      const masterNode = session.dagManager.getNode(session.state.masterNodeId);
+      if (masterNode) {
+        // Get the URL from the master node content
+        const masterNodeUrl = (masterNode.content as { key?: { url?: string } })
+          ?.key?.url;
+
+        logger.debug("Master node found, checking for actionUrl recovery", {
+          sessionId,
+          masterNodeUrl,
+          sessionActionUrl: session.state.actionUrl,
+          hasUrl: !!masterNodeUrl,
+          hasSessionActionUrl: !!session.state.actionUrl,
+          nodeType: masterNode.nodeType,
+          contentStructure: {
+            hasContent: !!masterNode.content,
+            hasKey: !!(masterNode.content as { key?: unknown })?.key,
+            hasUrl: !!(masterNode.content as { key?: { url?: string } })?.key
+              ?.url,
+          },
+        });
+
+        // Defensive fix: Check if we can recover the actionUrl from the master node
+        if (masterNodeUrl && !session.state.actionUrl) {
+          logger.warn(
+            "State synchronization issue detected: actionUrl missing but master node has URL, recovering",
+            {
+              sessionId,
+              masterNodeUrl,
+              sessionActionUrl: session.state.actionUrl,
+            }
+          );
+
+          // Recover the actionUrl from the master node
+          session.state.actionUrl = masterNodeUrl;
+
+          // Recalculate hasActionUrl with the recovered value
+          hasActionUrl = !!session.state.actionUrl;
+
+          logger.info("Successfully recovered actionUrl from master node", {
+            sessionId,
+            recoveredUrl: session.state.actionUrl,
+          });
+
+          // Don't add the blocker since we recovered the state
+        } else {
+          // Genuine case where actionUrl is missing and can't be recovered
+          blockers.push("Target action URL has not been identified");
+          recommendations.push(
+            "Ensure initial analysis successfully identifies the main workflow URL"
+          );
+        }
+      }
+    }
+
+    return { hasActionUrl, blockers, recommendations };
+  }
+
+  /**
+   * Check DAG resolution state and parameter classification
+   * Private helper method to reduce complexity in analyzeCompletionState
+   */
+  private _checkDagResolutionState(session: HarvestSession): {
+    blockers: string[];
+    recommendations: string[];
+    diagnostics: {
+      dagComplete: boolean;
+      queueEmpty: boolean;
+      totalNodes: number;
+      unresolvedNodes: number;
+      pendingInQueue: number;
+      allNodesClassified: boolean;
+      nodesNeedingClassification: number;
+    };
+  } {
+    const blockers: string[] = [];
+    const recommendations: string[] = [];
+
+    // Gather diagnostic information
+    const dagComplete = session.dagManager.isComplete();
+    const unresolvedNodes = session.dagManager.getUnresolvedNodes();
+    const queueEmpty = session.state.toBeProcessedNodes.length === 0;
+    const totalNodes = session.dagManager.getNodeCount();
+    const allNodesClassified = (
+      session.dagManager as ExtendedDAGManager
+    ).areAllNodesParameterClassified();
+    const nodesNeedingClassification = (
+      session.dagManager as ExtendedDAGManager
+    ).getNodesNeedingClassification();
+
+    // Condition 3: All nodes with dynamic parts must have parameter classification
+    if (!allNodesClassified) {
+      blockers.push(
+        `${nodesNeedingClassification.length} nodes still need parameter classification`
+      );
+      recommendations.push(
+        "Continue processing with 'analysis_process_next_node' to classify parameters"
+      );
+      recommendations.push(
+        "Node IDs needing classification: " +
+          nodesNeedingClassification.join(", ")
+      );
+    }
+
+    // Condition 4: DAG must be fully resolved (after parameter classification)
+    if (!dagComplete) {
+      blockers.push(
+        `${unresolvedNodes.length} nodes still have unresolved dynamic parts`
+      );
+      recommendations.push(
+        "Continue processing with 'analysis_process_next_node'"
+      );
+      recommendations.push(
+        "Use 'debug_get_unresolved_nodes' to see specific unresolved parts"
+      );
+    }
+
+    // Condition 5: Processing queue must be empty
+    if (!queueEmpty) {
+      blockers.push(
+        `${session.state.toBeProcessedNodes.length} nodes are still pending in the processing queue`
+      );
+      recommendations.push(
+        "Continue processing with 'analysis_process_next_node' until queue is empty"
+      );
+    }
+
+    // Condition 6: Must have at least one node (not an empty analysis)
+    if (totalNodes === 0) {
+      blockers.push("No nodes found in dependency graph");
+      recommendations.push("Verify HAR file contains valid HTTP requests");
+      recommendations.push("Re-run initial analysis if needed");
+    }
+
+    const diagnostics = {
+      dagComplete,
+      queueEmpty,
+      totalNodes,
+      unresolvedNodes: unresolvedNodes.length,
+      pendingInQueue: session.state.toBeProcessedNodes.length,
+      allNodesClassified,
+      nodesNeedingClassification: nodesNeedingClassification.length,
+    };
+
+    return { blockers, recommendations, diagnostics };
+  }
+
+  /**
+   * Check authentication readiness for code generation
+   * Private helper method to reduce complexity in analyzeCompletionState
+   */
+  private _checkAuthenticationReadiness(
+    session: HarvestSession,
+    sessionId: string
+  ): {
+    blockers: string[];
+    recommendations: string[];
+    warnings: string[];
+    diagnostics: {
+      authAnalysisComplete: boolean;
+      authReadiness: boolean;
+      authErrors: number;
+    };
+  } {
+    const blockers: string[] = [];
+    const recommendations: string[] = [];
+
+    // Analyze authentication readiness
+    const authReadinessAnalysis = this.analyzeAuthenticationReadiness(session);
+
+    // Condition 7: Authentication must be analyzed and ready for code generation
+    if (!authReadinessAnalysis.analysisComplete) {
+      blockers.push("Authentication analysis has not been completed");
+      recommendations.push(
+        "Run authentication analysis before code generation"
+      );
+      recommendations.push(
+        "Use 'auth_analyze_session' tool to analyze authentication requirements"
+      );
+    } else if (!authReadinessAnalysis.isReady) {
+      blockers.push(...authReadinessAnalysis.blockers);
+      recommendations.push(...authReadinessAnalysis.recommendations);
+    }
+
+    // Add authentication-specific warnings even if not blocking
+    if (authReadinessAnalysis.warnings.length > 0) {
+      for (const warning of authReadinessAnalysis.warnings) {
+        this.addLog(sessionId, "warn", `Authentication warning: ${warning}`);
+      }
+    }
+
+    const diagnostics = {
+      authAnalysisComplete: authReadinessAnalysis.analysisComplete,
+      authReadiness: authReadinessAnalysis.isReady,
+      authErrors: authReadinessAnalysis.errorCount,
+    };
+
+    return {
+      blockers,
+      recommendations,
+      warnings: authReadinessAnalysis.warnings,
+      diagnostics,
+    };
+  }
+
+  /**
+   * Check bootstrap readiness for code generation
+   * Private helper method to reduce complexity in analyzeCompletionState
+   */
+  private _checkBootstrapReadiness(session: HarvestSession): {
+    blockers: string[];
+    recommendations: string[];
+    diagnostics: {
+      bootstrapAnalysisComplete: boolean;
+      sessionConstantsCount: number;
+      unresolvedSessionConstants: number;
+    };
+  } {
+    const blockers: string[] = [];
+    const recommendations: string[] = [];
+
+    // Analyze bootstrap readiness
+    const bootstrapAnalysis = this.analyzeBootstrapReadiness(session);
+
+    // Condition 8: Session constants must have bootstrap sources resolved
+    if (
+      !bootstrapAnalysis.isComplete &&
+      bootstrapAnalysis.sessionConstantsCount > 0
+    ) {
+      blockers.push(
+        `${bootstrapAnalysis.unresolvedCount} session constants need bootstrap source resolution`
+      );
+      recommendations.push(
+        "Continue processing with 'analysis_process_next_node' to resolve bootstrap sources"
+      );
+      recommendations.push(
+        "Session constants require initialization from the main page load"
+      );
+    }
+
+    const diagnostics = {
+      bootstrapAnalysisComplete: bootstrapAnalysis.isComplete,
+      sessionConstantsCount: bootstrapAnalysis.sessionConstantsCount,
+      unresolvedSessionConstants: bootstrapAnalysis.unresolvedCount,
+    };
+
+    return { blockers, recommendations, diagnostics };
   }
 
   /**
