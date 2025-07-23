@@ -6,10 +6,14 @@
  * generation using ts-morph for type safety and automatic import management.
  */
 
+import { findDependenciesWithAuthentication } from "../../agents/DependencyAgent.js";
+import { analyzeSessionBootstrap } from "../../agents/SessionBootstrapAgent.js";
 import type {
+  AuthenticationDependency,
   DAGNode,
   HarvestSession,
   RequestModel,
+  SessionBootstrapAnalysis,
 } from "../../types/index.js";
 import { createComponentLogger } from "../../utils/logger.js";
 import { ASTProject } from "./ASTProject.js";
@@ -57,6 +61,11 @@ export class WrapperScriptOrchestrator {
   private config: Required<WrapperScriptConfig>;
   private nodeFunctionNameMap = new Map<string, string>();
   private generatedFunctionNames = new Set<string>();
+  private authenticationAnalysis: {
+    dependencies: AuthenticationDependency[];
+    bootstrapAnalysis: SessionBootstrapAnalysis;
+    requiresAuthentication: boolean;
+  } | null = null;
 
   constructor(config: WrapperScriptConfig = {}) {
     this.config = {
@@ -96,16 +105,24 @@ export class WrapperScriptOrchestrator {
       this.astProject.createSourceFile(this.config.fileName);
       this.functionEngine.setSourceFile(this.config.fileName);
 
+      // Step 0: Analyze authentication requirements
+      await this.analyzeAuthentication(session);
+
       // Step 1: Add file header comment
       await this.addFileHeader(session);
 
       // Step 2: Generate type definitions and interfaces
       await this.generateTypeDefinitions(session);
 
-      // Step 3: Generate functions for each node in dependency order
+      // Step 3: Generate authentication setup functions if needed
+      if (this.authenticationAnalysis?.requiresAuthentication) {
+        await this.generateAuthenticationFunctions(session);
+      }
+
+      // Step 4: Generate functions for each node in dependency order
       await this.generateNodeFunctions(session);
 
-      // Step 4: Generate main orchestration function and exports
+      // Step 5: Generate main orchestration function and exports
       await this.generateMainFunction(session);
 
       // Step 5: Handle automatic imports if enabled
@@ -147,6 +164,523 @@ export class WrapperScriptOrchestrator {
  */`;
 
     this.astProject.addFileHeader(this.config.fileName, headerComment);
+  }
+
+  /**
+   * Analyze authentication requirements for the session
+   */
+  private async analyzeAuthentication(session: HarvestSession): Promise<void> {
+    try {
+      logger.debug("Analyzing authentication requirements", {
+        sessionId: session.id,
+      });
+
+      // Get all requests from the session
+      const allRequests = this.getAllRequestsFromSession(session);
+
+      // Perform enhanced dependency analysis with authentication
+      const dependencyResult = await findDependenciesWithAuthentication(
+        { requests: allRequests, urls: [] },
+        session.cookieData || {},
+        {}
+      );
+
+      // Analyze session bootstrap requirements
+      const bootstrapAnalysis = await analyzeSessionBootstrap(
+        allRequests,
+        dependencyResult.sessionTokens,
+        dependencyResult.authenticationDependencies.map((dep) => dep.parameter)
+      );
+
+      this.authenticationAnalysis = {
+        dependencies: dependencyResult.authenticationDependencies,
+        bootstrapAnalysis,
+        requiresAuthentication:
+          dependencyResult.requiresAuthentication ||
+          bootstrapAnalysis.requiresBootstrap,
+      };
+
+      logger.debug("Authentication analysis completed", {
+        sessionId: session.id,
+        requiresAuthentication:
+          this.authenticationAnalysis.requiresAuthentication,
+        dependenciesCount: this.authenticationAnalysis.dependencies.length,
+        bootstrapPattern:
+          this.authenticationAnalysis.bootstrapAnalysis.establishmentPattern,
+      });
+    } catch (error) {
+      logger.error("Authentication analysis failed", {
+        sessionId: session.id,
+        error: error instanceof Error ? error.message : "Unknown error",
+      });
+
+      // Fallback to no authentication
+      this.authenticationAnalysis = {
+        dependencies: [],
+        bootstrapAnalysis: {
+          requiresBootstrap: false,
+          bootstrapRequests: [],
+          sessionTokens: [],
+          establishmentPattern: "none",
+          confidence: 0,
+          analysis: "Authentication analysis failed",
+        },
+        requiresAuthentication: false,
+      };
+    }
+  }
+
+  /**
+   * Generate authentication setup functions
+   */
+  private async generateAuthenticationFunctions(
+    session: HarvestSession
+  ): Promise<void> {
+    if (!this.authenticationAnalysis) {
+      return;
+    }
+
+    logger.debug("Generating authentication functions", {
+      sessionId: session.id,
+      pattern:
+        this.authenticationAnalysis.bootstrapAnalysis.establishmentPattern,
+    });
+
+    // Generate session state management
+    await this.generateSessionStateManager();
+
+    // Generate bootstrap function if needed
+    if (this.authenticationAnalysis.bootstrapAnalysis.requiresBootstrap) {
+      await this.generateBootstrapFunction(session);
+    }
+
+    // Generate authentication token getter functions
+    await this.generateTokenGetterFunctions();
+  }
+
+  /**
+   * Generate session state manager for authentication tokens
+   */
+  private async generateSessionStateManager(): Promise<void> {
+    const patterns = this.functionEngine.getFunctionPatterns();
+
+    // Note: Interface generation would need to be implemented in ASTProject
+    // For now, we'll generate the interface manually in the code
+
+    // Generate session state singleton
+    patterns
+      .function("getSessionState")
+      .setReturnType("SessionState")
+      .withDocumentation({
+        description: "Get current session state with authentication tokens",
+        returns: "Session state object containing authentication tokens",
+      })
+      .setBody((writer) => {
+        writer.writeLine("// Session state singleton");
+        writer.writeLine("let sessionState: SessionState = {};");
+        writer.writeLine("");
+        writer.writeLine("return sessionState;");
+      })
+      .export();
+
+    patterns
+      .function("updateSessionState")
+      .addParameter({
+        name: "updates",
+        type: "Partial<SessionState>",
+        description: "Partial session state updates",
+      })
+      .setReturnType("void")
+      .withDocumentation({
+        description: "Update session state with new authentication tokens",
+        params: [
+          { name: "updates", description: "Partial session state updates" },
+        ],
+      })
+      .setBody((writer) => {
+        writer.writeLine("const currentState = getSessionState();");
+        writer.writeLine("Object.assign(currentState, updates);");
+      })
+      .export();
+  }
+
+  /**
+   * Generate bootstrap function for session establishment
+   */
+  private async generateBootstrapFunction(
+    session: HarvestSession
+  ): Promise<void> {
+    const patterns = this.functionEngine.getFunctionPatterns();
+    const bootstrap = this.authenticationAnalysis?.bootstrapAnalysis;
+
+    let functionBody = "";
+
+    if (bootstrap) {
+      switch (bootstrap.establishmentPattern) {
+        case "spa-initialization":
+          functionBody = this.generateSpaBootstrapBody(bootstrap, session);
+          break;
+        case "initial-page":
+          functionBody = this.generateInitialPageBootstrapBody(bootstrap);
+          break;
+        case "login-endpoint":
+          functionBody = this.generateLoginEndpointBootstrapBody(bootstrap);
+          break;
+        case "cookie-based":
+          functionBody = this.generateCookieBootstrapBody(bootstrap);
+          break;
+        default:
+          functionBody = this.generateGenericBootstrapBody(bootstrap);
+      }
+    } else {
+      functionBody = this.generateGenericBootstrapBody({
+        requiresBootstrap: false,
+        bootstrapRequests: [],
+        sessionTokens: [],
+        establishmentPattern: "none",
+        confidence: 0,
+        analysis: "No bootstrap analysis available",
+      });
+    }
+
+    patterns
+      .function("establishSession")
+      .setReturnType("Promise<void>")
+      .withDocumentation({
+        description:
+          "Establish authentication session and obtain required tokens",
+        additionalLines: [
+          `Pattern: ${bootstrap?.establishmentPattern || "unknown"}`,
+          `Confidence: ${Math.round((bootstrap?.confidence || 0) * 100)}%`,
+          bootstrap?.analysis || "No bootstrap analysis available",
+        ],
+      })
+      .setBody((writer) => writer.write(functionBody))
+      .export();
+  }
+
+  /**
+   * Generate token getter functions for authentication dependencies
+   */
+  private async generateTokenGetterFunctions(): Promise<void> {
+    const patterns = this.functionEngine.getFunctionPatterns();
+
+    for (const dependency of this.authenticationAnalysis?.dependencies || []) {
+      const functionName = `get${this.capitalize(this.convertToCamelCase(dependency.parameter))}`;
+
+      patterns
+        .function(functionName)
+        .setReturnType("string | null")
+        .withDocumentation({
+          description: `Get ${dependency.type} token: ${dependency.parameter}`,
+          returns: `${dependency.parameter} token value or null if not available`,
+        })
+        .setBody((writer) => {
+          writer.writeLine(
+            `// Get ${dependency.type} token from session state`
+          );
+          writer.writeLine("const sessionState = getSessionState();");
+          writer.writeLine(
+            `return sessionState.${dependency.parameter} || null;`
+          );
+        })
+        .export();
+    }
+  }
+
+  /**
+   * Get all requests from session DAG nodes
+   */
+  private getAllRequestsFromSession(session: HarvestSession): RequestModel[] {
+    const requests: RequestModel[] = [];
+
+    // Get all nodes from the DAG
+    for (const nodeId of session.dagManager.topologicalSort()) {
+      const node = session.dagManager.getNode(nodeId);
+      if (
+        node &&
+        (node.nodeType === "curl" || node.nodeType === "master_curl")
+      ) {
+        const request = node.content.key as RequestModel;
+        if (request) {
+          requests.push(request);
+        }
+      }
+    }
+
+    return requests;
+  }
+
+  /**
+   * Generate SPA bootstrap body for session establishment
+   */
+  private generateSpaBootstrapBody(
+    bootstrap: SessionBootstrapAnalysis,
+    session: HarvestSession
+  ): string {
+    const baseUrl = this.getBaseUrlFromSession(session);
+
+    return `  try {
+    // SPA session establishment - load initial page to establish session tokens
+    console.log('Establishing SPA session...');
+    
+    const initialResponse = await fetch('${baseUrl}', {
+      method: 'GET',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; API Client)',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+      }
+    });
+    
+    if (!initialResponse.ok) {
+      throw new Error(\`Failed to load initial page: \${initialResponse.status} \${initialResponse.statusText}\`);
+    }
+    
+    // Parse response for embedded session tokens
+    const htmlContent = await initialResponse.text();
+    const sessionTokens: Partial<SessionState> = {};
+    
+    ${this.generateTokenExtractionCode(bootstrap.sessionTokens)}
+    
+    // Update session state with extracted tokens
+    updateSessionState(sessionTokens);
+    
+    console.log('SPA session established successfully');
+  } catch (error) {
+    throw new Error(\`Session establishment failed: \${error instanceof Error ? error.message : 'Unknown error'}\`);
+  }`;
+  }
+
+  /**
+   * Generate initial page bootstrap body
+   */
+  private generateInitialPageBootstrapBody(
+    bootstrap: SessionBootstrapAnalysis
+  ): string {
+    return `  try {
+    // Initial page session establishment
+    console.log('Establishing session via initial page load...');
+    
+    // This implementation should be customized based on the specific session establishment pattern
+    // For now, we'll use a generic approach
+    ${this.generateGenericBootstrapBody(bootstrap)}
+    
+  } catch (error) {
+    throw new Error(\`Initial page session establishment failed: \${error instanceof Error ? error.message : 'Unknown error'}\`);
+  }`;
+  }
+
+  /**
+   * Generate login endpoint bootstrap body
+   */
+  private generateLoginEndpointBootstrapBody(
+    bootstrap: SessionBootstrapAnalysis
+  ): string {
+    const loginRequest = bootstrap.bootstrapRequests.find(
+      (req) => req.method === "authentication"
+    );
+
+    if (loginRequest) {
+      const request = loginRequest.request;
+      return `  try {
+    // Login endpoint session establishment
+    console.log('Establishing session via login endpoint...');
+    
+    const loginResponse = await fetch('${request.url}', {
+      method: '${request.method}',
+      headers: ${JSON.stringify(request.headers || {}, null, 6)},
+      ${request.body ? `body: ${typeof request.body === "string" ? `'${request.body}'` : JSON.stringify(request.body)},` : ""}
+    });
+    
+    if (!loginResponse.ok) {
+      throw new Error(\`Login failed: \${loginResponse.status} \${loginResponse.statusText}\`);
+    }
+    
+    ${this.generateTokenExtractionCode(bootstrap.sessionTokens)}
+    
+    console.log('Login session established successfully');
+  } catch (error) {
+    throw new Error(\`Login session establishment failed: \${error instanceof Error ? error.message : 'Unknown error'}\`);
+  }`;
+    }
+
+    return this.generateGenericBootstrapBody(bootstrap);
+  }
+
+  /**
+   * Generate cookie-based bootstrap body
+   */
+  private generateCookieBootstrapBody(
+    bootstrap: SessionBootstrapAnalysis
+  ): string {
+    return `  try {
+    // Cookie-based session establishment
+    console.log('Establishing session via cookies...');
+    
+    // Check for existing session cookies
+    const sessionTokens: Partial<SessionState> = {};
+    
+    ${bootstrap.sessionTokens
+      .filter((token) => token.source === "cookie")
+      .map(
+        (token) => `
+    // Extract ${token.parameter} from cookies
+    const ${token.parameter}Cookie = document.cookie
+      .split('; ')
+      .find(row => row.startsWith('${token.parameter}='))
+      ?.split('=')[1];
+    
+    if (${token.parameter}Cookie) {
+      sessionTokens.${token.parameter} = ${token.parameter}Cookie;
+    }`
+      )
+      .join("")}
+    
+    updateSessionState(sessionTokens);
+    
+    console.log('Cookie-based session established successfully');
+  } catch (error) {
+    throw new Error(\`Cookie session establishment failed: \${error instanceof Error ? error.message : 'Unknown error'}\`);
+  }`;
+  }
+
+  /**
+   * Generate generic bootstrap body
+   */
+  private generateGenericBootstrapBody(
+    bootstrap: SessionBootstrapAnalysis
+  ): string {
+    return `  try {
+    // Generic session establishment
+    console.log('Establishing session...');
+    
+    // This is a generic implementation - customize based on your specific requirements
+    const sessionTokens: Partial<SessionState> = {
+      ${bootstrap.sessionTokens.map((token) => `${token.parameter}: '${token.value}' // TODO: Replace with dynamic token acquisition`).join(",\n      ")}
+    };
+    
+    updateSessionState(sessionTokens);
+    
+    console.log('Session established successfully');
+  } catch (error) {
+    throw new Error(\`Session establishment failed: \${error instanceof Error ? error.message : 'Unknown error'}\`);
+  }`;
+  }
+
+  /**
+   * Generate token extraction code from various sources
+   */
+  private generateTokenExtractionCode(sessionTokens: any[]): string {
+    if (sessionTokens.length === 0) {
+      return "// No session tokens to extract";
+    }
+
+    const extractionCode = sessionTokens
+      .map((token) => {
+        switch (token.source) {
+          case "response-body":
+            return `
+    // Extract ${token.parameter} from response body
+    try {
+      const responseData = JSON.parse(htmlContent);
+      if (responseData.${token.parameter}) {
+        sessionTokens.${token.parameter} = responseData.${token.parameter};
+      }
+    } catch {
+      // Try regex extraction for ${token.parameter}
+      const ${token.parameter}Match = htmlContent.match(/${token.parameter}["']?\\s*[=:]\\s*["']?([^"'\\s;,}]+)/);
+      if (${token.parameter}Match) {
+        sessionTokens.${token.parameter} = ${token.parameter}Match[1];
+      }
+    }`;
+
+          case "cookie":
+            return `
+    // Extract ${token.parameter} from Set-Cookie headers
+    const ${token.parameter}Cookie = initialResponse.headers.get('set-cookie')
+      ?.split(';')
+      .find(cookie => cookie.trim().startsWith('${token.parameter}='))
+      ?.split('=')[1];
+    if (${token.parameter}Cookie) {
+      sessionTokens.${token.parameter} = ${token.parameter}Cookie;
+    }`;
+
+          case "header":
+            return `
+    // Extract ${token.parameter} from response headers
+    const ${token.parameter}Header = initialResponse.headers.get('${token.parameter.toLowerCase()}');
+    if (${token.parameter}Header) {
+      sessionTokens.${token.parameter} = ${token.parameter}Header;
+    }`;
+
+          default:
+            return `
+    // Extract ${token.parameter} (generic approach)
+    // TODO: Implement specific extraction logic for ${token.parameter}
+    sessionTokens.${token.parameter} = '${token.value}'; // Placeholder - replace with dynamic extraction`;
+        }
+      })
+      .join("\n");
+
+    return extractionCode;
+  }
+
+  /**
+   * Get base URL from session requests
+   */
+  private getBaseUrlFromSession(session: HarvestSession): string {
+    const requests = this.getAllRequestsFromSession(session);
+    if (requests.length > 0 && requests[0]) {
+      try {
+        const url = new URL(requests[0].url);
+        return url.origin;
+      } catch {
+        return "https://example.com"; // Fallback
+      }
+    }
+    return "https://example.com";
+  }
+
+  /**
+   * Generate authentication setup code for main function
+   */
+  private generateAuthenticationSetupCode(): string {
+    if (!this.authenticationAnalysis) {
+      return "";
+    }
+
+    const { bootstrapAnalysis } = this.authenticationAnalysis;
+
+    if (bootstrapAnalysis.requiresBootstrap) {
+      return `  // Establish authentication session before making API calls
+  try {
+    console.log('Establishing authentication session...');
+    await establishSession();
+    console.log('Authentication session established successfully');
+  } catch (error) {
+    console.error('Failed to establish authentication session:', error);
+    throw new Error('Authentication setup failed: ' + (error instanceof Error ? error.message : 'Unknown error'));
+  }`;
+    }
+    // Just check that authentication tokens are available
+    const tokenChecks = this.authenticationAnalysis.dependencies
+      .filter((dep) => dep.required)
+      .map((dep) => {
+        const tokenGetter = `get${this.capitalize(this.convertToCamelCase(dep.parameter))}()`;
+        return `
+  // Check required authentication token: ${dep.parameter}
+  const ${dep.parameter}Token = ${tokenGetter};
+  if (!${dep.parameter}Token) {
+    throw new Error('Required authentication token ${dep.parameter} is not available');
+  }`;
+      })
+      .join("");
+
+    if (tokenChecks) {
+      return `  // Verify authentication tokens are available${tokenChecks}`;
+    }
+
+    return "";
   }
 
   /**
@@ -470,8 +1004,16 @@ export class WrapperScriptOrchestrator {
       mainFunctionBody = `  // No workflow steps available
   return { success: false, data: null, status: 500, headers: {} };`;
     } else {
-      // Generate sophisticated workflow orchestration
-      mainFunctionBody = flowGenerator.generateOrchestrationCode(workflow);
+      // Generate sophisticated workflow orchestration with authentication
+      let orchestrationCode = flowGenerator.generateOrchestrationCode(workflow);
+
+      // Prepend authentication setup if required
+      if (this.authenticationAnalysis?.requiresAuthentication) {
+        const authSetup = this.generateAuthenticationSetupCode();
+        orchestrationCode = `${authSetup}\n\n${orchestrationCode}`;
+      }
+
+      mainFunctionBody = orchestrationCode;
 
       // Add cookie manager import if the workflow uses cookies
       if (workflow.usesCookies) {
@@ -1181,7 +1723,13 @@ export class WrapperScriptOrchestrator {
       success: true,
       data,
       status: response.status,
-      headers: Object.fromEntries(response.headers.entries())
+      headers: (() => {
+        const headers: Record<string, string> = {};
+        response.headers.forEach((value, key) => {
+          headers[key] = value;
+        });
+        return headers;
+      })()
     };
   } catch (error) {
     throw new Error(\`Request failed: \${error instanceof Error ? error.message : 'Unknown error'}\`);
@@ -1219,31 +1767,90 @@ export class WrapperScriptOrchestrator {
       requestModel.queryParams &&
       Object.keys(requestModel.queryParams).length > 0
     ) {
-      const paramEntries = Object.entries(requestModel.queryParams)
-        .map(([k, v]) => {
-          // Check if this query param should be parameterized
-          const param = parameters.find((p) => p.name === k);
-          if (param) {
-            return parameters.length > 3
-              ? `      ${k}: params.${k}`
-              : `      ${k}: ${k}`;
-          }
-          return `      ${k}: '${v}'`;
-        })
-        .join(",\n");
+      // Generate URL construction with proper parameter handling
+      lines.push(`    const url = new URL('${requestModel.url}');`);
+      lines.push("");
 
-      lines.push("    const queryParams = new URLSearchParams({");
-      lines.push(paramEntries);
-      lines.push("    });");
-      urlCode = `'${requestModel.url}?' + queryParams.toString()`;
+      // Add static parameters first
+      const staticParams = Object.entries(requestModel.queryParams).filter(
+        ([k, _v]) => {
+          return !parameters.find((p) => p.name === k);
+        }
+      );
+
+      for (const [key, value] of staticParams) {
+        lines.push(`    url.searchParams.set('${key}', '${value}');`);
+      }
+
+      // Add configurable parameters with proper undefined checks
+      const configurableParams = Object.entries(
+        requestModel.queryParams
+      ).filter(([k, _v]) => {
+        return parameters.find((p) => p.name === k);
+      });
+
+      if (configurableParams.length > 0) {
+        lines.push("");
+        lines.push("    // Configurable parameters");
+        for (const [key, _value] of configurableParams) {
+          const paramName = parameters.length > 3 ? `params.${key}` : key;
+          lines.push(
+            `    if (${paramName} !== undefined && ${paramName} !== null) {`
+          );
+          lines.push(
+            `      url.searchParams.set('${key}', String(${paramName}));`
+          );
+          lines.push("    }");
+        }
+      }
+
+      // Add authentication parameters if required
+      if (this.authenticationAnalysis?.requiresAuthentication) {
+        lines.push("");
+        lines.push("    // Authentication parameters");
+        for (const dependency of this.authenticationAnalysis.dependencies) {
+          if (dependency.source === "request" && dependency.parameter) {
+            const tokenGetter = `get${this.capitalize(this.convertToCamelCase(dependency.parameter))}()`;
+            lines.push(
+              `    const ${dependency.parameter}Token = ${tokenGetter};`
+            );
+            lines.push(`    if (${dependency.parameter}Token) {`);
+            lines.push(
+              `      url.searchParams.set('${dependency.parameter}', ${dependency.parameter}Token);`
+            );
+            lines.push(`    } else if (${dependency.required}) {`);
+            lines.push(
+              `      throw new Error('Required authentication token ${dependency.parameter} is not available. Call establishSession() first.');`
+            );
+            lines.push("    }");
+          }
+        }
+      }
+
+      urlCode = "url.toString()";
     }
 
     // Build options object
     const options: string[] = [`      method: '${requestModel.method}'`];
 
-    // Add headers - check for auth token parameterization
-    if (Object.keys(requestModel.headers).length > 0) {
-      const headerLines = Object.entries(requestModel.headers)
+    // Add headers - check for auth token parameterization and authentication
+    const baseHeaders = Object.entries(requestModel.headers);
+    const authHeaders: string[] = [];
+
+    // Add authentication headers if required
+    if (this.authenticationAnalysis?.requiresAuthentication) {
+      for (const dependency of this.authenticationAnalysis.dependencies) {
+        if (dependency.source === "header") {
+          const tokenGetter = `get${this.capitalize(this.convertToCamelCase(dependency.parameter))}()`;
+          authHeaders.push(
+            `        '${dependency.parameter}': ${tokenGetter} || ''`
+          );
+        }
+      }
+    }
+
+    if (baseHeaders.length > 0 || authHeaders.length > 0) {
+      const headerLines = baseHeaders
         .map(([k, v]) => {
           // Handle Authorization header with auth token parameter
           if (k.toLowerCase() === "authorization" && v.includes("Bearer")) {
@@ -1254,6 +1861,7 @@ export class WrapperScriptOrchestrator {
           }
           return `        '${k}': '${String(v).replace(/'/g, "\\'")}'`;
         })
+        .concat(authHeaders)
         .join(",\n");
 
       options.push(`      headers: {\n${headerLines}\n      }`);
@@ -1308,7 +1916,7 @@ export class WrapperScriptOrchestrator {
   }
 
   /**
-   * Generate response handling code based on ResponseHandlingTemplateEngine logic
+   * Generate response handling code for different content types
    */
   private generateResponseHandling(): string {
     return `    const contentType = response.headers.get('content-type') || '';
@@ -1365,7 +1973,13 @@ export class WrapperScriptOrchestrator {
         response.status,
         '${url}',
         '${method}',
-        Object.fromEntries(response.headers.entries()),
+        (() => {
+          const headers: Record<string, string> = {};
+          response.headers.forEach((value, key) => {
+            headers[key] = value;
+          });
+          return headers;
+        })(),
         undefined,
         await response.text()
       );
