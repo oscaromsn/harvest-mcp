@@ -94,8 +94,8 @@ ${recommendationsList}
       };
     }
 
-    // Sync completion state if needed (should already be synced by workflow)
-    context.sessionManager.syncCompletionState(params.sessionId);
+    // Analyze completion state if needed (should already be analyzed by workflow)
+    context.sessionManager.analyzeCompletionState(params.sessionId);
 
     context.sessionManager.addLog(
       params.sessionId,

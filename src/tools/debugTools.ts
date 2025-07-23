@@ -357,8 +357,8 @@ export async function handleForceDependency(
       `Manually created dependency: ${params.consumerNodeId} -> ${params.providerNodeId} (provides: ${params.providedPart})`
     );
 
-    // Sync completion state after forcing dependency
-    context.sessionManager.syncCompletionState(params.sessionId);
+    // Analyze completion state after forcing dependency
+    context.sessionManager.analyzeCompletionState(params.sessionId);
 
     return {
       content: [
