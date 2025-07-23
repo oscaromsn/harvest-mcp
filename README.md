@@ -17,6 +17,7 @@ HARvest MCP Server enables AI coding agents to programmatically analyze API inte
 
 ## Architecture
 
+### High-Level Overview
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                    MCP Server (STDIO)                          │
@@ -31,6 +32,32 @@ HARvest MCP Server enables AI coding agents to programmatically analyze API inte
 │  └─────────────┘  └─────────────┘  └─────────────┘           │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+### XState-Powered Session Management
+
+Harvest MCP uses **XState v5.20.1** finite state machines for robust session lifecycle management:
+
+```
+START → INITIAL_ANALYSIS → [USER_REVIEW] → [DEPENDENCY_GRAPH] → CODE_READY → COMPLETE
+```
+
+**State Machine Architecture:**
+- **Formal State Management**: XState FSM ensures deterministic session transitions
+- **Event-Driven Flow**: All operations triggered by typed events (START_SESSION, PROCESS_NEXT_NODE, etc.)
+- **Context Management**: Immutable state updates with assign() actions
+- **Error Handling**: Built-in error states and recovery mechanisms
+- **Type Safety**: Full TypeScript integration with Zod schema validation
+
+**State Flow:**
+1. `initializing` → Session creation and context setup
+2. `parsingHar` → HAR file analysis and validation
+3. `discoveringWorkflows` → AI-powered workflow identification
+4. `awaitingWorkflowSelection` → User workflow choice or auto-selection
+5. `processingDependencies` → DAG building and dependency resolution
+6. `processingNode` → Individual request analysis
+7. `readyForCodeGen` → Analysis complete, ready for code generation
+8. `generatingCode` → TypeScript wrapper generation
+9. `codeGenerated` → Final state with generated code
 
 ## Quick Start
 

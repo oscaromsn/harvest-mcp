@@ -99,7 +99,9 @@ tests/
    - `InputVariablesAgent`: Finds user input requirements
 
 2. **Core Services** (`src/core/`):
-   - `SessionManager`: Manages stateful MCP sessions with FSM pattern
+   - `SessionManager`: Stateful MCP session management using XState FSM service
+   - `SessionFsmService`: XState v5.20.1 finite state machine service for session lifecycle
+   - `session.machine.ts`: Formal XState machine definition with typed events and context
    - `DAGManager`: Builds and manages dependency graphs using graphlib
    - `CodeGenerator`: Generates executable TypeScript code
    - `HARParser`: Processes HAR files into request models
@@ -119,12 +121,43 @@ tests/
    - `BrowserProvider`: Browser instance provider
    - `AgentFactory`: Browser agent creation utilities
 
-### Session State Flow
+### XState Session Management Architecture
+
+**State Machine Flow:**
 ```
-START → INITIAL_ANALYSIS → [USER_REVIEW] → [DEPENDENCY_GRAPH] → CODE_READY → COMPLETE
+initializing → parsingHar → discoveringWorkflows → awaitingWorkflowSelection → 
+processingDependencies → processingNode → readyForCodeGen → generatingCode → codeGenerated
+                                                    ↓
+                                                  failed
 ```
 
-Sessions are managed statewide with transitions controlled by SessionManager's FSM implementation.
+**Key XState Features:**
+- **Event-Driven**: All state transitions triggered by typed events (START_SESSION, PROCESS_NEXT_NODE, etc.)
+- **Immutable State**: Context updates use XState's assign() for safe state management
+- **Type Safety**: Full TypeScript integration with Zod schema validation
+- **Actor Model**: Async operations handled via XState actors (HAR parsing, workflow discovery, etc.)
+- **Error Handling**: Built-in error states with context error information
+- **Deterministic**: Formal state machine ensures predictable session behavior
+
+**Session Context Structure:**
+```typescript
+interface SessionContext {
+  sessionId: string;
+  prompt: string;
+  harPath?: string;
+  cookiePath?: string;
+  harData?: ParsedHARData;
+  cookieData?: CookieData;
+  dagManager: DAGManager;
+  workflowGroups: Map<string, WorkflowGroup>;
+  activeWorkflowId?: string;
+  toBeProcessedNodes: string[];
+  inProcessNodeId?: string;
+  logs: LogEntry[];
+  generatedCode?: string;
+  error?: SessionError;
+}
+```
 
 ### Manual Browser Session Workflow
 ```
@@ -142,10 +175,16 @@ Manual sessions enable real-time browser interaction with automatic artifact col
 ## Key Development Patterns
 
 1. **TypeScript**: Strict typing enabled, avoid `any` types
-2. **Error Handling**: Use proper error types and logging via SessionManager
-3. **Async Operations**: All agent and LLM operations are async
-4. **State Management**: Session state persists across tool calls
-5. **Testing**: Write tests for all new functionality, maintain coverage
+2. **XState Integration**: 
+   - Use `SessionFsmService` to create and manage state machines
+   - Send typed events via `sessionFsmService.sendEvent(sessionId, event)`
+   - Access state via `sessionFsmService.getCurrentState(sessionId)`
+   - Access context via `sessionFsmService.getContext(sessionId)`
+   - Use `toHarvestSession()` for backward compatibility with legacy code
+3. **Error Handling**: Use proper error types and logging via SessionManager
+4. **Async Operations**: All agent and LLM operations are async, handled via XState actors
+5. **State Management**: All session state managed through XState FSM, no direct mutations
+6. **Testing**: Write tests for all new functionality, maintain coverage
 
 ---
 
