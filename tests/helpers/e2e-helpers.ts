@@ -27,7 +27,6 @@ export interface E2ESessionOptions {
   cookiePath?: string;
   prompt?: string;
   mockLLMResponses?: {
-    identify_end_url?: { url: "https://api.example.com/search" };
     identify_dynamic_parts?: { dynamic_parts: string[] };
     identify_input_variables?: {
       identified_variables: Array<{

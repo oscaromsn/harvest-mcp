@@ -8,7 +8,6 @@ import type {
   DynamicPartsResponse,
   InputVariablesResponse,
   SessionStartParams,
-  SimplestRequestResponse,
 } from "../../src/types/index.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -60,11 +59,6 @@ export const createMockInputVariablesResponse = (
   })),
 });
 
-export const createMockSimplestRequestResponse = (
-  index = 0
-): SimplestRequestResponse => ({
-  index,
-});
 
 // Test data validation helpers
 export const isValidTestSession = (

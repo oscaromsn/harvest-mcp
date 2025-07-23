@@ -230,6 +230,7 @@ export class SessionFsmService {
       lastActivity: new Date(),
       workflowGroups: context.workflowGroups,
       selectedWorkflowId: context.activeWorkflowId,
+      fsm: this.getSessionMachine(sessionId),
       state: {
         // Legacy single-workflow state (for backward compatibility)
         actionUrl: activeWorkflow?.masterNodeId || undefined,

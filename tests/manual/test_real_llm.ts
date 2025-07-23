@@ -142,6 +142,7 @@ async function testRealLLMIntegration() {
         },
         createdAt: new Date(),
         lastActivity: new Date(),
+        fsm: {} as any, // Mock FSM for testing
       };
 
       console.log("Testing workflow discovery with mock data...");

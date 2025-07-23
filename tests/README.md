@@ -209,7 +209,7 @@ await expectToThrow(
 import { createMockLLMClient } from '@tests/mocks/llm-client.mock.js';
 
 const mockLLM = createMockLLMClient({
-  identify_end_url: { url: 'https://custom.com/api' }
+  identify_dynamic_parts: { dynamic_parts: ['auth_token', 'session_id'] }
 });
 
 // For unit tests - mock file system

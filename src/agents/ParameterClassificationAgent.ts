@@ -694,11 +694,12 @@ function analyzeParameterConsistencyWithWorkflows(
   // First, get basic consistency results
   const basicConsistency = analyzeParameterConsistency(parameters, session);
 
+  // Get FSM context for workflow data
+  // Note: This assumes session has an fsm property with getContext method
+  const fsmContext = session.fsm?.getSnapshot().context;
+
   // If no workflow groups available, return basic results with empty workflow context
-  if (
-    !session.state.workflowGroups ||
-    session.state.workflowGroups.size === 0
-  ) {
+  if (!fsmContext?.workflowGroups || fsmContext.workflowGroups.size === 0) {
     const enhancedResults = new Map();
     for (const [key, value] of basicConsistency) {
       enhancedResults.set(key, {
@@ -717,7 +718,7 @@ function analyzeParameterConsistencyWithWorkflows(
   const currentRequestKey = `${currentRequest.method.toUpperCase()}:${currentRequest.url}`;
   let currentWorkflowId: string | undefined;
 
-  for (const [workflowId, workflow] of session.state.workflowGroups) {
+  for (const [workflowId, workflow] of fsmContext.workflowGroups) {
     if (workflow.nodeIds.has(currentRequestKey)) {
       currentWorkflowId = workflowId;
       break;
@@ -740,8 +741,7 @@ function analyzeParameterConsistencyWithWorkflows(
     };
 
     if (currentWorkflowId) {
-      const currentWorkflow =
-        session.state.workflowGroups.get(currentWorkflowId);
+      const currentWorkflow = fsmContext.workflowGroups.get(currentWorkflowId);
       if (currentWorkflow) {
         // Analyze parameter usage within this specific workflow
         const workflowAnalysis = analyzeParameterInWorkflow(
