@@ -690,16 +690,21 @@ export class ManualSessionManager {
   }
 
   /**
-   * Stop a manual browser session and collect artifacts
+   * Validate session and initialize stop process
    */
-  async stopSession(
+  private validateSessionAndInitializeStop(
     sessionId: string,
     options: {
       artifactTypes?: ("har" | "cookies" | "screenshot")[];
       takeScreenshot?: boolean;
       reason?: string;
-    } = {}
-  ): Promise<SessionStopResult> {
+    }
+  ): {
+    session: ManualSession;
+    stopTime: number;
+    duration: number;
+    preStopSnapshot: MemorySnapshot;
+  } {
     const session = this.activeSessions.get(sessionId);
     if (!session) {
       throw new Error(`Session not found: ${sessionId}`);
@@ -721,86 +726,205 @@ export class ManualSessionManager {
       `[ManualSessionManager] Memory before session stop: ${MemoryMonitor.formatMemorySize(preStopSnapshot.usage.heapUsed)}`
     );
 
+    return { session, stopTime, duration, preStopSnapshot };
+  }
+
+  /**
+   * Check for active user activity and protect ongoing work
+   */
+  private async validateUserActivityBeforeStop(
+    session: ManualSession,
+    sessionId: string,
+    isPageAlive: boolean
+  ): Promise<void> {
+    if (!isPageAlive || !session.artifactCollector) {
+      return;
+    }
+
+    const activityStatus = session.artifactCollector.getNetworkActivityStatus();
+    const timeSinceLastRequest = activityStatus.timeSinceLastRequest;
+
+    // Define activity thresholds
+    const ACTIVE_THRESHOLD = 30 * 1000; // 30 seconds
+    const RECENT_ACTIVITY_THRESHOLD = 2 * 60 * 1000; // 2 minutes
+
+    if (timeSinceLastRequest < ACTIVE_THRESHOLD) {
+      // User is actively interacting - throw custom error that preserves session
+      throw new SessionStillActiveError(
+        "Session appears to be in active use",
+        sessionId,
+        {
+          isActive: true,
+          lastRequestTime: activityStatus.lastRequestTime,
+          timeSinceLastRequest,
+          formattedTimeSince: this.formatDuration(timeSinceLastRequest),
+          totalRequests: activityStatus.harEntryCount,
+          apiRequests: activityStatus.apiRequestCount,
+          pendingRequests: activityStatus.pendingRequestCount,
+        },
+        [
+          "DO NOT stop this session - user is actively using the browser",
+          "Respect user's current work and wait for natural completion",
+          "Check session activity status again after user finishes current task",
+        ]
+      );
+    }
+
+    if (timeSinceLastRequest < RECENT_ACTIVITY_THRESHOLD) {
+      // Recent activity - provide warning but allow stop
+      logger.warn(
+        `[ManualSessionManager] Recent activity detected for session ${sessionId}. ` +
+          `Last request: ${this.formatDuration(timeSinceLastRequest)} ago. Proceeding with stop.`
+      );
+    }
+  }
+
+  /**
+   * Collect session state and artifacts based on browser availability
+   */
+  private async collectSessionStateAndArtifacts(
+    session: ManualSession,
+    sessionId: string,
+    isPageAlive: boolean,
+    options: {
+      artifactTypes?: ("har" | "cookies" | "screenshot")[];
+      takeScreenshot?: boolean;
+      reason?: string;
+    }
+  ): Promise<{
+    finalUrl: string;
+    finalPageTitle: string;
+    artifacts: Artifact[];
+  }> {
+    let finalUrl = "Unknown";
+    let finalPageTitle = "Unknown";
+    let artifacts: Artifact[] = [];
+
+    if (isPageAlive) {
+      // Get final page state safely
+      const pageState = await this.getFinalPageState(session, sessionId);
+      finalUrl = pageState.finalUrl;
+      finalPageTitle = pageState.finalPageTitle;
+
+      // Take final screenshot if requested
+      await this.handleFinalScreenshot(sessionId, session, options);
+
+      // Collect artifacts for live session
+      artifacts = await this.collectLiveSessionArtifacts(
+        session,
+        sessionId,
+        options
+      );
+    } else {
+      logger.warn(
+        `[ManualSessionManager] Browser/page already closed for session ${sessionId}, skipping state collection`
+      );
+
+      // Collect artifacts for closed session
+      artifacts = await this.collectClosedSessionArtifacts(session, sessionId);
+    }
+
+    return { finalUrl, finalPageTitle, artifacts };
+  }
+
+  /**
+   * Finalize session metadata and create result object
+   */
+  private finalizeSessionAndCreateResult(
+    session: ManualSession,
+    sessionId: string,
+    duration: number,
+    finalUrl: string,
+    finalPageTitle: string,
+    artifacts: Artifact[]
+  ): SessionStopResult {
+    // Update session metadata with final state
+    session.metadata.currentUrl = finalUrl;
+    session.metadata.pageTitle = finalPageTitle;
+
+    // Generate session summary
+    const summary = this.generateSessionSummary(session, duration, artifacts);
+
+    logger.info(
+      `[ManualSessionManager] Session stopped successfully: ${sessionId}`
+    );
+
+    return {
+      id: sessionId,
+      duration,
+      finalUrl,
+      finalPageTitle,
+      artifacts,
+      summary,
+      metadata: {
+        networkRequestCount: session.metadata.networkRequestCount || 0,
+        totalArtifacts: artifacts.length,
+        sessionDurationMs: duration,
+      },
+    };
+  }
+
+  /**
+   * Handle stop session errors appropriately
+   */
+  private async handleStopSessionError(
+    error: unknown,
+    session: ManualSession,
+    sessionId: string
+  ): Promise<never> {
+    // Check if this is a SessionStillActiveError - if so, don't clean up the session
+    if (error instanceof SessionStillActiveError) {
+      logger.info(
+        `[ManualSessionManager] Session ${sessionId} is still active, preserving session state`
+      );
+      throw error; // Re-throw without cleanup to preserve session
+    }
+
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    logger.error(
+      `[ManualSessionManager] Error stopping session ${sessionId}: ${errorMessage}`
+    );
+
+    // Only perform emergency cleanup for actual failures, not activity detection
+    await this.emergencySessionCleanup(session, sessionId);
+
+    throw new Error(`Failed to stop session: ${errorMessage}`);
+  }
+
+  /**
+   * Stop a manual browser session and collect artifacts
+   */
+  async stopSession(
+    sessionId: string,
+    options: {
+      artifactTypes?: ("har" | "cookies" | "screenshot")[];
+      takeScreenshot?: boolean;
+      reason?: string;
+    } = {}
+  ): Promise<SessionStopResult> {
+    // Validate session and initialize stop process
+    const { session, duration, preStopSnapshot } =
+      this.validateSessionAndInitializeStop(sessionId, options);
+
     try {
       // Check if browser/page is still alive before proceeding
       const isPageAlive = await this.checkPageHealth(session);
 
       // Check for recent user activity - protect ongoing user work
-      if (isPageAlive && session.artifactCollector) {
-        const activityStatus =
-          session.artifactCollector.getNetworkActivityStatus();
-        const timeSinceLastRequest = activityStatus.timeSinceLastRequest;
+      await this.validateUserActivityBeforeStop(
+        session,
+        sessionId,
+        isPageAlive
+      );
 
-        // Define activity thresholds
-        const ACTIVE_THRESHOLD = 30 * 1000; // 30 seconds
-        const RECENT_ACTIVITY_THRESHOLD = 2 * 60 * 1000; // 2 minutes
-
-        if (timeSinceLastRequest < ACTIVE_THRESHOLD) {
-          // User is actively interacting - throw custom error that preserves session
-          throw new SessionStillActiveError(
-            "Session appears to be in active use",
-            sessionId,
-            {
-              isActive: true,
-              lastRequestTime: activityStatus.lastRequestTime,
-              timeSinceLastRequest,
-              formattedTimeSince: this.formatDuration(timeSinceLastRequest),
-              totalRequests: activityStatus.harEntryCount,
-              apiRequests: activityStatus.apiRequestCount,
-              pendingRequests: activityStatus.pendingRequestCount,
-            },
-            [
-              "DO NOT stop this session - user is actively using the browser",
-              "Respect user's current work and wait for natural completion",
-              "Check session activity status again after user finishes current task",
-            ]
-          );
-        }
-        if (timeSinceLastRequest < RECENT_ACTIVITY_THRESHOLD) {
-          // Recent activity - provide warning but allow stop
-          logger.warn(
-            `[ManualSessionManager] Recent activity detected for session ${sessionId}. ` +
-              `Last request: ${this.formatDuration(timeSinceLastRequest)} ago. Proceeding with stop.`
-          );
-        }
-      }
-      let finalUrl = "Unknown";
-      let finalPageTitle = "Unknown";
-      let artifacts: Artifact[] = [];
-
-      if (isPageAlive) {
-        // Get final page state safely
-        const pageState = await this.getFinalPageState(session, sessionId);
-        finalUrl = pageState.finalUrl;
-        finalPageTitle = pageState.finalPageTitle;
-
-        // Take final screenshot if requested
-        await this.handleFinalScreenshot(sessionId, session, options);
-
-        // Collect artifacts for live session
-        artifacts = await this.collectLiveSessionArtifacts(
+      // Collect session state and artifacts
+      const { finalUrl, finalPageTitle, artifacts } =
+        await this.collectSessionStateAndArtifacts(
           session,
           sessionId,
+          isPageAlive,
           options
         );
-      } else {
-        logger.warn(
-          `[ManualSessionManager] Browser/page already closed for session ${sessionId}, skipping state collection`
-        );
-
-        // Collect artifacts for closed session
-        artifacts = await this.collectClosedSessionArtifacts(
-          session,
-          sessionId
-        );
-      }
-
-      // Update session metadata with final state
-      session.metadata.currentUrl = finalUrl;
-      session.metadata.pageTitle = finalPageTitle;
-
-      // Generate session summary
-      const summary = this.generateSessionSummary(session, duration, artifacts);
 
       // Perform cleanup and memory monitoring
       await this.performSessionCleanup(
@@ -811,42 +935,17 @@ export class ManualSessionManager {
         preStopSnapshot
       );
 
-      logger.info(
-        `[ManualSessionManager] Session stopped successfully: ${sessionId}`
-      );
-
-      return {
-        id: sessionId,
+      // Create and return final result
+      return this.finalizeSessionAndCreateResult(
+        session,
+        sessionId,
         duration,
         finalUrl,
         finalPageTitle,
-        artifacts,
-        summary,
-        metadata: {
-          networkRequestCount: session.metadata.networkRequestCount || 0,
-          totalArtifacts: artifacts.length,
-          sessionDurationMs: duration,
-        },
-      };
-    } catch (error) {
-      // Check if this is a SessionStillActiveError - if so, don't clean up the session
-      if (error instanceof SessionStillActiveError) {
-        logger.info(
-          `[ManualSessionManager] Session ${sessionId} is still active, preserving session state`
-        );
-        throw error; // Re-throw without cleanup to preserve session
-      }
-
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
-      logger.error(
-        `[ManualSessionManager] Error stopping session ${sessionId}: ${errorMessage}`
+        artifacts
       );
-
-      // Only perform emergency cleanup for actual failures, not activity detection
-      await this.emergencySessionCleanup(session, sessionId);
-
-      throw new Error(`Failed to stop session: ${errorMessage}`);
+    } catch (error) {
+      return await this.handleStopSessionError(error, session, sessionId);
     }
   }
 
