@@ -1239,18 +1239,6 @@ export class SessionManager {
   }
 
   /**
-   * Backward-compatible sync method that uses enhanced validation
-   * This maintains existing API while providing enhanced functionality
-   */
-  syncCompletionState(sessionId: string): void {
-    // Force refresh of DAG state before analysis to ensure parameter classifications are reflected
-    this.refreshDAGStateForParameterClassifications(sessionId);
-    this.analyzeCompletionState(sessionId);
-    // The state is already updated in analyzeCompletionState
-    // This method now just provides the legacy interface
-  }
-
-  /**
    * Refresh DAG state to ensure all parameter classifications are properly reflected
    * This ensures completion state analysis is based on the most recent classification results
    */
