@@ -401,12 +401,8 @@ export interface DAGExport {
 
 // ========== LLM Response Types ==========
 
-/**
- * Response from URL identification function call
- */
-export interface URLIdentificationResponse {
-  url: string;
-}
+// URLIdentificationResponse removed - URLIdentificationAgent deprecated
+// Modern workflow discovery handles URL identification
 
 /**
  * Response from dynamic parts identification function call
@@ -968,10 +964,11 @@ export interface SessionLogging {
 
 /**
  * Minimal interface for session analysis operations
- * Used by tools that need completion analysis
+ * Used by tools that need completion analysis and state management
  */
 export interface SessionAnalysis {
   analyzeCompletionState(sessionId: string): CompletionAnalysis;
+  setMasterNodeId(sessionId: string, nodeId: string): void;
 }
 
 /**
@@ -1116,6 +1113,11 @@ export class SessionManagerAdapter
     return this.sessionManager.analyzeCompletionState(sessionId);
   }
 
+  setMasterNodeId(sessionId: string, nodeId: string): void {
+    const session = this.getSession(sessionId);
+    session.state.masterNodeId = nodeId;
+  }
+
   // ISessionManager compatibility methods
   isComplete(sessionId: string): boolean {
     return this.analyzeCompletionState(sessionId).isComplete;
@@ -1124,11 +1126,6 @@ export class SessionManagerAdapter
   setActionUrl(sessionId: string, url: string): void {
     const session = this.getSession(sessionId);
     session.state.actionUrl = url;
-  }
-
-  setMasterNodeId(sessionId: string, nodeId: string): void {
-    const session = this.getSession(sessionId);
-    session.state.masterNodeId = nodeId;
   }
 
   updateSessionState(sessionId: string, updates: Partial<SessionState>): void {
@@ -1210,6 +1207,7 @@ export function createDebugToolContext(
     addLog: sessionAdapter.addLog.bind(sessionAdapter),
     analyzeCompletionState:
       sessionAdapter.analyzeCompletionState.bind(sessionAdapter),
+    setMasterNodeId: sessionAdapter.setMasterNodeId.bind(sessionAdapter),
     sessionManager: sessionAdapter,
     completedSessionManager: completedSessionAdapter,
   };
@@ -1229,6 +1227,7 @@ export function createAnalysisToolContext(
     addLog: sessionAdapter.addLog.bind(sessionAdapter),
     analyzeCompletionState:
       sessionAdapter.analyzeCompletionState.bind(sessionAdapter),
+    setMasterNodeId: sessionAdapter.setMasterNodeId.bind(sessionAdapter),
     sessionManager: sessionAdapter,
     completedSessionManager: completedSessionAdapter,
   };
@@ -1269,6 +1268,7 @@ export function createCodegenToolContext(
     addLog: sessionAdapter.addLog.bind(sessionAdapter),
     analyzeCompletionState:
       sessionAdapter.analyzeCompletionState.bind(sessionAdapter),
+    setMasterNodeId: sessionAdapter.setMasterNodeId.bind(sessionAdapter),
     sessionManager: sessionAdapter,
     completedSessionManager: completedSessionAdapter,
   };
@@ -1287,6 +1287,7 @@ export function createSystemToolContext(
     getSession: sessionAdapter.getSession.bind(sessionAdapter),
     analyzeCompletionState:
       sessionAdapter.analyzeCompletionState.bind(sessionAdapter),
+    setMasterNodeId: sessionAdapter.setMasterNodeId.bind(sessionAdapter),
     sessionManager: sessionAdapter,
     completedSessionManager: completedSessionAdapter,
   };
@@ -1331,6 +1332,7 @@ export function createWorkflowToolContext(
     deleteSession: sessionAdapter.deleteSession.bind(sessionAdapter),
     analyzeCompletionState:
       sessionAdapter.analyzeCompletionState.bind(sessionAdapter),
+    setMasterNodeId: sessionAdapter.setMasterNodeId.bind(sessionAdapter),
     sessionManager: sessionAdapter,
     completedSessionManager: completedSessionAdapter,
   };
@@ -1350,6 +1352,7 @@ export function createAuthToolContext(
     addLog: sessionAdapter.addLog.bind(sessionAdapter),
     analyzeCompletionState:
       sessionAdapter.analyzeCompletionState.bind(sessionAdapter),
+    setMasterNodeId: sessionAdapter.setMasterNodeId.bind(sessionAdapter),
     sessionManager: sessionAdapter,
     completedSessionManager: completedSessionAdapter,
   };
@@ -1373,6 +1376,7 @@ export function createUnifiedToolContext(
     deleteSession: sessionAdapter.deleteSession.bind(sessionAdapter),
     analyzeCompletionState:
       sessionAdapter.analyzeCompletionState.bind(sessionAdapter),
+    setMasterNodeId: sessionAdapter.setMasterNodeId.bind(sessionAdapter),
     sessionManager: sessionAdapter,
     completedSessionManager: completedSessionAdapter,
   };
