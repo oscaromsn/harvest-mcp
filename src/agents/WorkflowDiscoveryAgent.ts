@@ -57,105 +57,118 @@ export async function discoverWorkflows(
       session.harData.requests
     );
 
-    // Use LLM to identify logical workflow groupings
-    const llmClient = getLLMClient();
-    const functionDef = createWorkflowDiscoveryFunctionDefinition();
-    const prompt = createWorkflowDiscoveryPrompt(
-      session.harData,
-      urlAnalysis,
-      requestAnalysis
-    );
+    // Try LLM workflow discovery first, fall back to static analysis if it fails
+    try {
+      const llmClient = getLLMClient();
+      const functionDef = createWorkflowDiscoveryFunctionDefinition();
+      const prompt = createWorkflowDiscoveryPrompt(
+        session.harData,
+        urlAnalysis,
+        requestAnalysis
+      );
 
-    const response = await llmClient.callFunction<WorkflowDiscoveryResponse>(
-      prompt,
-      functionDef,
-      "discover_workflows"
-    );
+      const response = await llmClient.callFunction<WorkflowDiscoveryResponse>(
+        prompt,
+        functionDef,
+        "discover_workflows"
+      );
 
-    // Debug: Log all discovered workflows and their primary endpoints
-    for (let i = 0; i < response.workflows.length; i++) {
-      const workflow = response.workflows[i];
-      if (workflow) {
+      // Debug: Log all discovered workflows and their primary endpoints
+      for (let i = 0; i < response.workflows.length; i++) {
+        const workflow = response.workflows[i];
+        if (workflow) {
+          const primaryEndpoint = workflow.endpoints.find(
+            (ep) => ep.role === "primary"
+          );
+          logger.info(
+            `Workflow ${i + 1}: ${workflow.id} - PRIMARY: ${primaryEndpoint?.method || "N/A"} ${primaryEndpoint?.url || "N/A"}`
+          );
+        }
+      }
+
+      // Convert LLM response to WorkflowGroup objects
+      const workflowGroups = new Map<string, WorkflowGroup>();
+
+      for (const workflow of response.workflows) {
+        // Find the primary endpoint for this workflow
         const primaryEndpoint = workflow.endpoints.find(
           (ep) => ep.role === "primary"
         );
-        logger.info(
-          `Workflow ${i + 1}: ${workflow.id} - PRIMARY: ${primaryEndpoint?.method || "N/A"} ${primaryEndpoint?.url || "N/A"}`
-        );
-      }
-    }
-
-    // Convert LLM response to WorkflowGroup objects
-    const workflowGroups = new Map<string, WorkflowGroup>();
-
-    for (const workflow of response.workflows) {
-      // Find the primary endpoint for this workflow
-      const primaryEndpoint = workflow.endpoints.find(
-        (ep) => ep.role === "primary"
-      );
-      if (!primaryEndpoint) {
-        logger.warn("No primary endpoint found for workflow", {
-          workflowId: workflow.id,
-        });
-        continue;
-      }
-
-      // Find corresponding requests for each endpoint
-      const workflowRequests = new Set<string>();
-      for (const endpoint of workflow.endpoints) {
-        const endpointBaseUrl = endpoint.url.split("?")[0];
-        if (!endpointBaseUrl) {
+        if (!primaryEndpoint) {
+          logger.warn("No primary endpoint found for workflow", {
+            workflowId: workflow.id,
+          });
           continue;
         }
 
-        const matchingRequests = session.harData.requests.filter((req) => {
-          if (
-            !req.url ||
-            req.method.toUpperCase() !== endpoint.method.toUpperCase()
-          ) {
-            return false;
+        // Find corresponding requests for each endpoint
+        const workflowRequests = new Set<string>();
+        for (const endpoint of workflow.endpoints) {
+          const endpointBaseUrl = endpoint.url.split("?")[0];
+          if (!endpointBaseUrl) {
+            continue;
           }
-          // Extract base URL (without query parameters) for exact matching
-          const reqBaseUrl = req.url.split("?")[0];
-          return reqBaseUrl === endpointBaseUrl;
-        });
 
-        for (const req of matchingRequests) {
-          // We'll use request URL as a temporary node ID - this will be replaced
-          // when actual DAG nodes are created
-          workflowRequests.add(`${req.method.toUpperCase()}:${req.url}`);
+          const matchingRequests = session.harData.requests.filter((req) => {
+            if (
+              !req.url ||
+              req.method.toUpperCase() !== endpoint.method.toUpperCase()
+            ) {
+              return false;
+            }
+            // Extract base URL (without query parameters) for exact matching
+            const reqBaseUrl = req.url.split("?")[0];
+            return reqBaseUrl === endpointBaseUrl;
+          });
+
+          for (const req of matchingRequests) {
+            // We'll use request URL as a temporary node ID - this will be replaced
+            // when actual DAG nodes are created
+            workflowRequests.add(`${req.method.toUpperCase()}:${req.url}`);
+          }
         }
+
+        const workflowGroup: WorkflowGroup = {
+          id: workflow.id,
+          name: workflow.name,
+          description: workflow.description,
+          category: workflow.category,
+          priority: workflow.priority,
+          complexity: workflow.complexity,
+          requiresUserInput: workflow.requiresUserInput,
+          masterNodeId: `${primaryEndpoint.method.toUpperCase()}:${primaryEndpoint.url}`, // Temporary - will be updated when DAG nodes created
+          nodeIds: workflowRequests,
+        };
+
+        workflowGroups.set(workflow.id, workflowGroup);
+
+        logger.debug("Created workflow group", {
+          workflowId: workflow.id,
+          name: workflow.name,
+          endpointCount: workflow.endpoints.length,
+          nodeCount: workflowRequests.size,
+        });
       }
 
-      const workflowGroup: WorkflowGroup = {
-        id: workflow.id,
-        name: workflow.name,
-        description: workflow.description,
-        category: workflow.category,
-        priority: workflow.priority,
-        complexity: workflow.complexity,
-        requiresUserInput: workflow.requiresUserInput,
-        masterNodeId: `${primaryEndpoint.method.toUpperCase()}:${primaryEndpoint.url}`, // Temporary - will be updated when DAG nodes created
-        nodeIds: workflowRequests,
-      };
-
-      workflowGroups.set(workflow.id, workflowGroup);
-
-      logger.debug("Created workflow group", {
-        workflowId: workflow.id,
-        name: workflow.name,
-        endpointCount: workflow.endpoints.length,
-        nodeCount: workflowRequests.size,
+      logger.info("Workflow discovery completed via LLM", {
+        sessionId: session.id,
+        workflowCount: workflowGroups.size,
+        workflows: Array.from(workflowGroups.keys()),
       });
+
+      return workflowGroups;
+    } catch (llmError) {
+      logger.warn(
+        "LLM workflow discovery failed, falling back to static analysis",
+        {
+          sessionId: session.id,
+          error: llmError instanceof Error ? llmError.message : "Unknown error",
+        }
+      );
+
+      // Fallback to static workflow discovery
+      return discoverWorkflowsStatically(session, urlAnalysis, requestAnalysis);
     }
-
-    logger.info("Workflow discovery completed", {
-      sessionId: session.id,
-      workflowCount: workflowGroups.size,
-      workflows: Array.from(workflowGroups.keys()),
-    });
-
-    return workflowGroups;
   } catch (error) {
     if (error instanceof HarvestError) {
       throw error;
@@ -170,6 +183,261 @@ export async function discoverWorkflows(
       }
     );
   }
+}
+
+/**
+ * Static workflow discovery that doesn't require LLM calls
+ * Used as fallback when LLM services are unavailable (e.g., during testing or API quota issues)
+ */
+function discoverWorkflowsStatically(
+  session: HarvestSession,
+  _urlAnalysis: ReturnType<typeof analyzeUrlPatterns>,
+  _requestAnalysis: ReturnType<typeof analyzeRequestCharacteristics>
+): Map<string, WorkflowGroup> {
+  logger.info("Performing static workflow discovery", {
+    sessionId: session.id,
+    totalUrls: session.harData.urls.length,
+  });
+
+  const workflowGroups = new Map<string, WorkflowGroup>();
+
+  // Create frequency map to identify primary endpoints
+  const frequencyMap = new Map<string, number>();
+  for (const request of session.harData.requests) {
+    if (!request.url) continue;
+
+    const baseUrl = request.url.split("?")[0];
+    const key = `${request.method.toUpperCase()} ${baseUrl}`;
+    frequencyMap.set(key, (frequencyMap.get(key) || 0) + 1);
+  }
+
+  // Sort endpoints by frequency to identify the most important ones
+  // const sortedEndpoints = Array.from(frequencyMap.entries())
+  //   .sort(([, a], [, b]) => b - a);
+
+  // Group URLs by functional categories
+  const functionalGroups = new Map<string, URLInfo[]>();
+
+  for (const urlInfo of session.harData.urls) {
+    const category = categorizeEndpoint(urlInfo.url);
+    if (!functionalGroups.has(category)) {
+      functionalGroups.set(category, []);
+    }
+    functionalGroups.get(category)?.push(urlInfo);
+  }
+
+  // Create workflows from functional groups
+  let workflowCounter = 1;
+  for (const [category, urls] of functionalGroups.entries()) {
+    if (urls.length === 0) continue;
+
+    // Find the primary endpoint for this category (highest frequency, simplest path)
+    const categoryEndpoints = urls.map((url) => ({
+      url,
+      key: `${url.method.toUpperCase()} ${url.url.split("?")[0]}`,
+      frequency:
+        frequencyMap.get(
+          `${url.method.toUpperCase()} ${url.url.split("?")[0]}`
+        ) || 0,
+    }));
+
+    // Sort by frequency (desc) then by path simplicity (asc)
+    const primaryEndpoint = categoryEndpoints.sort((a, b) => {
+      if (a.frequency !== b.frequency) {
+        return b.frequency - a.frequency;
+      }
+      // Prefer simpler paths (fewer segments)
+      const aSegments = a.url.url.split("/").length;
+      const bSegments = b.url.url.split("/").length;
+      return aSegments - bSegments;
+    })[0];
+
+    if (!primaryEndpoint) continue;
+
+    // Collect all requests for this workflow
+    const workflowRequests = new Set<string>();
+    for (const url of urls) {
+      const matchingRequests = session.harData.requests.filter((req) => {
+        if (!req.url) return false;
+        const reqBaseUrl = req.url.split("?")[0];
+        const urlBaseUrl = url.url.split("?")[0];
+        return (
+          reqBaseUrl === urlBaseUrl &&
+          req.method.toUpperCase() === url.method.toUpperCase()
+        );
+      });
+
+      for (const req of matchingRequests) {
+        workflowRequests.add(`${req.method.toUpperCase()}:${req.url}`);
+      }
+    }
+
+    const workflowId = `${category}-workflow-${workflowCounter}`;
+    const workflowName = formatCategoryName(category);
+
+    const workflowGroup: WorkflowGroup = {
+      id: workflowId,
+      name: workflowName,
+      description: `Static workflow for ${category} operations`,
+      category: mapCategoryToEnum(category),
+      priority: calculateStaticPriority(category, primaryEndpoint.frequency),
+      complexity: Math.min(Math.max(Math.ceil(urls.length / 2), 1), 10),
+      requiresUserInput: doesCategoryRequireInput(category),
+      masterNodeId: `${primaryEndpoint.url.method.toUpperCase()}:${primaryEndpoint.url.url}`,
+      nodeIds: workflowRequests,
+    };
+
+    workflowGroups.set(workflowId, workflowGroup);
+    workflowCounter++;
+
+    logger.debug("Created static workflow group", {
+      workflowId,
+      category,
+      endpointCount: urls.length,
+      nodeCount: workflowRequests.size,
+      primaryEndpoint: `${primaryEndpoint.url.method} ${primaryEndpoint.url.url}`,
+      frequency: primaryEndpoint.frequency,
+    });
+  }
+
+  logger.info("Static workflow discovery completed", {
+    sessionId: session.id,
+    workflowCount: workflowGroups.size,
+    workflows: Array.from(workflowGroups.keys()),
+  });
+
+  return workflowGroups;
+}
+
+/**
+ * Categorize an endpoint based on URL patterns
+ */
+function categorizeEndpoint(url: string): string {
+  const lowerUrl = url.toLowerCase();
+
+  // Search/query operations
+  if (lowerUrl.includes("/pesquisa") || lowerUrl.includes("/search")) {
+    return "search";
+  }
+
+  // Document operations
+  if (
+    lowerUrl.includes("/documento") ||
+    lowerUrl.includes("/document") ||
+    lowerUrl.includes("/copiar") ||
+    lowerUrl.includes("/copy") ||
+    lowerUrl.includes("/citar") ||
+    lowerUrl.includes("/cite")
+  ) {
+    return "document_operations";
+  }
+
+  // Authentication
+  if (
+    lowerUrl.includes("/auth") ||
+    lowerUrl.includes("/login") ||
+    lowerUrl.includes("/token") ||
+    lowerUrl.includes("/session")
+  ) {
+    return "authentication";
+  }
+
+  // User management
+  if (
+    lowerUrl.includes("/user") ||
+    lowerUrl.includes("/usuario") ||
+    lowerUrl.includes("/account") ||
+    lowerUrl.includes("/conta")
+  ) {
+    return "user_management";
+  }
+
+  // Data export
+  if (
+    lowerUrl.includes("/export") ||
+    lowerUrl.includes("/download") ||
+    lowerUrl.includes("/pdf") ||
+    lowerUrl.includes("/excel")
+  ) {
+    return "data_export";
+  }
+
+  // CRUD operations
+  if (
+    lowerUrl.includes("/create") ||
+    lowerUrl.includes("/update") ||
+    lowerUrl.includes("/delete") ||
+    lowerUrl.includes("/edit")
+  ) {
+    return "crud";
+  }
+
+  return "other";
+}
+
+/**
+ * Format category name for display
+ */
+function formatCategoryName(category: string): string {
+  const categoryNames: Record<string, string> = {
+    search: "Search Operations",
+    document_operations: "Document Operations",
+    authentication: "Authentication",
+    user_management: "User Management",
+    data_export: "Data Export",
+    crud: "CRUD Operations",
+    other: "General Operations",
+  };
+
+  return categoryNames[category] || "Unknown Operations";
+}
+
+/**
+ * Map internal category to schema enum
+ */
+function mapCategoryToEnum(category: string): string {
+  const categoryMapping: Record<string, string> = {
+    search: "search",
+    document_operations: "document_operations",
+    authentication: "authentication",
+    user_management: "user_management",
+    data_export: "data_export",
+    crud: "crud",
+    other: "other",
+  };
+
+  return categoryMapping[category] || "other";
+}
+
+/**
+ * Calculate priority for static workflows
+ */
+function calculateStaticPriority(category: string, frequency: number): number {
+  // Base priority by category
+  const basePriorities: Record<string, number> = {
+    search: 9, // Search is usually the primary function
+    authentication: 8, // Auth is critical
+    document_operations: 7, // Document ops are important
+    crud: 6, // CRUD operations
+    data_export: 5, // Export functionality
+    user_management: 4, // User management
+    other: 3, // Everything else
+  };
+
+  const basePriority = basePriorities[category] || 3;
+
+  // Boost priority based on frequency (more requests = more important)
+  const frequencyBoost = Math.min(Math.floor(frequency / 5), 1); // Max +1 boost
+
+  return Math.min(basePriority + frequencyBoost, 10);
+}
+
+/**
+ * Check if category typically requires user input
+ */
+function doesCategoryRequireInput(category: string): boolean {
+  const inputRequiredCategories = ["search", "crud", "authentication"];
+  return inputRequiredCategories.includes(category);
 }
 
 /**

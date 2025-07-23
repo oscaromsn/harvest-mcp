@@ -198,12 +198,28 @@ export async function classifyParameters(
 
     let llmResults: ClassifiedParameter[] = [];
     if (uncertainParameters.length > 0) {
-      llmResults = await refineClassificationWithLLM(
-        uncertainParameters,
-        request,
-        session,
-        client
-      );
+      try {
+        llmResults = await refineClassificationWithLLM(
+          uncertainParameters,
+          request,
+          session,
+          client
+        );
+      } catch (llmError) {
+        logger.warn(
+          "LLM parameter classification failed, using static results only",
+          {
+            error:
+              llmError instanceof Error ? llmError.message : "Unknown error",
+            uncertainParametersCount: uncertainParameters.length,
+          }
+        );
+        // Keep the uncertain parameters but mark them with lower confidence
+        llmResults = uncertainParameters.map((p) => ({
+          ...p,
+          confidence: Math.max(p.confidence - 0.1, 0.3), // Reduce confidence but keep above threshold
+        }));
+      }
     }
 
     // Phase 4: Bootstrap source detection for session constants

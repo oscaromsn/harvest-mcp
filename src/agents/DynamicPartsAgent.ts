@@ -51,6 +51,7 @@ export async function identifyDynamicParts(
   }
 
   try {
+    // Try LLM analysis first
     const llmClient = getLLMClient();
     const functionDef = createFunctionDefinition();
     const prompt = createPrompt(curlCommand, inputVariables);
@@ -72,17 +73,160 @@ export async function identifyDynamicParts(
     dynamicParts = filterResult.filteredParts;
 
     return dynamicParts;
-  } catch (error) {
-    if (error instanceof HarvestError) {
-      throw error;
-    }
-
-    throw new HarvestError(
-      `Dynamic parts identification failed: ${error instanceof Error ? error.message : "Unknown error"}`,
-      "DYNAMIC_PARTS_IDENTIFICATION_FAILED",
-      { originalError: error }
+  } catch (llmError) {
+    logger.warn(
+      "LLM dynamic parts identification failed, falling back to static analysis",
+      {
+        error: llmError instanceof Error ? llmError.message : "Unknown error",
+      }
     );
+
+    // Fallback to static analysis
+    try {
+      const staticDynamicParts = identifyDynamicPartsStatically(
+        curlCommand,
+        inputVariables
+      );
+      return staticDynamicParts;
+    } catch (staticError) {
+      throw new HarvestError(
+        `Both LLM and static dynamic parts identification failed: ${staticError instanceof Error ? staticError.message : "Unknown error"}`,
+        "DYNAMIC_PARTS_IDENTIFICATION_FAILED",
+        {
+          originalLLMError: llmError,
+          originalStaticError: staticError,
+        }
+      );
+    }
   }
+}
+
+/**
+ * Static dynamic parts identification that doesn't require LLM calls
+ * Used as fallback when LLM services are unavailable
+ */
+function identifyDynamicPartsStatically(
+  curlCommand: string,
+  inputVariables: Record<string, string> = {}
+): string[] {
+  logger.debug("Performing static dynamic parts identification", {
+    commandLength: curlCommand.length,
+    inputVariablesCount: Object.keys(inputVariables).length,
+  });
+
+  const dynamicParts: string[] = [];
+
+  // Extract URLs and headers from curl command for analysis
+  const urlMatch = curlCommand.match(/curl[^"]*"([^"]+)"/);
+  const url = urlMatch?.[1] || "";
+
+  // Common dynamic patterns to look for
+  const dynamicPatterns = [
+    // Timestamps and IDs
+    /\b\d{13}\b/g, // Unix timestamps (milliseconds)
+    /\b\d{10}\b/g, // Unix timestamps (seconds)
+    /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, // UUIDs
+    /\b[0-9a-f]{24}\b/gi, // MongoDB ObjectIds
+    /\b[0-9a-f]{32}\b/gi, // MD5 hashes
+    /\b[A-Z0-9]{20,}\b/g, // Long uppercase alphanumeric strings (tokens)
+
+    // Session tokens and API keys
+    /token[=:][^&\s"']+/gi,
+    /api[_-]?key[=:][^&\s"']+/gi,
+    /session[_-]?id[=:][^&\s"']+/gi,
+    /auth[_-]?token[=:][^&\s"']+/gi,
+
+    // Common dynamic parameters
+    /\b_t=\d+/g, // Timestamp parameters
+    /\bcache[_-]?buster[=:][^&\s"']+/gi,
+    /\bv=\d+/g, // Version parameters
+    /\bnonce[=:][^&\s"']+/gi,
+    /\bcsrf[_-]?token[=:][^&\s"']+/gi,
+
+    // Date patterns
+    /\d{4}-\d{2}-\d{2}/g, // YYYY-MM-DD
+    /\d{2}\/\d{2}\/\d{4}/g, // MM/DD/YYYY
+  ];
+
+  // Extract potential dynamic parts from URL
+  for (const pattern of dynamicPatterns) {
+    const matches = url.match(pattern);
+    if (matches) {
+      for (const match of matches) {
+        // Extract just the dynamic value, not the parameter name
+        const valueMatch = match.match(/[=:](.*)/);
+        const value = valueMatch ? valueMatch[1] : match;
+
+        if (value && value.length > 2 && !dynamicParts.includes(value)) {
+          dynamicParts.push(value);
+        }
+      }
+    }
+  }
+
+  // Extract potential dynamic parts from headers in curl command
+  const headerPattern = /-H\s+"([^"]+)"/g;
+  let headerMatch;
+  while ((headerMatch = headerPattern.exec(curlCommand)) !== null) {
+    const header = headerMatch[1];
+
+    // Look for dynamic values in headers
+    for (const pattern of dynamicPatterns) {
+      const matches = header?.match(pattern);
+      if (matches) {
+        for (const match of matches) {
+          const valueMatch = match.match(/[=:](.*)/);
+          const value = valueMatch ? valueMatch[1] : match;
+
+          if (value && value.length > 2 && !dynamicParts.includes(value)) {
+            dynamicParts.push(value);
+          }
+        }
+      }
+    }
+  }
+
+  // Extract dynamic parts from POST data
+  const dataMatch = curlCommand.match(/--data[^"]*"([^"]+)"/);
+  if (dataMatch) {
+    const postData = dataMatch[1];
+
+    for (const pattern of dynamicPatterns) {
+      const matches = postData?.match(pattern);
+      if (matches) {
+        for (const match of matches) {
+          const valueMatch = match.match(/[=:](.*)/);
+          const value = valueMatch ? valueMatch[1] : match;
+
+          if (value && value.length > 2 && !dynamicParts.includes(value)) {
+            dynamicParts.push(value);
+          }
+        }
+      }
+    }
+  }
+
+  // Filter out input variables that are already known
+  const filteredParts = dynamicParts.filter((part) => {
+    // Don't include parts that match known input variables
+    return !Object.values(inputVariables).some(
+      (value) =>
+        value.toString().includes(part) || part.includes(value.toString())
+    );
+  });
+
+  // Remove duplicates and sort by length (longer = more specific)
+  const uniqueParts = [...new Set(filteredParts)].sort(
+    (a, b) => b.length - a.length
+  );
+
+  logger.debug("Static dynamic parts identification completed", {
+    totalFound: dynamicParts.length,
+    afterFiltering: uniqueParts.length,
+    parts: uniqueParts.slice(0, 5), // Log first 5 for debugging
+  });
+
+  return uniqueParts;
 }
 
 /**
