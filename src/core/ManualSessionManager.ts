@@ -1,13 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Browser, BrowserContext, Page } from "playwright";
 import { AgentFactory } from "../browser/AgentFactory.js";
 import { ArtifactCollector } from "../browser/ArtifactCollector.js";
 import type { BrowserAgentConfig } from "../browser/types.js";
 import { getConfig } from "../config/index.js";
 import type {
   Artifact,
-  ManualBrowserAgent,
   ManualSession,
   SessionConfig,
   BrowserSessionInfo as SessionInfo,
@@ -189,7 +189,8 @@ export class ManualSessionManager {
         browserOptions: this.getBrowserOptions(config),
       };
 
-      const agent = await this.agentFactory.createAgent(agentConfig);
+      const { page, context, browser } =
+        await this.agentFactory.createBrowserSession(agentConfig);
 
       // Create artifact collector instance for this session with client accessibility
       const artifactCollector = new ArtifactCollector(true);
@@ -211,11 +212,11 @@ export class ManualSessionManager {
           }
         });
 
-        artifactCollector.startNetworkTracking(agent.page);
+        artifactCollector.startNetworkTracking(page);
       }
 
       // Set up navigation event monitoring
-      this.setupNavigationEventMonitoring(agent.page, sessionId);
+      this.setupNavigationEventMonitoring(page, sessionId);
 
       // Navigate to URL after network tracking is set up (if provided)
       let currentUrl: string;
@@ -225,19 +226,21 @@ export class ManualSessionManager {
         logger.info(
           `[ManualSessionManager] Navigating to URL after setting up tracking: ${config.url}`
         );
-        await agent.page.goto(config.url, { waitUntil: "networkidle" });
-        currentUrl = this.safeGetPageUrl(agent.page);
-        pageTitle = await this.safeGetPageTitle(agent.page);
+        await page.goto(config.url, { waitUntil: "networkidle" });
+        currentUrl = this.safeGetPageUrl(page);
+        pageTitle = await this.safeGetPageTitle(page);
       } else {
         // Get current page state if no navigation needed
-        currentUrl = agent.page.url();
-        pageTitle = await this.safeGetPageTitle(agent.page);
+        currentUrl = page.url();
+        pageTitle = await this.safeGetPageTitle(page);
       }
 
       // Create session object
       const session: ManualSession = {
         id: sessionId,
-        agent,
+        page,
+        context,
+        browser,
         startTime,
         config,
         outputDir,
@@ -370,8 +373,8 @@ export class ManualSessionManager {
     let finalPageTitle = "Unknown";
 
     try {
-      finalUrl = this.safeGetPageUrl(session.agent.page);
-      finalPageTitle = await this.safeGetPageTitle(session.agent.page);
+      finalUrl = this.safeGetPageUrl(session.page);
+      finalPageTitle = await this.safeGetPageTitle(session.page);
     } catch (error) {
       logger.warn(
         `[ManualSessionManager] Could not get final page state for ${sessionId}: ${error}`
@@ -480,8 +483,8 @@ export class ManualSessionManager {
 
             const artifactCollection =
               await session.artifactCollector.collectAllArtifacts(
-                session.agent.page,
-                session.agent.context,
+                session.page,
+                session.context,
                 session.outputDir,
                 permissiveHarConfig
               );
@@ -505,8 +508,8 @@ export class ManualSessionManager {
 
             const artifactCollection =
               await session.artifactCollector.collectAllArtifacts(
-                session.agent.page,
-                session.agent.context,
+                session.page,
+                session.context,
                 session.outputDir,
                 qualityHarConfig
               );
@@ -652,8 +655,13 @@ export class ManualSessionManager {
     // Update session metadata
     session.metadata.sessionDuration = duration;
 
-    // Clean up browser agent gracefully
-    await this.gracefulAgentCleanup(session.agent, sessionId);
+    // Clean up browser session gracefully
+    await this.gracefulBrowserCleanup(
+      session.page,
+      session.context,
+      session.browser,
+      sessionId
+    );
 
     // Clean up timers
     this.cleanupSessionTimers(sessionId);
@@ -942,7 +950,7 @@ export class ManualSessionManager {
     // Check browser connection
     let browserConnected = false;
     try {
-      browserConnected = session.agent.browser?.isConnected() ?? false;
+      browserConnected = session.browser?.isConnected() ?? false;
     } catch (_error) {
       issues.push("Cannot determine browser connection status");
     }
@@ -1092,16 +1100,16 @@ export class ManualSessionManager {
         healthCheck.metrics.browserConnected
       ) {
         try {
-          await session.agent.page.reload({
+          await session.page.reload({
             waitUntil: "domcontentloaded",
             timeout: 10000,
           });
           actions.push("Refreshed unresponsive page");
 
           // Update metadata
-          session.metadata.currentUrl = this.safeGetPageUrl(session.agent.page);
+          session.metadata.currentUrl = this.safeGetPageUrl(session.page);
           session.metadata.pageTitle = await this.safeGetPageTitle(
-            session.agent.page
+            session.page
           );
         } catch (error) {
           newIssues.push(`Failed to refresh page: ${error}`);
@@ -1209,11 +1217,11 @@ export class ManualSessionManager {
     }
 
     // Additional checks before attempting screenshot
-    if (!session.agent.page || session.agent.page.isClosed()) {
+    if (!session.page || session.page.isClosed()) {
       throw new Error(`Page is closed for session ${sessionId}`);
     }
 
-    if (!session.agent.browser?.isConnected()) {
+    if (!session.browser?.isConnected()) {
       throw new Error(`Browser is disconnected for session ${sessionId}`);
     }
 
@@ -1224,7 +1232,7 @@ export class ManualSessionManager {
     );
 
     const artifact = await session.artifactCollector.captureScreenshot(
-      session.agent.page,
+      session.page,
       screenshotPath
     );
 
@@ -1395,7 +1403,7 @@ export class ManualSessionManager {
   private async checkPageHealth(session: ManualSession): Promise<boolean> {
     try {
       // Quick check if the page is still accessible
-      if (!session.agent.page || session.agent.page.isClosed()) {
+      if (!session.page || session.page.isClosed()) {
         logger.debug(
           "[ManualSessionManager] Page health check failed: page is closed"
         );
@@ -1403,7 +1411,7 @@ export class ManualSessionManager {
       }
 
       // Check browser connection
-      if (!session.agent.browser?.isConnected()) {
+      if (!session.browser?.isConnected()) {
         logger.debug(
           "[ManualSessionManager] Page health check failed: browser disconnected"
         );
@@ -1411,7 +1419,7 @@ export class ManualSessionManager {
       }
 
       // Check context validity
-      if (!session.agent.context) {
+      if (!session.context) {
         logger.debug(
           "[ManualSessionManager] Page health check failed: context missing"
         );
@@ -1420,7 +1428,7 @@ export class ManualSessionManager {
 
       // Try a simple operation with timeout to check responsiveness
       await Promise.race([
-        session.agent.page.evaluate(
+        session.page.evaluate(
           () =>
             (
               globalThis as typeof globalThis & {
@@ -1457,10 +1465,12 @@ export class ManualSessionManager {
   }
 
   /**
-   * Gracefully clean up browser agent with fallbacks
+   * Gracefully clean up browser session with fallbacks
    */
-  private async gracefulAgentCleanup(
-    agent: ManualBrowserAgent,
+  private async gracefulBrowserCleanup(
+    page: Page,
+    context: BrowserContext,
+    browser: Browser,
     sessionId: string
   ): Promise<void> {
     // Get cleanup timeout from configuration or use default
@@ -1475,7 +1485,7 @@ export class ManualSessionManager {
     try {
       // Try graceful cleanup with timeout
       await Promise.race([
-        agent.stop(),
+        this.performBrowserCleanup(page, context, browser),
         new Promise((_, reject) =>
           setTimeout(() => reject(new Error("Cleanup timeout")), cleanupTimeout)
         ),
@@ -1490,17 +1500,41 @@ export class ManualSessionManager {
 
       // Fallback to force cleanup
       try {
-        if (agent.context) {
-          await agent.context.close();
+        if (context) {
+          await context.close();
         }
-        if (agent.browser?.isConnected()) {
-          await agent.browser.close();
+        if (browser?.isConnected()) {
+          await browser.close();
         }
       } catch (forceError) {
         logger.error(
           `[ManualSessionManager] Force cleanup also failed for ${sessionId}: ${forceError}`
         );
       }
+    }
+  }
+
+  /**
+   * Perform the actual browser cleanup
+   */
+  private async performBrowserCleanup(
+    page: Page,
+    context: BrowserContext,
+    browser: Browser
+  ): Promise<void> {
+    // Close page first
+    if (page && !page.isClosed()) {
+      await page.close();
+    }
+
+    // Close context
+    if (context) {
+      await context.close();
+    }
+
+    // Close browser if it's still connected
+    if (browser?.isConnected()) {
+      await browser.close();
     }
   }
 
@@ -1520,7 +1554,12 @@ export class ManualSessionManager {
       this.clearScreenshotInterval(sessionId);
 
       // Force cleanup without waiting
-      await this.gracefulAgentCleanup(session.agent, sessionId);
+      await this.gracefulBrowserCleanup(
+        session.page,
+        session.context,
+        session.browser,
+        sessionId
+      );
     } catch (error) {
       logger.error(`[ManualSessionManager] Emergency cleanup failed: ${error}`);
     } finally {

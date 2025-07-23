@@ -221,6 +221,8 @@ export interface HarvestSession {
   state: SessionState;
   createdAt: Date;
   lastActivity: Date;
+  workflowGroups?: Map<string, WorkflowGroup>;
+  selectedWorkflowId?: string;
 }
 
 export interface SessionState {
@@ -859,12 +861,11 @@ export type {
   ActiveBrowser,
   Artifact,
   ArtifactCollection,
-  BrowserAgent,
   BrowserAgentConfig,
   BrowserEngine,
   BrowserOptions,
+  BrowserSessionData,
   BrowserSessionInfo,
-  ManualBrowserAgent,
   ManualSession,
   SessionConfig,
   SessionStopResult,

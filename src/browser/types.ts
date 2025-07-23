@@ -56,10 +56,19 @@ export interface ArtifactCollection {
   summary: string;
 }
 
+// Browser Session Data
+export interface BrowserSessionData {
+  page: Page;
+  context: BrowserContext;
+  browser: Browser;
+}
+
 // Manual Session Types
 export interface ManualSession {
   id: string;
-  agent: ManualBrowserAgent;
+  page: Page;
+  context: BrowserContext;
+  browser: Browser;
   startTime: number;
   config: SessionConfig;
   outputDir: string;
@@ -127,23 +136,6 @@ export interface SessionStopResult {
     sessionDurationMs: number;
   };
 }
-
-// Browser Agent Interface (for existing browser automation)
-export interface BrowserAgent {
-  readonly page: Page;
-  readonly context: BrowserContext;
-  readonly browser: Browser;
-  start(): void;
-  stop(): Promise<void>;
-  getCurrentUrl(): string;
-  getCurrentTitle(): Promise<string>;
-  isReady(): boolean;
-  isAgentStarted(): boolean;
-  getSessionMetadata(): Record<string, unknown>;
-}
-
-// Manual Session Browser Agent Interface (alias for BrowserAgent)
-export type ManualBrowserAgent = BrowserAgent;
 
 // Internal Browser Provider Types
 export interface ActiveBrowser {

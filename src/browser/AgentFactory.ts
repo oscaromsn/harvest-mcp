@@ -6,10 +6,13 @@
 
 import type { Page } from "playwright";
 import { logBrowserError, logBrowserOperation } from "../utils/logger.js";
-import { BrowserAgent } from "./BrowserAgent.js";
 import { getTestBrowserPool } from "./BrowserPool.js";
 import { BrowserProvider } from "./BrowserProvider.js";
-import type { BrowserAgentConfig, BrowserOptions } from "./types.js";
+import type {
+  BrowserAgentConfig,
+  BrowserOptions,
+  BrowserSessionData,
+} from "./types.js";
 
 export class AgentFactory {
   private browserProvider: BrowserProvider;
@@ -27,12 +30,12 @@ export class AgentFactory {
   }
 
   /**
-   * Create a new browser agent with the given configuration
+   * Create a new browser session with the given configuration
    */
-  async createAgent(
+  async createBrowserSession(
     config: BrowserAgentConfig,
     browserOptions?: BrowserOptions
-  ): Promise<BrowserAgent> {
+  ): Promise<BrowserSessionData> {
     try {
       logBrowserOperation("agent_creation_start", {
         config,
@@ -71,16 +74,19 @@ export class AgentFactory {
           });
         }
 
-        // Create browser agent
-        const agent = new BrowserAgent(page, context);
+        // Return browser session data
+        const browserSessionData: BrowserSessionData = {
+          page,
+          context,
+          browser,
+        };
 
-        logBrowserOperation("agent_created", {
-          url: agent.getCurrentUrl(),
-          title: agent.getCurrentTitle(),
-          isReady: agent.isReady(),
+        logBrowserOperation("browser_session_created", {
+          url: page.url(),
+          isReady: !page.isClosed() && browser.isConnected(),
         });
 
-        return agent;
+        return browserSessionData;
       } catch (error) {
         // Cleanup on failure
         if (page) {
@@ -114,29 +120,29 @@ export class AgentFactory {
   }
 
   /**
-   * Create multiple agents concurrently
+   * Create multiple browser sessions concurrently
    */
-  async createAgents(
+  async createBrowserSessions(
     configs: BrowserAgentConfig[],
     browserOptions?: BrowserOptions
-  ): Promise<BrowserAgent[]> {
+  ): Promise<BrowserSessionData[]> {
     try {
       logBrowserOperation("bulk_agent_creation_start", {
         count: configs.length,
       });
 
-      const agentPromises = configs.map((config) =>
-        this.createAgent(config, browserOptions)
+      const sessionPromises = configs.map((config) =>
+        this.createBrowserSession(config, browserOptions)
       );
 
-      const agents = await Promise.all(agentPromises);
+      const sessions = await Promise.all(sessionPromises);
 
-      logBrowserOperation("bulk_agent_creation_complete", {
-        count: agents.length,
-        successCount: agents.length,
+      logBrowserOperation("bulk_session_creation_complete", {
+        count: sessions.length,
+        successCount: sessions.length,
       });
 
-      return agents;
+      return sessions;
     } catch (error) {
       logBrowserError(error as Error, {
         operation: "bulk_agent_creation",
