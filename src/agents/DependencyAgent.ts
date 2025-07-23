@@ -1,3 +1,4 @@
+import { findCookieByValue } from "../core/CookieParser.js";
 import { getLLMClient } from "../core/LLMClient.js";
 import type { FunctionDefinition } from "../core/providers/types.js";
 import type {
@@ -869,7 +870,7 @@ export function findCookieDependencies(
   const remaining: string[] = [];
 
   for (const part of dynamicParts) {
-    const cookieKey = findKeyByStringInValue(cookieData, part);
+    const cookieKey = findCookieByValue(cookieData, part);
 
     if (cookieKey) {
       found.push({
@@ -1034,21 +1035,6 @@ Consider:
 - GET requests are often simpler than POST requests
 - Requests with smaller payloads are simpler
 - Requests to endpoints that look like they provide basic data are simpler`;
-}
-
-/**
- * Find key by searching for string in cookie values (ports find_key_by_string_in_value)
- */
-export function findKeyByStringInValue(
-  cookieData: CookieData,
-  searchString: string
-): string | null {
-  for (const [key, cookieInfo] of Object.entries(cookieData)) {
-    if (cookieInfo.value?.includes(searchString)) {
-      return key;
-    }
-  }
-  return null;
 }
 
 /**
