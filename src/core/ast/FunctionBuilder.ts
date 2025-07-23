@@ -139,20 +139,6 @@ export class FunctionBuilder extends BaseBuilder {
   }
 
   /**
-   * Set the function body using a string (hybrid approach)
-   * This allows us to use template-generated body content during transition
-   * @deprecated Use setBody(WriterFunction) for safer AST-based code generation
-   */
-  setBodyText(body: string): this {
-    if (!this.declaration) {
-      throw new Error("Function must be created before setting body");
-    }
-
-    this.declaration.setBodyText(body);
-    return this;
-  }
-
-  /**
    * Set the function body using a writer function (pure AST approach)
    */
   setBody(bodyWriter: WriterFunction): this {
@@ -329,7 +315,12 @@ export class FunctionPatterns extends BaseBuilder {
       });
 
     if (bodyText) {
-      builder.setBodyText(bodyText);
+      builder.setBody((writer) => {
+        const lines = bodyText.split("\n");
+        for (const line of lines) {
+          writer.writeLine(line);
+        }
+      });
     }
 
     return builder;
