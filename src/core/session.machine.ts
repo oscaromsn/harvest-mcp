@@ -25,6 +25,17 @@ const logger = createComponentLogger("session-machine");
 
 // ========== Zod Schemas for Type Safety ==========
 
+/**
+ * Note on z.any() usage:
+ * Some external types (ParsedHARData, CookieData, DAGManager, etc.) are kept as z.any()
+ * rather than z.unknown() because:
+ * 1. They are complex interfaces used throughout the codebase
+ * 2. XState requires type compatibility between schemas and actual usage
+ * 3. Making them z.unknown() would break all consuming code with TS18046 errors
+ * 4. These types are defined and validated in their respective modules
+ * 5. The FSM context validation is primarily for XState internal consistency
+ */
+
 const SessionErrorSchema = z.object({
   message: z.string(),
   code: z.string(),
@@ -35,18 +46,18 @@ const SessionContextSchema = z.object({
   prompt: z.string(),
   harPath: z.string().optional(),
   cookiePath: z.string().optional(),
-  harData: z.any().optional(), // ParsedHARData - external type
-  cookieData: z.any().optional(), // CookieData - external type
-  dagManager: z.any(), // DAGManager - external interface
-  workflowGroups: z.any(), // Map<string, WorkflowGroup> - complex type
+  harData: z.any().optional(), // ParsedHARData - external type, kept as z.any() for compatibility
+  cookieData: z.any().optional(), // CookieData - external type, kept as z.any() for compatibility
+  dagManager: z.any(), // DAGManager - external interface, kept as z.any() for compatibility
+  workflowGroups: z.any(), // Map<string, WorkflowGroup> - complex type, kept as z.any() for compatibility
   activeWorkflowId: z.string().optional(),
   toBeProcessedNodes: z.array(z.string()),
   inProcessNodeId: z.string().optional(),
   inProcessNodeDynamicParts: z.array(z.string()),
   inputVariables: z.record(z.string()),
-  logs: z.array(z.any()), // LogEntry[] - external type
+  logs: z.array(z.any()), // LogEntry[] - external type, kept as z.any() for compatibility
   generatedCode: z.string().optional(),
-  authAnalysis: z.any().optional(), // AuthenticationAnalysis - external type
+  authAnalysis: z.any().optional(), // AuthenticationAnalysis - external type, kept as z.any() for compatibility
   error: SessionErrorSchema.optional(),
 });
 
@@ -59,12 +70,12 @@ const SessionEventSchema = z.discriminatedUnion("type", [
   }),
   z.object({
     type: z.literal("HAR_PARSED"),
-    harData: z.any(), // ParsedHARData - external type
-    cookieData: z.any().optional(), // CookieData - external type
+    harData: z.any(), // ParsedHARData - external type, kept as z.any() for compatibility
+    cookieData: z.any().optional(), // CookieData - external type, kept as z.any() for compatibility
   }),
   z.object({
     type: z.literal("WORKFLOWS_DISCOVERED"),
-    workflowGroups: z.any(), // Map<string, WorkflowGroup> - complex type
+    workflowGroups: z.any(), // Map<string, WorkflowGroup> - complex type, kept as z.any() for compatibility
   }),
   z.object({
     type: z.literal("SELECT_WORKFLOW"),
