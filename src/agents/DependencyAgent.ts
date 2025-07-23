@@ -1,6 +1,4 @@
 import { findCookieByValue } from "../core/CookieParser.js";
-import { getLLMClient } from "../core/LLMClient.js";
-import type { FunctionDefinition } from "../core/providers/types.js";
 import type {
   BootstrapParameterSource,
   CookieData,
@@ -10,7 +8,6 @@ import type {
   ParsedHARData,
   RequestDependency,
   RequestModel,
-  SimplestRequestResponse,
 } from "../types/index.js";
 import { HarvestError } from "../types/index.js";
 import { createComponentLogger } from "../utils/logger.js";
@@ -835,15 +832,15 @@ async function selectOptimalDependency(
     return dependencies[0];
   }
 
-  // Multiple dependencies - use LLM to select simplest
+  // Multiple dependencies - use heuristic to select simplest
   const requests = dependencies.map((dep) => dep.sourceRequest);
   try {
-    const simplestRequest = await selectSimplestRequest(requests);
+    const simplestRequest = selectSimplestRequest(requests);
     return (
       dependencies.find((dep) => dep.sourceRequest === simplestRequest) || null
     );
   } catch (_error) {
-    // If LLM selection fails, use the first one
+    // If heuristic selection fails, use the first one
     return dependencies[0] || null;
   }
 }
@@ -939,11 +936,10 @@ export function findRequestDependencies(
 }
 
 /**
- * Select the simplest request from a list using LLM analysis
+ * Select the simplest request from a list using deterministic heuristics
+ * Replaces LLM-based selection for better performance and cost efficiency
  */
-export async function selectSimplestRequest(
-  requests: RequestModel[]
-): Promise<RequestModel> {
+export function selectSimplestRequest(requests: RequestModel[]): RequestModel {
   if (!requests || requests.length === 0) {
     throw new HarvestError(
       "No requests provided for selection",
@@ -959,82 +955,154 @@ export async function selectSimplestRequest(
     return firstRequest;
   }
 
-  try {
-    const llmClient = getLLMClient();
-    const functionDef = createSimplestRequestFunctionDefinition();
-    const prompt = createSimplestRequestPrompt(requests);
+  // Calculate simplicity scores for all requests
+  const requestScores = requests.map((request, index) => ({
+    request,
+    index,
+    score: calculateRequestSimplicityScore(request),
+  }));
 
-    const response = await llmClient.callFunction<SimplestRequestResponse>(
-      prompt,
-      functionDef,
-      "get_simplest_curl_index"
-    );
+  // Sort by score (higher score = simpler)
+  requestScores.sort((a, b) => b.score - a.score);
 
-    const index = response.index;
-
-    // Validate index
-    if (typeof index !== "number" || index < 0 || index >= requests.length) {
-      throw new HarvestError(
-        `Invalid index ${index} for request list of length ${requests.length}`,
-        "INVALID_REQUEST_INDEX"
-      );
-    }
-
-    const selectedRequest = requests[index];
-    if (!selectedRequest) {
-      throw new Error(`Request at index ${index} is undefined`);
-    }
-    return selectedRequest;
-  } catch (error) {
-    if (error instanceof HarvestError) {
-      throw error;
-    }
-
-    throw new HarvestError(
-      `Simplest request selection failed: ${error instanceof Error ? error.message : "Unknown error"}`,
-      "SIMPLEST_REQUEST_SELECTION_FAILED",
-      { originalError: error }
-    );
+  const topRequest = requestScores[0];
+  if (!topRequest) {
+    throw new Error("Failed to select simplest request from scored results");
   }
+
+  logger.debug("Selected simplest request", {
+    selectedIndex: topRequest.index,
+    selectedScore: topRequest.score,
+    totalRequests: requests.length,
+    topScores: requestScores
+      .slice(0, 3)
+      .map(({ index, score }) => ({ index, score })),
+  });
+
+  return topRequest.request;
 }
 
 /**
- * Create function definition for simplest request selection
+ * Calculate simplicity score for a request using deterministic heuristics
+ * Higher score indicates a simpler request
  */
-export function createSimplestRequestFunctionDefinition(): FunctionDefinition {
-  return {
-    name: "get_simplest_curl_index",
-    description: "Find the index of the simplest cURL command from a list",
-    parameters: {
-      type: "object",
-      properties: {
-        index: {
-          type: "integer",
-          description: "The index of the simplest cURL command in the list",
-        },
-      },
-      required: ["index"],
-    },
-  };
-}
+function calculateRequestSimplicityScore(request: RequestModel): number {
+  let score = 100; // Base score
 
-/**
- * Create prompt for simplest request selection
- */
-export function createSimplestRequestPrompt(requests: RequestModel[]): string {
-  const serializedRequests = requests.map((req) => req.toString());
+  // HTTP Method scoring (GET is simplest)
+  const method = request.method.toUpperCase();
+  switch (method) {
+    case "GET":
+      score += 20;
+      break;
+    case "HEAD":
+      score += 15;
+      break;
+    case "POST":
+      score += 10;
+      break;
+    case "PUT":
+      score += 5;
+      break;
+    case "PATCH":
+      score += 5;
+      break;
+    case "DELETE":
+      score += 3;
+      break;
+    default:
+      score += 0;
+      break;
+  }
 
-  return `${JSON.stringify(serializedRequests)}
+  // Header count penalty (fewer headers = simpler)
+  const headerCount = Object.keys(request.headers || {}).length;
+  score -= headerCount * 2; // -2 points per header
 
-Task:
-Given the above list of cURL commands, find the index of the curl that has the least number of dependencies and variables.
-The index should be 0-based (i.e., the first item has index 0).
+  // Body size penalty (smaller body = simpler)
+  if (request.body) {
+    const bodyLength =
+      typeof request.body === "string"
+        ? request.body.length
+        : JSON.stringify(request.body).length;
 
-Consider:
-- Requests with fewer headers are simpler
-- GET requests are often simpler than POST requests
-- Requests with smaller payloads are simpler
-- Requests to endpoints that look like they provide basic data are simpler`;
+    if (bodyLength > 1000) {
+      score -= 20; // Large body penalty
+    } else if (bodyLength > 500) {
+      score -= 10; // Medium body penalty
+    } else if (bodyLength > 100) {
+      score -= 5; // Small body penalty
+    }
+    // Bodies <= 100 chars get no penalty
+  } else {
+    score += 10; // No body bonus (simpler)
+  }
+
+  // URL complexity penalty
+  const url = new URL(request.url);
+  const pathSegments = url.pathname
+    .split("/")
+    .filter((segment) => segment.length > 0);
+  score -= pathSegments.length * 3; // -3 points per path segment
+
+  // Query parameter penalty
+  const queryParams = url.searchParams;
+  const queryParamCount = Array.from(queryParams.keys()).length;
+  score -= queryParamCount * 4; // -4 points per query parameter
+
+  // Content-Type bonus for simple types
+  const contentType =
+    request.headers?.["Content-Type"] ||
+    request.headers?.["content-type"] ||
+    "";
+
+  if (contentType.includes("application/json")) {
+    score += 5; // JSON is structured and predictable
+  } else if (contentType.includes("application/x-www-form-urlencoded")) {
+    score += 3; // Form data is simple
+  } else if (contentType.includes("multipart/form-data")) {
+    score -= 5; // Multipart is more complex
+  }
+
+  // Response type consideration (from response if available)
+  const responseContentType =
+    request.response?.headers?.["Content-Type"] ||
+    request.response?.headers?.["content-type"] ||
+    "";
+
+  if (responseContentType.includes("application/json")) {
+    score += 8; // JSON responses are easier to parse
+  } else if (responseContentType.includes("text/plain")) {
+    score += 5; // Plain text is simple
+  } else if (responseContentType.includes("text/html")) {
+    score -= 3; // HTML is more complex to parse
+  }
+
+  // Authentication complexity penalty
+  const authHeaders = ["Authorization", "X-API-Key", "X-Auth-Token"];
+  const hasAuthHeaders = authHeaders.some(
+    (header) =>
+      request.headers?.[header] || request.headers?.[header.toLowerCase()]
+  );
+
+  if (hasAuthHeaders) {
+    score -= 8; // Authentication adds complexity
+  }
+
+  // Bonus for common "simple" endpoint patterns
+  const urlPath = url.pathname.toLowerCase();
+  if (
+    urlPath.includes("/health") ||
+    urlPath.includes("/status") ||
+    urlPath.includes("/ping")
+  ) {
+    score += 15; // Health check endpoints are typically simple
+  } else if (urlPath.includes("/api/") && pathSegments.length <= 3) {
+    score += 5; // Simple API endpoints
+  }
+
+  // Ensure minimum score
+  return Math.max(score, 1);
 }
 
 /**

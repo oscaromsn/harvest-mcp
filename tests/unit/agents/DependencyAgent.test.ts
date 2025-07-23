@@ -1,7 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
-  createSimplestRequestFunctionDefinition,
-  createSimplestRequestPrompt,
   findCookieDependencies,
   findDependencies,
   findRequestDependencies,
@@ -249,64 +247,45 @@ describe("DependencyAgent", () => {
   });
 
   describe("selectSimplestRequest", () => {
-    it("should return single request when only one option", async () => {
+    it("should return single request when only one option", () => {
       const firstRequest = mockHARData.requests[0];
       if (!firstRequest) {
         throw new Error("No request available");
       }
       const requests = [firstRequest];
 
-      const result = await selectSimplestRequest(requests);
+      const result = selectSimplestRequest(requests);
 
       expect(result).toBe(requests[0]);
     });
 
-    it("should handle multiple requests", async () => {
-      // For now, test with a realistic scenario that won't make API calls
-      // In integration tests, we'll mock the LLM client properly
-      const firstRequest = mockHARData.requests[0];
-      if (!firstRequest) {
-        throw new Error("No request available");
+    it("should select simpler requests using heuristics", () => {
+      const [loginRequest, profileRequest, searchRequest] =
+        mockHARData.requests;
+      if (!loginRequest || !profileRequest || !searchRequest) {
+        throw new Error("Missing test requests");
       }
-      const result = await selectSimplestRequest([firstRequest]);
 
-      expect(result).toBe(firstRequest);
+      // profileRequest should be selected as simplest (GET, fewer headers, simpler URL)
+      const result = selectSimplestRequest([
+        loginRequest,
+        profileRequest,
+        searchRequest,
+      ]);
+
+      expect(result).toBe(profileRequest); // GET request with Authorization header
     });
-  });
 
-  describe("createSimplestRequestFunctionDefinition", () => {
-    it("should create proper function definition", () => {
-      const functionDef = createSimplestRequestFunctionDefinition();
-
-      expect(functionDef.name).toBe("get_simplest_curl_index");
-      expect(functionDef.description).toBe(
-        "Find the index of the simplest cURL command from a list"
-      );
-      expect(functionDef.parameters?.properties).toBeDefined();
-      const properties = functionDef.parameters?.properties;
-      expect(properties).toBeDefined();
-      if (
-        properties &&
-        typeof properties === "object" &&
-        "index" in properties
-      ) {
-        expect(properties.index).toBeDefined();
+    it("should prefer requests without bodies", () => {
+      const [loginRequest, profileRequest] = mockHARData.requests;
+      if (!loginRequest || !profileRequest) {
+        throw new Error("Missing test requests");
       }
-      expect(functionDef.parameters?.required).toContain("index");
-    });
-  });
 
-  describe("createSimplestRequestPrompt", () => {
-    it("should create appropriate prompt for LLM analysis", () => {
-      const requests = mockHARData.requests.slice(0, 2);
-      const prompt = createSimplestRequestPrompt(requests);
+      // profileRequest (GET, no body) should be simpler than loginRequest (POST with body)
+      const result = selectSimplestRequest([loginRequest, profileRequest]);
 
-      expect(prompt).toContain(
-        "find the index of the curl that has the least number of dependencies"
-      );
-      expect(prompt).toContain("0-based");
-      expect(prompt).toContain(requests[0]?.toString());
-      expect(prompt).toContain(requests[1]?.toString());
+      expect(result).toBe(profileRequest);
     });
   });
 
