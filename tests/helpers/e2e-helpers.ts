@@ -3,6 +3,7 @@ import {
   resetLLMClient,
   setLLMClient,
 } from "../../src/core/LLMClient.js";
+import { SessionFsmService } from "../../src/core/SessionFsmService.js";
 import type { SessionManager } from "../../src/core/SessionManager.js";
 import { HarvestMCPServer } from "../../src/server.js";
 import { handleStartPrimaryWorkflow } from "../../src/tools/analysisTools.js";
@@ -18,6 +19,7 @@ import { createMockLLMClient } from "../mocks/llm-client.mock.js";
 export interface E2ETestContext {
   server: HarvestMCPServer;
   sessionManager: SessionManager;
+  fsmService: SessionFsmService;
 }
 
 export interface E2ESessionOptions {
@@ -61,8 +63,9 @@ export function setupE2EContext(
 
   const server = new HarvestMCPServer();
   const sessionManager = server.sessionManager;
+  const fsmService = new SessionFsmService();
 
-  return { server, sessionManager };
+  return { server, sessionManager, fsmService };
 }
 
 /**
@@ -105,7 +108,7 @@ export async function createTestSession(
 }
 
 /**
- * Run initial analysis for a session
+ * Run initial analysis for a session using FSM
  */
 export async function runInitialAnalysis(
   server: HarvestMCPServer,
