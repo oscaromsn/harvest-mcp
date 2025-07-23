@@ -109,7 +109,6 @@ function getStateGuidance(currentState: string): string {
 async function tryFsmCodeGeneration(
   params: { sessionId: string },
   context: CodegenToolContext,
-  session: HarvestSession,
   currentState: string
 ): Promise<
   | { success: true; result: InternalToolResult<CodeGenerationData> }
@@ -129,7 +128,6 @@ async function tryFsmCodeGeneration(
           params.sessionId
         );
         if (fsmContext.generatedCode) {
-          session.state.generatedCode = fsmContext.generatedCode;
           sessionManager.addLog(
             params.sessionId,
             "info",
@@ -255,7 +253,9 @@ async function executeLegacyCodeGeneration(
   );
 
   const generatedCode = await generateWrapperScript(session);
-  session.state.generatedCode = generatedCode;
+  // Store generated code in FSM context
+  const fsmContext = context.sessionManager.getFsmContext(params.sessionId);
+  fsmContext.generatedCode = generatedCode;
 
   context.sessionManager.addLog(
     params.sessionId,
@@ -355,7 +355,6 @@ async function _internalHandleGenerateWrapperScript(
     const fsmResult = await tryFsmCodeGeneration(
       params,
       context,
-      session,
       currentState || "unknown"
     );
     if (fsmResult.success) {

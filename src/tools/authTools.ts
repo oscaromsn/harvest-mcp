@@ -25,8 +25,11 @@ export async function handleAuthAnalyzeSession(
       );
     }
 
+    // Get FSM context for analysis
+    const fsmContext = context.sessionManager.getFsmContext(params.sessionId);
+
     // Check if analysis already exists and we're not forcing re-analysis
-    if (session.state.authAnalysis && !params.forceReanalysis) {
+    if (fsmContext.authAnalysis && !params.forceReanalysis) {
       return {
         content: [
           {
@@ -35,7 +38,7 @@ export async function handleAuthAnalyzeSession(
               success: true,
               sessionId: params.sessionId,
               cached: true,
-              authAnalysis: session.state.authAnalysis,
+              authAnalysis: fsmContext.authAnalysis,
               message:
                 "Authentication analysis retrieved from cache. Use forceReanalysis=true to re-run the analysis.",
               timestamp: new Date().toISOString(),
@@ -52,17 +55,19 @@ export async function handleAuthAnalyzeSession(
     // Run comprehensive authentication analysis using new AuthenticationAgent
     const authAnalysis = await analyzeAuthentication(session);
 
-    // Store the analysis in the session
-    session.state.authAnalysis = authAnalysis;
+    // Store the analysis in FSM context
+    fsmContext.authAnalysis = authAnalysis;
 
     // Note: Authentication readiness check would be run here if available
     // await context.sessionManager.runAuthenticationAnalysis(params.sessionId);
 
-    // Get the authentication readiness from session state
-    const authReadiness = session.state.authReadiness || {
-      isAuthComplete: false,
-      authBlockers: ["Authentication analysis not available"],
-      authRecommendations: ["Run authentication analysis first"],
+    // Compute authentication readiness from analysis results
+    const authReadiness = {
+      isAuthComplete: authAnalysis.codeGeneration.isReady,
+      authBlockers: authAnalysis.codeGeneration.isReady
+        ? []
+        : ["Authentication not ready for code generation"],
+      authRecommendations: authAnalysis.codeGeneration.requiredSetup || [],
     };
 
     return {

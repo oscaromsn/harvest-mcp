@@ -16,9 +16,7 @@ import { SessionFsmService } from "./SessionFsmService.js";
 const logger = createComponentLogger("session-manager");
 
 export class SessionManager {
-  private sessions = new Map<string, HarvestSession>();
   private readonly maxSessions: number;
-  private readonly sessionTimeoutMs: number;
   private readonly cleanupIntervalMs: number;
   private readonly fsmService: SessionFsmService;
 
@@ -30,13 +28,11 @@ export class SessionManager {
     try {
       const config = getConfig();
       this.maxSessions = config.session.maxSessions;
-      this.sessionTimeoutMs = config.session.timeoutMinutes * 60 * 1000; // Convert to milliseconds
       this.cleanupIntervalMs =
         config.session.cleanupIntervalMinutes * 60 * 1000;
     } catch {
       // Fallback to hardcoded defaults if config not available
       this.maxSessions = 100;
-      this.sessionTimeoutMs = 30 * 60 * 1000; // 30 minutes
       this.cleanupIntervalMs = 5 * 60 * 1000; // 5 minutes
     }
 
@@ -57,16 +53,8 @@ export class SessionManager {
       // Wait for the machine to process the START_SESSION event and transition out of initializing
       await this.waitForMachineInitialization(sessionId);
 
-      // Create a backward-compatible session object for the sessions map
-      // The FSM service will handle the actual state management
-      const session = this.fsmService.toHarvestSession(sessionId);
-
-      // Get the FSM actor and attach it to the session for backward compatibility
-      const fsmActor = this.fsmService.getSessionMachine(sessionId);
-      session.fsm = fsmActor;
-
-      // Store the session in our map for backward compatibility
-      this.sessions.set(sessionId, session);
+      // Session state is now managed entirely by the FSM service
+      // No need to maintain a separate sessions map
 
       logger.info("Session created successfully", {
         sessionId,
@@ -86,10 +74,11 @@ export class SessionManager {
    * Ensure session capacity by cleaning up expired sessions
    */
   private ensureCapacity(): void {
-    if (this.sessions.size >= this.maxSessions) {
+    const currentSessionCount = this.fsmService.getActiveSessionCount();
+    if (currentSessionCount >= this.maxSessions) {
       this.cleanupExpiredSessions();
 
-      if (this.sessions.size >= this.maxSessions) {
+      if (this.fsmService.getActiveSessionCount() >= this.maxSessions) {
         this.removeOldestSession();
       }
     }
@@ -105,28 +94,35 @@ export class SessionManager {
    * Get a session by ID
    */
   getSession(sessionId: string): HarvestSession {
-    const session = this.sessions.get(sessionId);
-    if (!session) {
+    // Query FSM service directly for session data
+    try {
+      const session = this.fsmService.toHarvestSession(sessionId);
+
+      // Update last activity
+      session.lastActivity = new Date();
+      return session;
+    } catch (_error) {
       throw new SessionNotFoundError(sessionId);
     }
-
-    // Update last activity
-    session.lastActivity = new Date();
-    return session;
   }
 
   /**
    * Check if a session exists
    */
   hasSession(sessionId: string): boolean {
-    return this.sessions.has(sessionId);
+    try {
+      this.fsmService.getSessionMachine(sessionId);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /**
    * Delete a session
    */
   deleteSession(sessionId: string): boolean {
-    return this.sessions.delete(sessionId);
+    return this.fsmService.removeSession(sessionId);
   }
 
   /**
@@ -134,16 +130,23 @@ export class SessionManager {
    */
   listSessions(): SessionInfo[] {
     const sessionInfos: SessionInfo[] = [];
+    const activeSessionIds = this.fsmService.getActiveSessionIds();
 
-    for (const [id, session] of this.sessions) {
-      sessionInfos.push({
-        id,
-        prompt: session.prompt,
-        createdAt: session.createdAt,
-        lastActivity: session.lastActivity,
-        isComplete: session.state.isComplete,
-        nodeCount: session.dagManager.getNodeCount(),
-      });
+    for (const sessionId of activeSessionIds) {
+      try {
+        const session = this.fsmService.toHarvestSession(sessionId);
+        sessionInfos.push({
+          id: sessionId,
+          prompt: session.prompt,
+          createdAt: session.createdAt,
+          lastActivity: session.lastActivity,
+          isComplete: this.fsmService.isAnalysisComplete(sessionId),
+          nodeCount: session.dagManager.getNodeCount(),
+        });
+      } catch (_error) {
+        // Skip invalid sessions
+        logger.warn("Skipping invalid session in listSessions", { sessionId });
+      }
     }
 
     // Sort by last activity (most recent first)
@@ -156,7 +159,7 @@ export class SessionManager {
    * Get all session IDs
    */
   getAllSessionIds(): string[] {
-    return Array.from(this.sessions.keys());
+    return this.fsmService.getActiveSessionIds();
   }
 
   /**
@@ -168,8 +171,10 @@ export class SessionManager {
     message: string,
     data?: unknown
   ): void {
-    const session = this.sessions.get(sessionId);
-    if (session) {
+    try {
+      // Get current FSM context
+      const context = this.fsmService.getContext(sessionId);
+
       const logEntry: LogEntry = {
         timestamp: new Date(),
         level,
@@ -177,13 +182,20 @@ export class SessionManager {
         data,
       };
 
-      session.state.logs.push(logEntry);
-      session.lastActivity = new Date();
+      // Add log directly to FSM context
+      // Note: This is a temporary approach until we implement proper log events
+      const updatedLogs = [...context.logs, logEntry];
 
       // Keep only last 1000 log entries to prevent memory bloat
-      if (session.state.logs.length > 1000) {
-        session.state.logs = session.state.logs.slice(-1000);
+      if (updatedLogs.length > 1000) {
+        updatedLogs.splice(0, updatedLogs.length - 1000);
       }
+
+      // Update the FSM context logs directly (this is a known limitation)
+      context.logs = updatedLogs;
+    } catch (_error) {
+      // Session doesn't exist, ignore the log
+      logger.warn("Failed to add log to non-existent session", { sessionId });
     }
   }
 
@@ -191,47 +203,41 @@ export class SessionManager {
    * Get session logs
    */
   getSessionLogs(sessionId: string): LogEntry[] {
-    const session = this.getSession(sessionId);
-    return [...session.state.logs]; // Return a copy
+    try {
+      const context = this.fsmService.getContext(sessionId);
+      return [...context.logs]; // Return a copy
+    } catch (_error) {
+      throw new SessionNotFoundError(sessionId);
+    }
   }
 
   /**
    * Clean up expired sessions
    */
   private cleanupExpiredSessions(): void {
-    const now = Date.now();
-    const expiredSessions: string[] = [];
-
-    for (const [id, session] of this.sessions) {
-      if (now - session.lastActivity.getTime() > this.sessionTimeoutMs) {
-        expiredSessions.push(id);
-      }
-    }
-
-    for (const sessionId of expiredSessions) {
-      this.sessions.delete(sessionId);
-      logger.info({ sessionId }, "Cleaned up expired session");
-    }
+    // TODO: Implement cleanup based on FSM session timestamps
+    // For now, cleanup is disabled as FSM doesn't track lastActivity
+    logger.debug(
+      "Session cleanup temporarily disabled - needs FSM-based implementation"
+    );
   }
 
   /**
    * Remove the oldest session to make room for new ones
    */
   private removeOldestSession(): void {
-    let oldestSession: { id: string; lastActivity: Date } | null = null;
-
-    for (const [id, session] of this.sessions) {
-      if (!oldestSession || session.lastActivity < oldestSession.lastActivity) {
-        oldestSession = { id, lastActivity: session.lastActivity };
+    // TODO: Implement FSM-based oldest session removal
+    // For now, remove a random session as fallback
+    const sessionIds = this.fsmService.getActiveSessionIds();
+    if (sessionIds.length > 0) {
+      const sessionToRemove = sessionIds[0];
+      if (sessionToRemove) {
+        this.fsmService.removeSession(sessionToRemove);
+        logger.info(
+          { sessionId: sessionToRemove },
+          "Removed session to make room (FSM-based cleanup needs improvement)"
+        );
       }
-    }
-
-    if (oldestSession) {
-      this.sessions.delete(oldestSession.id);
-      logger.info(
-        { sessionId: oldestSession.id },
-        "Removed oldest session to make room"
-      );
     }
   }
 
@@ -244,13 +250,28 @@ export class SessionManager {
     activeSessions: number;
     averageNodeCount: number;
   } {
-    const sessions = Array.from(this.sessions.values());
-    const totalSessions = sessions.length;
-    const completedSessions = sessions.filter((s) => s.state.isComplete).length;
-    const activeSessions = sessions.filter((s) => !s.state.isComplete).length;
-    const averageNodeCount =
-      sessions.reduce((sum, s) => sum + s.dagManager.getNodeCount(), 0) /
-      Math.max(totalSessions, 1);
+    const sessionIds = this.fsmService.getActiveSessionIds();
+    const totalSessions = sessionIds.length;
+    let completedSessions = 0;
+    let totalNodes = 0;
+
+    for (const sessionId of sessionIds) {
+      try {
+        const isComplete = this.fsmService.isAnalysisComplete(sessionId);
+        const context = this.fsmService.getContext(sessionId);
+
+        if (isComplete) {
+          completedSessions++;
+        }
+        totalNodes += context.dagManager.getNodeCount();
+      } catch (_error) {
+        // Skip invalid sessions
+        logger.warn("Skipping invalid session in getStats", { sessionId });
+      }
+    }
+
+    const activeSessions = totalSessions - completedSessions;
+    const averageNodeCount = totalNodes / Math.max(totalSessions, 1);
 
     return {
       totalSessions,
@@ -525,10 +546,6 @@ export class SessionManager {
         event as unknown as Parameters<typeof this.fsmService.sendEvent>[1]
       );
 
-      // Update the session object to keep it in sync
-      const updatedSession = this.fsmService.toHarvestSession(sessionId);
-      this.sessions.set(sessionId, updatedSession);
-
       logger.debug("FSM event sent", { sessionId, eventType: event.type });
     } catch (error) {
       logger.error("Failed to send FSM event", {
@@ -552,6 +569,20 @@ export class SessionManager {
       });
       return "unknown";
     }
+  }
+
+  /**
+   * Get FSM context directly - preferred over accessing session.state
+   */
+  getFsmContext(sessionId: string) {
+    return this.fsmService.getContext(sessionId);
+  }
+
+  /**
+   * Get FSM service for direct access - useful for tool handlers migrating from legacy patterns
+   */
+  getFsmService() {
+    return this.fsmService;
   }
 
   /**
@@ -937,6 +968,6 @@ export class SessionManager {
    * Force cleanup of all sessions (useful for testing)
    */
   clearAllSessions(): void {
-    this.sessions.clear();
+    this.fsmService.cleanup();
   }
 }

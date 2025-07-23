@@ -393,17 +393,12 @@ export async function handleSetMasterNode(
   context: DebugToolContext
 ): Promise<CallToolResult> {
   try {
-    const session = context.sessionManager.getSession(params.sessionId);
-    if (!session) {
-      throw new HarvestError(
-        `Session ${params.sessionId} not found`,
-        "SESSION_NOT_FOUND"
-      );
-    }
+    // Get FSM context directly instead of legacy session object
+    const fsmContext = context.sessionManager.getFsmContext(params.sessionId);
 
     // Validate that the URL exists in the HAR data using flexible matching
     const targetRequest = findRequestByFlexibleUrl(
-      session.harData.requests,
+      fsmContext.harData.requests,
       params.url
     );
 
@@ -413,28 +408,34 @@ export async function handleSetMasterNode(
         "URL_NOT_FOUND_IN_HAR",
         {
           url: params.url,
-          availableUrls: session.harData.requests.map((r) => r.url),
+          availableUrls: fsmContext.harData.requests.map(
+            (r: RequestModel) => r.url
+          ),
         }
       );
     }
 
-    // Clear any existing master node state
-    if (session.state.masterNodeId) {
+    // Get active workflow or create default one
+    let activeWorkflow = fsmContext.activeWorkflowId
+      ? fsmContext.workflowGroups.get(fsmContext.activeWorkflowId)
+      : undefined;
+
+    // Clear any existing master node state by accessing FSM context
+    if (activeWorkflow?.masterNodeId) {
       context.sessionManager.addLog(
         params.sessionId,
         "info",
-        `Removing existing master node ${session.state.masterNodeId} to set new one`
+        `Removing existing master node ${activeWorkflow.masterNodeId} to set new one`
       );
 
       // Remove from processing queue if present
-      session.state.toBeProcessedNodes =
-        session.state.toBeProcessedNodes.filter(
-          (nodeId) => nodeId !== session.state.masterNodeId
-        );
+      fsmContext.toBeProcessedNodes = fsmContext.toBeProcessedNodes.filter(
+        (nodeId) => nodeId !== activeWorkflow?.masterNodeId
+      );
     }
 
     // Create the master node in DAG
-    const masterNodeId = session.dagManager.addNode(
+    const masterNodeId = fsmContext.dagManager.addNode(
       "master_curl",
       {
         key: targetRequest,
@@ -446,17 +447,29 @@ export async function handleSetMasterNode(
       }
     );
 
-    // Update session state atomically
-    session.state.actionUrl = params.url;
-    session.state.masterNodeId = masterNodeId;
-
-    // Add to processing queue for dependency analysis
-    if (!session.state.toBeProcessedNodes.includes(masterNodeId)) {
-      session.state.toBeProcessedNodes.push(masterNodeId);
+    // Update FSM context directly instead of legacy session state
+    if (activeWorkflow) {
+      // Update existing workflow
+      activeWorkflow.masterNodeId = masterNodeId;
+      activeWorkflow.actionUrl = params.url;
+    } else {
+      // Create default workflow if none exists
+      const defaultWorkflow = {
+        id: "default",
+        name: "Primary Workflow",
+        masterNodeId,
+        requests: [targetRequest],
+        actionUrl: params.url,
+      };
+      fsmContext.workflowGroups.set("default", defaultWorkflow);
+      fsmContext.activeWorkflowId = "default";
+      activeWorkflow = defaultWorkflow;
     }
 
-    // Clear completion state to force re-analysis
-    session.state.isComplete = false;
+    // Add to processing queue for dependency analysis
+    if (!fsmContext.toBeProcessedNodes.includes(masterNodeId)) {
+      fsmContext.toBeProcessedNodes.push(masterNodeId);
+    }
 
     context.sessionManager.addLog(
       params.sessionId,
@@ -473,7 +486,7 @@ export async function handleSetMasterNode(
             message: "Master node successfully set",
             masterNodeId,
             actionUrl: params.url,
-            nodeCount: session.dagManager.getNodeCount(),
+            nodeCount: fsmContext.dagManager.getNodeCount(),
             nextSteps: [
               "Use 'analysis_process_next_node' to analyze dynamic parts",
               "Continue with normal analysis workflow",
@@ -1283,13 +1296,9 @@ export async function handleResetAnalysis(
 ): Promise<CallToolResult> {
   try {
     const preserveOverrides = params.preserveManualOverrides ?? true;
-    const session = context.sessionManager.getSession(params.sessionId);
-    if (!session) {
-      throw new HarvestError(
-        `Session ${params.sessionId} not found`,
-        "SESSION_NOT_FOUND"
-      );
-    }
+
+    // Get FSM context directly instead of legacy session object
+    const fsmContext = context.sessionManager.getFsmContext(params.sessionId);
 
     // Save manual overrides if needed
     const manualOverrides: Array<{
@@ -1298,7 +1307,7 @@ export async function handleResetAnalysis(
     }> = [];
 
     if (preserveOverrides) {
-      const allNodes = session.dagManager.getAllNodes();
+      const allNodes = fsmContext.dagManager.getAllNodes();
       for (const [nodeId, node] of allNodes) {
         if (node.classifiedParameters) {
           for (const param of node.classifiedParameters) {
@@ -1310,25 +1319,29 @@ export async function handleResetAnalysis(
       }
     }
 
-    // Reset DAG manager
-    session.dagManager = new DAGManager();
+    // Preserve input variables before reset
+    const preservedInputVariables = fsmContext.inputVariables;
 
-    // Reset session state
-    session.state = {
-      toBeProcessedNodes: [],
-      inProcessNodeDynamicParts: [],
-      inputVariables: session.state.inputVariables, // Preserve input variables
-      isComplete: false,
-      logs: [
-        {
-          timestamp: new Date(),
-          level: "info",
-          message: "Analysis reset",
-          data: { preserveManualOverrides: preserveOverrides },
-        },
-      ],
-      workflowGroups: new Map(), // Initialize workflow groups
+    // Reset DAG manager in FSM context
+    fsmContext.dagManager = new DAGManager();
+
+    // Reset FSM context properties instead of legacy session state
+    fsmContext.toBeProcessedNodes = [];
+    fsmContext.inProcessNodeDynamicParts = [];
+    fsmContext.inputVariables = preservedInputVariables; // Preserve input variables
+    fsmContext.inProcessNodeId = undefined;
+    fsmContext.generatedCode = undefined;
+    fsmContext.workflowGroups = new Map(); // Initialize workflow groups
+    fsmContext.activeWorkflowId = undefined;
+
+    // Add reset log entry to FSM context
+    const resetLogEntry = {
+      timestamp: new Date(),
+      level: "info" as const,
+      message: "Analysis reset",
+      data: { preserveManualOverrides: preserveOverrides },
     };
+    fsmContext.logs.push(resetLogEntry);
 
     // Log the reset
     context.sessionManager.addLog(

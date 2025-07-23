@@ -12,21 +12,14 @@ function extractUrlFromMasterNodeId(masterNodeId: string): string | null {
   return masterNodeId;
 }
 
-import { findDependencies } from "../agents/DependencyAgent.js";
-import { identifyDynamicParts } from "../agents/DynamicPartsAgent.js";
-import { identifyInputVariables } from "../agents/InputVariablesAgent.js";
-import { classifyParameters } from "../agents/ParameterClassificationAgent.js";
 import {
   discoverWorkflows,
   getPrimaryWorkflow,
 } from "../agents/WorkflowDiscoveryAgent.js";
 import {
   type AnalysisToolContext,
-  type ClassifiedParameter,
   HarvestError,
-  type HarvestSession,
   SessionIdSchema,
-  type SessionManagerWithFSM,
 } from "../types/index.js";
 import { createComponentLogger } from "../utils/logger.js";
 
@@ -49,9 +42,7 @@ export async function handleProcessNextNode(
     }
 
     // Check FSM state to ensure we can process nodes
-    const currentState = (
-      context.sessionManager as unknown as SessionManagerWithFSM
-    ).getFsmState(params.sessionId);
+    const currentState = context.sessionManager.getFsmState(params.sessionId);
 
     if (currentState === "readyForCodeGen") {
       return {
@@ -108,21 +99,16 @@ export async function handleProcessNextNode(
 
     // Send PROCESS_NEXT_NODE event to the FSM
     try {
-      (context.sessionManager as unknown as SessionManagerWithFSM).sendFsmEvent(
-        params.sessionId,
-        {
-          type: "PROCESS_NEXT_NODE",
-        }
-      );
+      context.sessionManager.sendFsmEvent(params.sessionId, {
+        type: "PROCESS_NEXT_NODE",
+      });
 
       // Give the FSM a moment to process the event
       await new Promise((resolve) => setTimeout(resolve, 100));
 
-      // Check the new state and provide appropriate response
-      const newState = (
-        context.sessionManager as unknown as SessionManagerWithFSM
-      ).getFsmState(params.sessionId);
-      const updatedSession = context.sessionManager.getSession(
+      // Check the new state and provide appropriate response using FSM context
+      const newState = context.sessionManager.getFsmState(params.sessionId);
+      const updatedFsmContext = context.sessionManager.getFsmContext(
         params.sessionId
       );
 
@@ -135,7 +121,7 @@ export async function handleProcessNextNode(
                 status: "analysis_complete",
                 message:
                   "All nodes processed successfully - analysis is now complete",
-                totalNodes: updatedSession.dagManager.getNodeCount(),
+                totalNodes: updatedFsmContext.dagManager.getNodeCount(),
                 nextStep:
                   "Use 'codegen_generate_wrapper_script' to generate code",
                 currentState: newState,
@@ -145,7 +131,7 @@ export async function handleProcessNextNode(
         };
       }
       if (newState === "processingDependencies") {
-        const remainingNodes = updatedSession.state.toBeProcessedNodes.length;
+        const remainingNodes = updatedFsmContext.toBeProcessedNodes.length;
         return {
           content: [
             {
@@ -154,7 +140,7 @@ export async function handleProcessNextNode(
                 status: "node_processed",
                 message: "Node processed successfully - more nodes remaining",
                 remainingNodes,
-                totalNodes: updatedSession.dagManager.getNodeCount(),
+                totalNodes: updatedFsmContext.dagManager.getNodeCount(),
                 nextStep:
                   remainingNodes > 0
                     ? "Continue with 'analysis_process_next_node'"
@@ -166,9 +152,7 @@ export async function handleProcessNextNode(
         };
       }
       if (newState === "failed") {
-        const contextData = (
-          context.sessionManager as unknown as SessionManagerWithFSM
-        ).fsmService.getContext(params.sessionId);
+        const contextData = updatedFsmContext;
         return {
           content: [
             {
@@ -207,89 +191,26 @@ export async function handleProcessNextNode(
         error: fsmError instanceof Error ? fsmError.message : "Unknown error",
       });
 
-      // Fall back to legacy processing if FSM fails
-      return await handleProcessNextNodeLegacy(params, context);
+      // Return error instead of falling back to legacy processing
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              status: "fsm_processing_failed",
+              message: "FSM event processing failed",
+              error:
+                fsmError instanceof Error ? fsmError.message : "Unknown error",
+              suggestion:
+                "Check session state and consider restarting the session",
+            }),
+          },
+        ],
+      };
     }
   } catch (error) {
     return handleNodeProcessingError(error);
   }
-}
-
-/**
- * Legacy fallback for process_next_node when FSM fails
- */
-async function handleProcessNextNodeLegacy(
-  params: { sessionId: string },
-  context: AnalysisToolContext
-): Promise<CallToolResult> {
-  const session = context.sessionManager.getSession(params.sessionId);
-
-  // Check if there are nodes available for processing
-  const noNodesResult = checkNoNodesToProcess(session);
-  if (noNodesResult) {
-    return noNodesResult;
-  }
-
-  // Extract and validate the next node
-  const { nodeId, curlCommand } = extractNextNodeForProcessing(
-    session,
-    params.sessionId,
-    context
-  );
-
-  // Handle JavaScript file skipping
-  const jsSkipResult = handleJavaScriptFileSkip(
-    curlCommand,
-    nodeId,
-    session,
-    params.sessionId,
-    context
-  );
-  if (jsSkipResult) {
-    return jsSkipResult;
-  }
-
-  // Process dynamic parts and input variables
-  const {
-    dynamicParts,
-    finalDynamicParts,
-    identifiedInputVars,
-    classifiedParameters,
-  } = await processDynamicPartsAndInputVariables(
-    curlCommand,
-    session,
-    params.sessionId,
-    nodeId,
-    context
-  );
-
-  // Update node with processed information including parameter classification
-  session.dagManager.updateNode(nodeId, {
-    dynamicParts: finalDynamicParts,
-    inputVariables: identifiedInputVars,
-    classifiedParameters: classifiedParameters,
-  });
-
-  // Process dependencies and add new nodes
-  const newNodesAdded = await processDependenciesAndAddNodes(
-    finalDynamicParts,
-    nodeId,
-    session,
-    params.sessionId,
-    context
-  );
-
-  // Generate final response
-  return generateNodeProcessingResponse(
-    nodeId,
-    dynamicParts,
-    identifiedInputVars,
-    finalDynamicParts,
-    newNodesAdded,
-    session,
-    params.sessionId,
-    context
-  );
 }
 
 /**
@@ -505,8 +426,9 @@ export async function handleDiscoverWorkflows(
       };
     }
 
-    // Update session state with discovered workflows
-    session.state.workflowGroups = workflowGroups;
+    // Update FSM context with discovered workflows
+    const fsmContext = context.sessionManager.getFsmContext(params.sessionId);
+    fsmContext.workflowGroups = workflowGroups;
 
     // Debug: Log discovered workflows
     for (const [id, workflow] of workflowGroups.entries()) {
@@ -520,7 +442,7 @@ export async function handleDiscoverWorkflows(
     // Select primary workflow if none specified
     const primaryWorkflow = getPrimaryWorkflow(workflowGroups);
     if (primaryWorkflow) {
-      session.state.activeWorkflowId = primaryWorkflow.id;
+      fsmContext.activeWorkflowId = primaryWorkflow.id;
 
       // Create the initial DAG node for the primary workflow
       const primaryUrl = extractUrlFromMasterNodeId(
@@ -544,13 +466,9 @@ export async function handleDiscoverWorkflows(
             value: matchingRequest.response || null,
           });
 
-          // Update session state with the actual master node ID
-          session.state.masterNodeId = masterNodeId;
-          session.state.actionUrl = primaryUrl;
-
           // Add to processing queue for dependency analysis
-          if (!session.state.toBeProcessedNodes.includes(masterNodeId)) {
-            session.state.toBeProcessedNodes.push(masterNodeId);
+          if (!fsmContext.toBeProcessedNodes.includes(masterNodeId)) {
+            fsmContext.toBeProcessedNodes.push(masterNodeId);
           }
 
           // Update the workflow group with the actual DAG node ID
@@ -600,7 +518,7 @@ export async function handleDiscoverWorkflows(
         complexity: group.complexity,
         requiresUserInput: group.requiresUserInput,
         nodeCount: group.nodeIds.size,
-        isPrimary: group.id === session.state.activeWorkflowId,
+        isPrimary: group.id === fsmContext.activeWorkflowId,
       })
     );
 
@@ -613,7 +531,7 @@ export async function handleDiscoverWorkflows(
             status: "success",
             message: "Workflow discovery completed successfully",
             workflowCount: workflowGroups.size,
-            primaryWorkflowId: session.state.activeWorkflowId,
+            primaryWorkflowId: fsmContext.activeWorkflowId,
             actionUrl: primaryWorkflow
               ? extractUrlFromMasterNodeId(primaryWorkflow.masterNodeId)
               : null,
@@ -647,238 +565,6 @@ export async function handleDiscoverWorkflows(
   }
 }
 
-// Helper functions that were used in the original handlers
-
-function checkNoNodesToProcess(session: HarvestSession): CallToolResult | null {
-  if (session.state.toBeProcessedNodes.length === 0) {
-    return {
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify({
-            status: "no_nodes_to_process",
-            message: "No nodes available for processing",
-            nextStep: "Use 'analysis_is_complete' to check session status",
-          }),
-        },
-      ],
-    };
-  }
-  return null;
-}
-
-function extractNextNodeForProcessing(
-  session: HarvestSession,
-  sessionId: string,
-  context: AnalysisToolContext
-): { nodeId: string; curlCommand: string } {
-  const nodeId = session.state.toBeProcessedNodes.shift();
-  if (!nodeId) {
-    throw new HarvestError("No nodes to process", "ANALYSIS_ERROR");
-  }
-  const node = session.dagManager.getNode(nodeId);
-
-  if (!node) {
-    throw new HarvestError(`Node ${nodeId} not found in DAG`, "NODE_NOT_FOUND");
-  }
-
-  const requestContent = node.content as {
-    key: { toCurlCommand(): string; method: string; url: string };
-  };
-  const curlCommand = requestContent.key.toCurlCommand();
-
-  context.sessionManager.addLog(
-    sessionId,
-    "info",
-    `Processing node ${nodeId}: ${requestContent.key.method} ${requestContent.key.url}`
-  );
-
-  return { nodeId, curlCommand };
-}
-
-function handleJavaScriptFileSkip(
-  curlCommand: string,
-  nodeId: string,
-  _session: HarvestSession,
-  sessionId: string,
-  context: AnalysisToolContext
-): CallToolResult | null {
-  // Note: This is a simplified check - the actual function expects a RequestModel
-  // but we're doing a simple string check here for the extracted curl command
-  if (
-    curlCommand.includes(".js") ||
-    curlCommand.includes(".html") ||
-    curlCommand.includes(".css")
-  ) {
-    context.sessionManager.addLog(
-      sessionId,
-      "info",
-      `Skipping JavaScript/HTML node ${nodeId}`
-    );
-
-    return {
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify({
-            status: "skipped_javascript",
-            nodeId,
-            message: "Skipped JavaScript/HTML file processing",
-            nextStep: "Continue with next node or check completion status",
-          }),
-        },
-      ],
-    };
-  }
-  return null;
-}
-
-async function processDynamicPartsAndInputVariables(
-  curlCommand: string,
-  session: HarvestSession,
-  sessionId: string,
-  nodeId: string,
-  context: AnalysisToolContext
-): Promise<{
-  dynamicParts: string[];
-  finalDynamicParts: string[];
-  identifiedInputVars: Record<string, string>;
-  classifiedParameters: ClassifiedParameter[];
-}> {
-  const dynamicParts = await identifyDynamicParts(curlCommand);
-
-  context.sessionManager.addLog(
-    sessionId,
-    "info",
-    `Found ${dynamicParts.length} dynamic parts for node ${nodeId}`
-  );
-
-  // Convert dynamic parts array to the expected Record format
-  const dynamicPartsRecord: Record<string, string> = {};
-  dynamicParts.forEach((part, index) => {
-    dynamicPartsRecord[`dynamic_${index}`] = part;
-  });
-
-  const inputVarsResult = await identifyInputVariables(
-    curlCommand,
-    dynamicPartsRecord
-  );
-  const identifiedInputVars = inputVarsResult.identifiedVariables;
-  const finalDynamicParts = inputVarsResult.removedDynamicParts;
-
-  // For classifyParameters, we need the actual RequestModel, not the curl command
-  // Get the original request from the node
-  const node = session.dagManager.getNode(nodeId);
-  const requestContent = node?.content as {
-    key?: { toCurlCommand(): string; method: string; url: string };
-  };
-  const requestModel = requestContent?.key;
-  const classifiedParameters = requestModel
-    ? await classifyParameters(requestModel as never, session)
-    : [];
-
-  return {
-    dynamicParts,
-    finalDynamicParts,
-    identifiedInputVars,
-    classifiedParameters,
-  };
-}
-
-async function processDependenciesAndAddNodes(
-  finalDynamicParts: string[],
-  nodeId: string,
-  session: HarvestSession,
-  _sessionId: string,
-  _context: AnalysisToolContext
-): Promise<number> {
-  let newNodesAdded = 0;
-
-  if (finalDynamicParts.length > 0) {
-    const dependencies = await findDependencies(
-      finalDynamicParts,
-      session.harData,
-      session.cookieData || {}
-    );
-
-    // Add cookie dependencies
-    for (const cookieDep of dependencies.cookieDependencies) {
-      const cookieNodeId = session.dagManager.addNode("cookie", {
-        key: cookieDep.cookieKey,
-        value: session.cookieData?.[cookieDep.cookieKey]?.value || "",
-      });
-      session.dagManager.addEdge(cookieNodeId, nodeId);
-      newNodesAdded++;
-    }
-
-    // Add request dependencies
-    for (const reqDep of dependencies.requestDependencies) {
-      const depNodeId = session.dagManager.addNode("curl", {
-        key: reqDep.sourceRequest,
-      });
-      session.dagManager.addEdge(depNodeId, nodeId);
-      session.state.toBeProcessedNodes.push(depNodeId);
-      newNodesAdded++;
-    }
-
-    // Handle not found parts
-    for (const notFoundPart of dependencies.notFoundParts) {
-      const notFoundNodeId = session.dagManager.addNode("not_found", {
-        key: notFoundPart,
-      });
-      session.dagManager.addEdge(notFoundNodeId, nodeId);
-      newNodesAdded++;
-    }
-  }
-
-  return newNodesAdded;
-}
-
-function generateNodeProcessingResponse(
-  nodeId: string,
-  dynamicParts: string[],
-  identifiedInputVars: Record<string, string>,
-  finalDynamicParts: string[],
-  newNodesAdded: number,
-  session: HarvestSession,
-  sessionId: string,
-  context: AnalysisToolContext
-): CallToolResult {
-  const remainingNodes = session.state.toBeProcessedNodes.length;
-  const totalNodes = session.dagManager.getNodeCount();
-
-  const nextStep =
-    remainingNodes > 0
-      ? "Continue with 'analysis_process_next_node'"
-      : "Use 'analysis_is_complete' to check if ready for code generation";
-
-  context.sessionManager.addLog(
-    sessionId,
-    "info",
-    `Node ${nodeId} processing complete. ${newNodesAdded} new nodes added, ${remainingNodes} nodes remaining`
-  );
-
-  return {
-    content: [
-      {
-        type: "text",
-        text: JSON.stringify({
-          status: "completed",
-          nodeId,
-          dynamicPartsFound: dynamicParts.length,
-          inputVariablesFound: Object.keys(identifiedInputVars).length,
-          finalDynamicParts: finalDynamicParts.length,
-          newNodesAdded,
-          remainingNodes,
-          totalNodes,
-          nextStep,
-          message: `Node processing completed successfully. ${newNodesAdded} dependencies added.`,
-        }),
-      },
-    ],
-  };
-}
-
 function handleNodeProcessingError(error: unknown): CallToolResult {
   if (error instanceof HarvestError) {
     throw error;
@@ -908,9 +594,7 @@ export async function handleStartPrimaryWorkflow(
     }
 
     // Check current FSM state to ensure we can start workflow analysis
-    const currentState = (
-      context.sessionManager as unknown as SessionManagerWithFSM
-    ).getFsmState(params.sessionId);
+    const currentState = context.sessionManager.getFsmState(params.sessionId);
     if (!currentState || currentState === "failed") {
       return {
         content: [
@@ -932,9 +616,10 @@ export async function handleStartPrimaryWorkflow(
       currentState === "processingDependencies" ||
       currentState === "readyForCodeGen"
     ) {
-      const activeWorkflowId = session.state.activeWorkflowId;
+      const fsmContext = context.sessionManager.getFsmContext(params.sessionId);
+      const activeWorkflowId = fsmContext.activeWorkflowId;
       const workflow = activeWorkflowId
-        ? session.state.workflowGroups.get(activeWorkflowId)
+        ? fsmContext.workflowGroups.get(activeWorkflowId)
         : undefined;
 
       return {
@@ -952,7 +637,9 @@ export async function handleStartPrimaryWorkflow(
                     description: workflow.description,
                   }
                 : undefined,
-              actionUrl: session.state.actionUrl,
+              actionUrl: workflow?.masterNodeId
+                ? extractUrlFromMasterNodeId(workflow.masterNodeId)
+                : undefined,
               nextSteps:
                 currentState === "processingDependencies"
                   ? [
@@ -970,18 +657,14 @@ export async function handleStartPrimaryWorkflow(
     if (currentState === "awaitingWorkflowSelection") {
       // FSM should auto-select primary workflow - wait a moment and check again
       await new Promise((resolve) => setTimeout(resolve, 100));
-      const newState = (
-        context.sessionManager as unknown as SessionManagerWithFSM
-      ).getFsmState(params.sessionId);
+      const newState = context.sessionManager.getFsmState(params.sessionId);
 
       if (newState === "processingDependencies") {
-        const updatedSession = context.sessionManager.getSession(
+        const fsmContext = context.sessionManager.getFsmContext(
           params.sessionId
         );
-        const activeWorkflow = updatedSession.state.activeWorkflowId
-          ? updatedSession.state.workflowGroups.get(
-              updatedSession.state.activeWorkflowId
-            )
+        const activeWorkflow = fsmContext.activeWorkflowId
+          ? fsmContext.workflowGroups.get(fsmContext.activeWorkflowId)
           : undefined;
 
         return {
@@ -1003,7 +686,9 @@ export async function handleStartPrimaryWorkflow(
                       complexity: activeWorkflow.complexity,
                     }
                   : undefined,
-                actionUrl: updatedSession.state.actionUrl,
+                actionUrl: activeWorkflow?.masterNodeId
+                  ? extractUrlFromMasterNodeId(activeWorkflow.masterNodeId)
+                  : undefined,
                 nextSteps: [
                   "Use 'analysis_process_next_node' to continue dependency analysis",
                   "Use 'analysis_is_complete' to check progress",

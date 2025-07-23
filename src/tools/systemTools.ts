@@ -13,6 +13,16 @@ import {
 } from "../types/index.js";
 
 /**
+ * Extract URL from temporary masterNodeId format (e.g., "GET:https://example.com/api")
+ */
+function extractUrlFromMasterNodeId(masterNodeId: string): string | null {
+  if (masterNodeId.includes(":")) {
+    return masterNodeId.split(":", 2)[1] || null;
+  }
+  return masterNodeId;
+}
+
+/**
  * Handle session_status tool call
  */
 export async function handleSessionStatus(
@@ -106,7 +116,9 @@ export async function handleSessionStatus(
               totalNodes,
               resolvedNodes,
               unresolvedNodes,
-              currentlyProcessing: session.state.inProcessNodeId,
+              currentlyProcessing: context.sessionManager.getFsmContext(
+                params.sessionId
+              ).inProcessNodeId,
               toBeProcessed: analysis.diagnostics.pendingInQueue,
               dagComplete: analysis.diagnostics.dagComplete,
               queueEmpty: analysis.diagnostics.queueEmpty,
@@ -116,7 +128,17 @@ export async function handleSessionStatus(
               createdAt: session.createdAt,
               lastActivity: session.lastActivity,
               minutesInactive,
-              actionUrl: session.state.actionUrl,
+              actionUrl: (() => {
+                const fsmContext = context.sessionManager.getFsmContext(
+                  params.sessionId
+                );
+                const activeWorkflow = fsmContext.activeWorkflowId
+                  ? fsmContext.workflowGroups.get(fsmContext.activeWorkflowId)
+                  : undefined;
+                return activeWorkflow?.masterNodeId
+                  ? extractUrlFromMasterNodeId(activeWorkflow.masterNodeId)
+                  : undefined;
+              })(),
             },
             harInfo: {
               totalRequests: session.harData.requests.length,
@@ -126,7 +148,9 @@ export async function handleSessionStatus(
             },
             nextActions,
             warnings,
-            logs: session.state.logs.slice(-5), // Last 5 log entries
+            logs: context.sessionManager
+              .getFsmContext(params.sessionId)
+              .logs.slice(-5), // Last 5 log entries
           }),
         },
       ],
