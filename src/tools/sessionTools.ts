@@ -3,6 +3,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import {
   HarvestError,
+  type SessionManagerWithFSM,
   type SessionStartResponse,
   type SessionStartSchema,
   type SessionToolContext,
@@ -28,9 +29,16 @@ export async function handleSessionStart(
     }
     const harValidation = session.harData.validation;
 
+    // Get FSM state for the response
+    const sessionManagerWithFSM =
+      context.sessionManager as unknown as SessionManagerWithFSM;
+    const fsmState = sessionManagerWithFSM.getFsmState
+      ? sessionManagerWithFSM.getFsmState(sessionId)
+      : "unknown";
+
     const response: SessionStartResponse = {
       sessionId,
-      message: "Session created successfully",
+      message: `Session created successfully and FSM initialized in state: ${fsmState}`,
       harPath: params.harPath,
       prompt: params.prompt,
       harValidation: harValidation

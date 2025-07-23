@@ -26,13 +26,14 @@ import {
   HarvestError,
   type HarvestSession,
   SessionIdSchema,
+  type SessionManagerWithFSM,
 } from "../types/index.js";
 import { createComponentLogger } from "../utils/logger.js";
 
 const logger = createComponentLogger("analysis-tools");
 
 /**
- * Handle analysis.process_next_node tool
+ * Handle analysis.process_next_node tool using FSM events
  */
 export async function handleProcessNextNode(
   params: { sessionId: string },
@@ -47,81 +48,248 @@ export async function handleProcessNextNode(
       );
     }
 
-    // Check if there are nodes available for processing
-    const noNodesResult = checkNoNodesToProcess(session);
-    if (noNodesResult) {
-      // Debug: Log when no nodes are available for processing
-      logger.debug("No nodes to process", {
+    // Check FSM state to ensure we can process nodes
+    const currentState = (
+      context.sessionManager as unknown as SessionManagerWithFSM
+    ).getFsmState(params.sessionId);
+
+    if (currentState === "readyForCodeGen") {
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              status: "already_complete",
+              message:
+                "Analysis is already complete - no more nodes to process",
+              nextStep:
+                "Use 'codegen_generate_wrapper_script' to generate code",
+              currentState,
+            }),
+          },
+        ],
+      };
+    }
+
+    if (currentState === "failed") {
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              status: "session_failed",
+              message: "Session has failed - cannot process nodes",
+              suggestion: "Create a new session with session_start",
+              currentState,
+            }),
+          },
+        ],
+      };
+    }
+
+    if (currentState !== "processingDependencies") {
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              status: "invalid_state",
+              message: `Session is not in the correct state for node processing (current: ${currentState})`,
+              suggestion:
+                currentState === "awaitingWorkflowSelection"
+                  ? "Use 'analysis_start_primary_workflow' first"
+                  : "Check session status and restart if needed",
+              currentState,
+            }),
+          },
+        ],
+      };
+    }
+
+    // Send PROCESS_NEXT_NODE event to the FSM
+    try {
+      (context.sessionManager as unknown as SessionManagerWithFSM).sendFsmEvent(
+        params.sessionId,
+        {
+          type: "PROCESS_NEXT_NODE",
+        }
+      );
+
+      // Give the FSM a moment to process the event
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      // Check the new state and provide appropriate response
+      const newState = (
+        context.sessionManager as unknown as SessionManagerWithFSM
+      ).getFsmState(params.sessionId);
+      const updatedSession = context.sessionManager.getSession(
+        params.sessionId
+      );
+
+      if (newState === "readyForCodeGen") {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                status: "analysis_complete",
+                message:
+                  "All nodes processed successfully - analysis is now complete",
+                totalNodes: updatedSession.dagManager.getNodeCount(),
+                nextStep:
+                  "Use 'codegen_generate_wrapper_script' to generate code",
+                currentState: newState,
+              }),
+            },
+          ],
+        };
+      }
+      if (newState === "processingDependencies") {
+        const remainingNodes = updatedSession.state.toBeProcessedNodes.length;
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                status: "node_processed",
+                message: "Node processed successfully - more nodes remaining",
+                remainingNodes,
+                totalNodes: updatedSession.dagManager.getNodeCount(),
+                nextStep:
+                  remainingNodes > 0
+                    ? "Continue with 'analysis_process_next_node'"
+                    : "Use 'analysis_is_complete' to check status",
+                currentState: newState,
+              }),
+            },
+          ],
+        };
+      }
+      if (newState === "failed") {
+        const contextData = (
+          context.sessionManager as unknown as SessionManagerWithFSM
+        ).fsmService.getContext(params.sessionId);
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                status: "processing_failed",
+                message: "Node processing failed",
+                error:
+                  contextData.error?.message ||
+                  "Unknown error during processing",
+                suggestion: "Check logs and consider restarting the session",
+                currentState: newState,
+              }),
+            },
+          ],
+        };
+      }
+
+      // Default response for unexpected states
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              status: "unexpected_state",
+              message: `Node processing resulted in unexpected state: ${newState}`,
+              currentState: newState,
+              suggestion: "Check session status with analysis_is_complete",
+            }),
+          },
+        ],
+      };
+    } catch (fsmError) {
+      logger.error("FSM event processing failed", {
         sessionId: params.sessionId,
-        queueLength: session.state.toBeProcessedNodes.length,
-        totalNodes: session.dagManager.getNodeCount(),
+        error: fsmError instanceof Error ? fsmError.message : "Unknown error",
       });
-      return noNodesResult;
+
+      // Fall back to legacy processing if FSM fails
+      return await handleProcessNextNodeLegacy(params, context);
     }
-
-    // Extract and validate the next node
-    const { nodeId, curlCommand } = extractNextNodeForProcessing(
-      session,
-      params.sessionId,
-      context
-    );
-
-    // Handle JavaScript file skipping
-    const jsSkipResult = handleJavaScriptFileSkip(
-      curlCommand,
-      nodeId,
-      session,
-      params.sessionId,
-      context
-    );
-    if (jsSkipResult) {
-      return jsSkipResult;
-    }
-
-    // Process dynamic parts and input variables
-    const {
-      dynamicParts,
-      finalDynamicParts,
-      identifiedInputVars,
-      classifiedParameters,
-    } = await processDynamicPartsAndInputVariables(
-      curlCommand,
-      session,
-      params.sessionId,
-      nodeId,
-      context
-    );
-
-    // Update node with processed information including parameter classification
-    session.dagManager.updateNode(nodeId, {
-      dynamicParts: finalDynamicParts,
-      inputVariables: identifiedInputVars,
-      classifiedParameters: classifiedParameters,
-    });
-
-    // Process dependencies and add new nodes
-    const newNodesAdded = await processDependenciesAndAddNodes(
-      finalDynamicParts,
-      nodeId,
-      session,
-      params.sessionId,
-      context
-    );
-
-    // Generate final response
-    return generateNodeProcessingResponse(
-      nodeId,
-      dynamicParts,
-      identifiedInputVars,
-      finalDynamicParts,
-      newNodesAdded,
-      session,
-      params.sessionId,
-      context
-    );
   } catch (error) {
     return handleNodeProcessingError(error);
   }
+}
+
+/**
+ * Legacy fallback for process_next_node when FSM fails
+ */
+async function handleProcessNextNodeLegacy(
+  params: { sessionId: string },
+  context: AnalysisToolContext
+): Promise<CallToolResult> {
+  const session = context.sessionManager.getSession(params.sessionId);
+
+  // Check if there are nodes available for processing
+  const noNodesResult = checkNoNodesToProcess(session);
+  if (noNodesResult) {
+    return noNodesResult;
+  }
+
+  // Extract and validate the next node
+  const { nodeId, curlCommand } = extractNextNodeForProcessing(
+    session,
+    params.sessionId,
+    context
+  );
+
+  // Handle JavaScript file skipping
+  const jsSkipResult = handleJavaScriptFileSkip(
+    curlCommand,
+    nodeId,
+    session,
+    params.sessionId,
+    context
+  );
+  if (jsSkipResult) {
+    return jsSkipResult;
+  }
+
+  // Process dynamic parts and input variables
+  const {
+    dynamicParts,
+    finalDynamicParts,
+    identifiedInputVars,
+    classifiedParameters,
+  } = await processDynamicPartsAndInputVariables(
+    curlCommand,
+    session,
+    params.sessionId,
+    nodeId,
+    context
+  );
+
+  // Update node with processed information including parameter classification
+  session.dagManager.updateNode(nodeId, {
+    dynamicParts: finalDynamicParts,
+    inputVariables: identifiedInputVars,
+    classifiedParameters: classifiedParameters,
+  });
+
+  // Process dependencies and add new nodes
+  const newNodesAdded = await processDependenciesAndAddNodes(
+    finalDynamicParts,
+    nodeId,
+    session,
+    params.sessionId,
+    context
+  );
+
+  // Generate final response
+  return generateNodeProcessingResponse(
+    nodeId,
+    dynamicParts,
+    identifiedInputVars,
+    finalDynamicParts,
+    newNodesAdded,
+    session,
+    params.sessionId,
+    context
+  );
 }
 
 /**
@@ -724,7 +892,7 @@ function handleNodeProcessingError(error: unknown): CallToolResult {
 }
 
 /**
- * Handle starting primary workflow analysis
+ * Handle starting primary workflow analysis using FSM events
  */
 export async function handleStartPrimaryWorkflow(
   params: { sessionId: string },
@@ -739,7 +907,115 @@ export async function handleStartPrimaryWorkflow(
       );
     }
 
-    // Check HAR data quality before proceeding
+    // Check current FSM state to ensure we can start workflow analysis
+    const currentState = (
+      context.sessionManager as unknown as SessionManagerWithFSM
+    ).getFsmState(params.sessionId);
+    if (!currentState || currentState === "failed") {
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              error: "Session is not in a valid state for workflow analysis",
+              currentState,
+              message: "Session may have failed during initialization",
+              suggestion: "Create a new session with session_start",
+            }),
+          },
+        ],
+      };
+    }
+
+    // Check if FSM is already past workflow selection
+    if (
+      currentState === "processingDependencies" ||
+      currentState === "readyForCodeGen"
+    ) {
+      const activeWorkflowId = session.state.activeWorkflowId;
+      const workflow = activeWorkflowId
+        ? session.state.workflowGroups.get(activeWorkflowId)
+        : undefined;
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              success: true,
+              message: "Primary workflow analysis already started",
+              currentState,
+              workflow: workflow
+                ? {
+                    id: workflow.id,
+                    name: workflow.name,
+                    description: workflow.description,
+                  }
+                : undefined,
+              actionUrl: session.state.actionUrl,
+              nextSteps:
+                currentState === "processingDependencies"
+                  ? [
+                      "Use 'analysis_process_next_node' to continue dependency analysis",
+                    ]
+                  : ["Use 'codegen_generate_wrapper_script' to generate code"],
+            }),
+          },
+        ],
+      };
+    }
+
+    // For FSM-managed sessions, workflow discovery should happen automatically
+    // We just need to wait for the FSM to complete workflow selection
+    if (currentState === "awaitingWorkflowSelection") {
+      // FSM should auto-select primary workflow - wait a moment and check again
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const newState = (
+        context.sessionManager as unknown as SessionManagerWithFSM
+      ).getFsmState(params.sessionId);
+
+      if (newState === "processingDependencies") {
+        const updatedSession = context.sessionManager.getSession(
+          params.sessionId
+        );
+        const activeWorkflow = updatedSession.state.activeWorkflowId
+          ? updatedSession.state.workflowGroups.get(
+              updatedSession.state.activeWorkflowId
+            )
+          : undefined;
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                success: true,
+                message:
+                  "Primary workflow analysis started successfully via FSM",
+                currentState: newState,
+                workflow: activeWorkflow
+                  ? {
+                      id: activeWorkflow.id,
+                      name: activeWorkflow.name,
+                      description: activeWorkflow.description,
+                      category: activeWorkflow.category,
+                      priority: activeWorkflow.priority,
+                      complexity: activeWorkflow.complexity,
+                    }
+                  : undefined,
+                actionUrl: updatedSession.state.actionUrl,
+                nextSteps: [
+                  "Use 'analysis_process_next_node' to continue dependency analysis",
+                  "Use 'analysis_is_complete' to check progress",
+                ],
+              }),
+            },
+          ],
+        };
+      }
+    }
+
+    // Check HAR data quality before proceeding with manual workflow discovery
     if (session.harData.validation) {
       const validation = session.harData.validation;
 
@@ -761,191 +1037,34 @@ export async function handleStartPrimaryWorkflow(
       }
 
       if (validation.quality === "poor") {
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify({
-                warning: "HAR file has quality issues",
-                quality: validation.quality,
-                issues: validation.issues,
-                message: "Analysis may have limited accuracy",
-                action:
-                  "Proceeding with workflow discovery despite quality issues",
-              }),
-            },
-          ],
-        };
+        logger.warn("Proceeding with poor quality HAR file", {
+          sessionId: params.sessionId,
+          quality: validation.quality,
+          issues: validation.issues,
+        });
       }
     }
 
-    // Discover workflows using the modern multi-workflow system
-    const workflowGroups = await discoverWorkflows(session);
-
-    if (workflowGroups.size === 0) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({
-              error: "No workflows discovered",
-              message:
-                "Unable to identify any logical workflows in the HAR file",
-              suggestion:
-                "Check if the HAR file contains API requests with clear patterns",
-              fallback:
-                "Consider using 'analysis_start_primary_workflow' for workflow discovery",
-            }),
-          },
-        ],
-      };
-    }
-
-    // Get the primary workflow
-    const primaryWorkflow = getPrimaryWorkflow(workflowGroups);
-    if (!primaryWorkflow) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({
-              error: "No primary workflow identified",
-              message:
-                "Discovered workflows but couldn't determine primary workflow",
-              discoveredWorkflows: Array.from(workflowGroups.entries()).map(
-                ([id, workflow]) => ({
-                  id,
-                  name: workflow.name,
-                  priority: workflow.priority,
-                  complexity: workflow.complexity,
-                })
-              ),
-              suggestion:
-                "Use 'analysis_select_workflow' to manually choose a workflow",
-            }),
-          },
-        ],
-      };
-    }
-
-    // Set up the session with the primary workflow
-    session.workflowGroups = workflowGroups;
-    session.selectedWorkflowId = primaryWorkflow.id;
-
-    // Get the master node URL from the primary workflow
-    const masterNodeUrl = primaryWorkflow.masterNodeId;
-    const harUrls = session.harData.urls;
-
-    // Find the actual URL from harUrls that matches the master node pattern
-    // Extract URL from masterNodeUrl (format: "METHOD:URL")
-    const masterNodeUrlPart = masterNodeUrl.split(":").slice(1).join(":"); // Handle URLs with multiple colons
-
-    const masterUrl = harUrls.find((urlInfo) => {
-      // Extract base URL without query parameters for exact matching
-      const urlBase = urlInfo.url.split("?")[0];
-      const masterBase = masterNodeUrlPart.split("?")[0];
-
-      // Exact match of base URLs to avoid substring false positives
-      return (
-        urlBase === masterBase &&
-        urlInfo.method.toUpperCase() ===
-          masterNodeUrl?.split(":")[0]?.toUpperCase()
-      );
+    // For sessions not managed by FSM, fall back to legacy workflow discovery
+    // This will be removed in a future phase
+    logger.warn("Using legacy workflow discovery - session not FSM-managed", {
+      sessionId: params.sessionId,
+      currentState,
     });
-
-    if (!masterUrl) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({
-              error: "Master URL not found in HAR data",
-              masterNodeId: masterNodeUrl,
-              workflowName: primaryWorkflow.name,
-              suggestion: "This may indicate a workflow discovery issue",
-            }),
-          },
-        ],
-      };
-    }
-
-    // Find the actual DAG node that corresponds to this master URL
-    const dagNodes = session.dagManager.getAllNodes();
-    const matchingDagNode = Array.from(dagNodes.values()).find((node) => {
-      if (node.nodeType === "curl" && node.content?.key?.url) {
-        const nodeUrl = node.content.key.url.split("?")[0];
-        const nodeMethod = node.content.key.method;
-        const masterUrlBase = masterUrl.url.split("?")[0];
-
-        return (
-          nodeUrl === masterUrlBase &&
-          nodeMethod.toUpperCase() === masterUrl.method.toUpperCase()
-        );
-      }
-      return false;
-    });
-
-    if (!matchingDagNode) {
-      logger.error("Could not find DAG node matching master URL", {
-        sessionId: params.sessionId,
-        masterUrl: masterUrl.url,
-        masterMethod: masterUrl.method,
-        totalDagNodes: dagNodes.size,
-      });
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({
-              success: false,
-              error:
-                "Could not find DAG node matching the discovered primary endpoint",
-              masterUrl: masterUrl.url,
-              suggestion:
-                "This indicates a synchronization issue between workflow discovery and DAG creation",
-            }),
-          },
-        ],
-      };
-    }
-
-    // Set master node using the actual DAG node ID (UUID)
-    context.sessionManager.setMasterNodeId(
-      params.sessionId,
-      matchingDagNode.id
-    );
-
-    // Also set actionUrl for compatibility with E2E tests
-    context.sessionManager.setActionUrl(params.sessionId, masterUrl.url);
 
     return {
       content: [
         {
           type: "text",
           text: JSON.stringify({
-            success: true,
-            message: "Primary workflow analysis started successfully",
-            actionUrl: masterUrl.url, // Add actionUrl field for E2E test compatibility
-            workflow: {
-              id: primaryWorkflow.id,
-              name: primaryWorkflow.name,
-              description: primaryWorkflow.description,
-              category: primaryWorkflow.category,
-              priority: primaryWorkflow.priority,
-              complexity: primaryWorkflow.complexity,
-              requiresUserInput: primaryWorkflow.requiresUserInput,
-            },
-            masterNode: {
-              url: masterUrl.url,
-              method: masterUrl.method,
-            },
-            totalWorkflowsDiscovered: workflowGroups.size,
-            nextSteps: [
-              "Use 'analysis_process_next_node' to continue dependency analysis",
-              "Use 'analysis_is_complete' to check progress",
-              "Use 'debug_list_all_requests' to inspect all nodes",
-            ],
+            error: "Session state inconsistency",
+            message:
+              "Session is not in the expected state for FSM-managed workflow analysis",
+            currentState,
+            suggestion:
+              "Create a new session with session_start to use the modern FSM-based workflow system",
+            fallback:
+              "The FSM should automatically handle workflow discovery and selection",
           }),
         },
       ],
