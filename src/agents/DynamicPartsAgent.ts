@@ -1,6 +1,13 @@
 import { getLLMClient } from "../core/LLMClient.js";
 import type { FunctionDefinition } from "../core/providers/types.js";
-import { type DynamicPartsResponse, HarvestError } from "../types/index.js";
+import {
+  type DynamicPartsResponse,
+  HarvestError,
+  type RequestModel,
+} from "../types/index.js";
+import { createComponentLogger } from "../utils/logger.js";
+
+const logger = createComponentLogger("dynamic-parts-agent");
 
 /**
  * Result of filtering input variables from dynamic parts
@@ -8,6 +15,27 @@ import { type DynamicPartsResponse, HarvestError } from "../types/index.js";
 interface FilterResult {
   filteredParts: string[];
   removedParts: string[];
+}
+
+/**
+ * Result of session token analysis
+ */
+interface SessionTokenAnalysis {
+  potentialSessionTokens: string[];
+  authenticationParameters: string[];
+  confidence: number;
+  analysis: string;
+}
+
+/**
+ * Session pattern detection for parameters that appear consistently
+ */
+interface SessionPattern {
+  parameter: string;
+  value: string;
+  occurrences: number;
+  consistency: number; // 0-1 representing how consistent the value is
+  isAuthenticationRelated: boolean;
 }
 
 /**
@@ -54,6 +82,96 @@ export async function identifyDynamicParts(
       "DYNAMIC_PARTS_IDENTIFICATION_FAILED",
       { originalError: error }
     );
+  }
+}
+
+/**
+ * Enhanced dynamic parts identification for SPA-aware session token detection
+ * Analyzes request patterns across multiple requests to identify consistent session tokens
+ */
+export async function identifyDynamicPartsWithSessionAwareness(
+  requests: RequestModel[],
+  inputVariables: Record<string, string> = {}
+): Promise<{
+  dynamicParts: string[];
+  sessionTokens: string[];
+  authenticationParameters: string[];
+}> {
+  if (!requests || requests.length === 0) {
+    return {
+      dynamicParts: [],
+      sessionTokens: [],
+      authenticationParameters: [],
+    };
+  }
+
+  try {
+    // First, get traditional dynamic parts for all requests
+    const allDynamicParts: string[] = [];
+    const requestCurls = requests.map((req) => req.toString());
+
+    for (const curlCommand of requestCurls) {
+      const parts = await identifyDynamicParts(curlCommand, inputVariables);
+      allDynamicParts.push(...parts);
+    }
+
+    // Remove duplicates
+    const uniqueDynamicParts = [...new Set(allDynamicParts)];
+
+    // Analyze session patterns to identify authentication tokens
+    const sessionPatterns = analyzeSessionPatterns(
+      requests,
+      uniqueDynamicParts
+    );
+
+    // Use LLM to analyze potential session tokens
+    const sessionAnalysis = await analyzeSessionTokens(
+      requests,
+      sessionPatterns
+    );
+
+    // Combine traditional dynamic parts with session-aware analysis
+    const enhancedDynamicParts = [
+      ...uniqueDynamicParts,
+      ...sessionAnalysis.potentialSessionTokens,
+    ];
+
+    // Remove duplicates again
+    const finalDynamicParts = [...new Set(enhancedDynamicParts)];
+
+    logger.debug("Enhanced dynamic parts identification completed", {
+      totalRequests: requests.length,
+      traditionalDynamicParts: uniqueDynamicParts.length,
+      sessionTokens: sessionAnalysis.potentialSessionTokens.length,
+      authParameters: sessionAnalysis.authenticationParameters.length,
+      finalCount: finalDynamicParts.length,
+    });
+
+    return {
+      dynamicParts: finalDynamicParts,
+      sessionTokens: sessionAnalysis.potentialSessionTokens,
+      authenticationParameters: sessionAnalysis.authenticationParameters,
+    };
+  } catch (error) {
+    logger.error("Enhanced dynamic parts identification failed", {
+      error: error instanceof Error ? error.message : "Unknown error",
+      requestCount: requests.length,
+    });
+
+    // Fallback to traditional approach if enhanced analysis fails
+    const fallbackResults = await Promise.all(
+      requests.map((req) =>
+        identifyDynamicParts(req.toString(), inputVariables)
+      )
+    );
+
+    const fallbackParts = [...new Set(fallbackResults.flat())];
+
+    return {
+      dynamicParts: fallbackParts,
+      sessionTokens: [],
+      authenticationParameters: [],
+    };
   }
 }
 
@@ -152,4 +270,321 @@ export function filterInputVariables(
     filteredParts,
     removedParts,
   };
+}
+
+/**
+ * Analyze session patterns across multiple requests to identify consistent authentication tokens
+ */
+function analyzeSessionPatterns(
+  requests: RequestModel[],
+  _dynamicParts: string[]
+): SessionPattern[] {
+  const patterns: Map<string, { values: Set<string>; occurrences: number }> =
+    new Map();
+
+  // Extract all parameters and their values from requests
+  for (const request of requests) {
+    const url = new URL(request.url);
+    const searchParams = url.searchParams;
+
+    // Analyze URL parameters
+    for (const [key, value] of searchParams.entries()) {
+      if (!patterns.has(key)) {
+        patterns.set(key, { values: new Set(), occurrences: 0 });
+      }
+      const pattern = patterns.get(key)!;
+      pattern.values.add(value);
+      pattern.occurrences++;
+    }
+
+    // Analyze headers for authentication tokens
+    if (request.headers) {
+      for (const [headerName, headerValue] of Object.entries(request.headers)) {
+        if (isAuthenticationHeader(headerName)) {
+          const key = `header_${headerName}`;
+          if (!patterns.has(key)) {
+            patterns.set(key, { values: new Set(), occurrences: 0 });
+          }
+          const pattern = patterns.get(key)!;
+          pattern.values.add(headerValue);
+          pattern.occurrences++;
+        }
+      }
+    }
+
+    // Analyze cookies
+    const cookieHeader = request.headers?.cookie || request.headers?.Cookie;
+    if (cookieHeader) {
+      const cookies = parseCookieHeader(cookieHeader);
+      for (const [cookieName, cookieValue] of Object.entries(cookies)) {
+        if (isAuthenticationCookie(cookieName)) {
+          const key = `cookie_${cookieName}`;
+          if (!patterns.has(key)) {
+            patterns.set(key, { values: new Set(), occurrences: 0 });
+          }
+          const pattern = patterns.get(key)!;
+          pattern.values.add(cookieValue);
+          pattern.occurrences++;
+        }
+      }
+    }
+  }
+
+  // Convert to SessionPattern objects and filter for consistent patterns
+  const sessionPatterns: SessionPattern[] = [];
+  const totalRequests = requests.length;
+
+  for (const [parameter, data] of patterns.entries()) {
+    // Calculate consistency (how often the same value appears)
+    const mostCommonValue = [...data.values].reduce((a, b) =>
+      [...data.values].filter((v) => v === a).length >=
+      [...data.values].filter((v) => v === b).length
+        ? a
+        : b
+    );
+
+    const consistency = data.occurrences / totalRequests;
+    const isAuthenticationRelated = isLikelyAuthenticationParameter(parameter);
+
+    // Only include parameters that appear in at least 30% of requests
+    // and have authentication-related characteristics
+    if (
+      consistency >= 0.3 &&
+      (isAuthenticationRelated || data.values.size === 1)
+    ) {
+      sessionPatterns.push({
+        parameter,
+        value: mostCommonValue,
+        occurrences: data.occurrences,
+        consistency,
+        isAuthenticationRelated,
+      });
+    }
+  }
+
+  return sessionPatterns.sort((a, b) => b.consistency - a.consistency);
+}
+
+/**
+ * Use LLM to analyze potential session tokens from detected patterns
+ */
+async function analyzeSessionTokens(
+  requests: RequestModel[],
+  sessionPatterns: SessionPattern[]
+): Promise<SessionTokenAnalysis> {
+  if (sessionPatterns.length === 0) {
+    return {
+      potentialSessionTokens: [],
+      authenticationParameters: [],
+      confidence: 0,
+      analysis: "No session patterns detected",
+    };
+  }
+
+  try {
+    const llmClient = getLLMClient();
+    const functionDef = createSessionTokenAnalysisFunction();
+    const prompt = createSessionTokenAnalysisPrompt(requests, sessionPatterns);
+
+    const response = await llmClient.callFunction<SessionTokenAnalysis>(
+      prompt,
+      functionDef,
+      "analyze_session_tokens"
+    );
+
+    logger.debug("Session token analysis completed", {
+      patternsAnalyzed: sessionPatterns.length,
+      tokensIdentified: response.potentialSessionTokens?.length || 0,
+      confidence: response.confidence,
+    });
+
+    return {
+      potentialSessionTokens: response.potentialSessionTokens || [],
+      authenticationParameters: response.authenticationParameters || [],
+      confidence: response.confidence || 0,
+      analysis: response.analysis || "Analysis completed",
+    };
+  } catch (error) {
+    logger.error("Session token analysis failed", {
+      error: error instanceof Error ? error.message : "Unknown error",
+      patternsCount: sessionPatterns.length,
+    });
+
+    // Fallback: identify likely session tokens based on heuristics
+    const fallbackTokens = sessionPatterns
+      .filter((p) => p.isAuthenticationRelated && p.consistency > 0.5)
+      .map((p) => p.value);
+
+    return {
+      potentialSessionTokens: fallbackTokens,
+      authenticationParameters: sessionPatterns
+        .filter((p) => p.isAuthenticationRelated)
+        .map((p) => p.parameter),
+      confidence: 0.3,
+      analysis: "Fallback heuristic analysis used due to LLM failure",
+    };
+  }
+}
+
+/**
+ * Create function definition for session token analysis
+ */
+function createSessionTokenAnalysisFunction(): FunctionDefinition {
+  return {
+    name: "analyze_session_tokens",
+    description:
+      "Analyze request patterns to identify session tokens and authentication parameters that appear " +
+      "consistently across multiple requests, especially in SPA applications where tokens are established " +
+      "during application bootstrap.",
+    parameters: {
+      type: "object",
+      properties: {
+        potentialSessionTokens: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Values that appear to be session tokens, authentication tokens, or other session-specific " +
+            "identifiers that are required for API access. Include token values, not parameter names.",
+        },
+        authenticationParameters: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Parameter names (keys) that appear to carry authentication information such as sessionId, " +
+            "juristkn, authToken, csrf_token, etc.",
+        },
+        confidence: {
+          type: "number",
+          description:
+            "Confidence level (0-1) in the session token identification",
+        },
+        analysis: {
+          type: "string",
+          description:
+            "Brief explanation of the authentication pattern detected",
+        },
+      },
+      required: [
+        "potentialSessionTokens",
+        "authenticationParameters",
+        "confidence",
+        "analysis",
+      ],
+    },
+  };
+}
+
+/**
+ * Create prompt for session token analysis
+ */
+function createSessionTokenAnalysisPrompt(
+  requests: RequestModel[],
+  sessionPatterns: SessionPattern[]
+): string {
+  const sampleRequests = requests.slice(0, 5).map((req) => ({
+    url: req.url,
+    method: req.method,
+    headers: req.headers ? Object.keys(req.headers).slice(0, 5) : [],
+  }));
+
+  const patternSummary = sessionPatterns.slice(0, 10).map((p) => ({
+    parameter: p.parameter,
+    value: p.value.length > 50 ? `${p.value.substring(0, 50)}...` : p.value,
+    occurrences: p.occurrences,
+    consistency: `${Math.round(p.consistency * 100)}%`,
+    isAuth: p.isAuthenticationRelated,
+  }));
+
+  return `Analyze the following request patterns to identify session tokens and authentication parameters:
+
+Request Summary (${requests.length} total requests):
+${JSON.stringify(sampleRequests, null, 2)}
+
+Detected Patterns:
+${JSON.stringify(patternSummary, null, 2)}
+
+Task: Identify which parameter values are likely session tokens or authentication tokens that:
+1. Appear consistently across multiple requests (not user input)
+2. Are required for API access (would cause 401/403 if missing/invalid)
+3. Are established during application bootstrap or initial authentication
+4. Include parameters like sessionId, tokens, csrf values, API keys, etc.
+
+Focus on values that appear to be session-specific identifiers rather than user-controllable input data.
+Pay special attention to parameters with names containing: session, token, auth, csrf, key, id, tkn.`;
+}
+
+/**
+ * Check if a header name indicates authentication
+ */
+function isAuthenticationHeader(headerName: string): boolean {
+  const authHeaders = [
+    "authorization",
+    "x-api-key",
+    "x-auth-token",
+    "x-csrf-token",
+    "x-xsrf-token",
+    "x-session-token",
+    "bearer",
+    "api-key",
+    "auth-token",
+  ];
+
+  return authHeaders.some((auth) => headerName.toLowerCase().includes(auth));
+}
+
+/**
+ * Check if a cookie name indicates authentication
+ */
+function isAuthenticationCookie(cookieName: string): boolean {
+  const authCookies = [
+    "session",
+    "sess",
+    "auth",
+    "token",
+    "csrf",
+    "xsrf",
+    "jwt",
+    "bearer",
+  ];
+
+  return authCookies.some((auth) => cookieName.toLowerCase().includes(auth));
+}
+
+/**
+ * Check if a parameter name is likely authentication-related
+ */
+function isLikelyAuthenticationParameter(parameter: string): boolean {
+  const authPatterns = [
+    "session",
+    "token",
+    "auth",
+    "csrf",
+    "xsrf",
+    "jwt",
+    "key",
+    "tkn",
+    "bearer",
+    "juris", // specific to the jurisprudencia case
+    "api_key",
+    "apikey",
+  ];
+
+  const lowerParam = parameter.toLowerCase();
+  return authPatterns.some((pattern) => lowerParam.includes(pattern));
+}
+
+/**
+ * Parse cookie header into key-value pairs
+ */
+function parseCookieHeader(cookieHeader: string): Record<string, string> {
+  const cookies: Record<string, string> = {};
+
+  cookieHeader.split(";").forEach((cookie) => {
+    const [name, ...valueParts] = cookie.trim().split("=");
+    if (name && valueParts.length > 0) {
+      cookies[name.trim()] = valueParts.join("=").trim();
+    }
+  });
+
+  return cookies;
 }
