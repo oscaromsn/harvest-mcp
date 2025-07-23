@@ -141,6 +141,7 @@ export class FunctionBuilder extends BaseBuilder {
   /**
    * Set the function body using a string (hybrid approach)
    * This allows us to use template-generated body content during transition
+   * @deprecated Use setBody(WriterFunction) for safer AST-based code generation
    */
   setBodyText(body: string): this {
     if (!this.declaration) {

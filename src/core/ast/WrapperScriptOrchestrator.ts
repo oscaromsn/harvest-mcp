@@ -273,7 +273,7 @@ export class WrapperScriptOrchestrator {
         params: documentation.params,
         returns: `Promise resolving to API response with ${responseType} data`,
       })
-      .setBodyText(functionBody)
+      .setBody((writer) => writer.write(functionBody))
       .export();
 
     logger.debug("Generated request function", {
@@ -311,7 +311,9 @@ export class WrapperScriptOrchestrator {
           "This function handles cookie-based authentication or session management",
         ],
       })
-      .setBodyText(this.generateCookieFunctionBody(cookieKey, cookieValue))
+      .setBody((writer) =>
+        writer.write(this.generateCookieFunctionBody(cookieKey, cookieValue))
+      )
       .export();
 
     // Also generate a getter function for reading the cookie
@@ -325,26 +327,32 @@ export class WrapperScriptOrchestrator {
         description: `Get cookie value: ${cookieKey}`,
         returns: "Cookie value or null if not found",
       })
-      .setBodyText(
-        `  // Get cookie: ${cookieKey}
-  try {
-    return cookieManager.get('${cookieKey}');
-  } catch (error) {
-    console.error('Failed to get cookie ${cookieKey}:', error);
-    
-    // Fallback: try reading cookie directly in browser environment
-    if (typeof document !== 'undefined') {
-      const value = \`; \${document.cookie}\`;
-      const parts = value.split(\`; ${cookieKey}=\`);
-      if (parts.length === 2) {
-        const cookieValue = parts.pop()?.split(';').shift();
-        return cookieValue || null;
-      }
-    }
-    
-    return null;
-  }`
-      )
+      .setBody((writer) => {
+        writer.writeLine(`// Get cookie: ${cookieKey}`);
+        writer.writeLine("try {");
+        writer.writeLine(`  return cookieManager.get('${cookieKey}');`);
+        writer.writeLine("} catch (error) {");
+        writer.writeLine(
+          `  console.error('Failed to get cookie ${cookieKey}:', error);`
+        );
+        writer.writeLine("");
+        writer.writeLine(
+          "  // Fallback: try reading cookie directly in browser environment"
+        );
+        writer.writeLine("  if (typeof document !== 'undefined') {");
+        writer.writeLine("    const value = `; ${document.cookie}`;");
+        writer.writeLine(`    const parts = value.split(\`; ${cookieKey}=\`);`);
+        writer.writeLine("    if (parts.length === 2) {");
+        writer.writeLine(
+          "      const cookieValue = parts.pop()?.split(';').shift();"
+        );
+        writer.writeLine("      return cookieValue || null;");
+        writer.writeLine("    }");
+        writer.writeLine("  }");
+        writer.writeLine("");
+        writer.writeLine("  return null;");
+        writer.writeLine("}");
+      })
       .export();
 
     logger.debug("Generated cookie function", {
@@ -401,11 +409,15 @@ export class WrapperScriptOrchestrator {
           "Consider providing the missing parameter or updating the analysis",
         ],
       })
-      .setBodyText(
-        `throw new Error(\`Missing required parameter: ${missingPart}\`);\n` +
-          "  // This parameter could not be resolved from previous API responses\n" +
-          "  // Consider adding it as a user input parameter"
-      )
+      .setBody((writer) => {
+        writer.writeLine(
+          `throw new Error(\`Missing required parameter: ${missingPart}\`);`
+        );
+        writer.writeLine(
+          "// This parameter could not be resolved from previous API responses"
+        );
+        writer.writeLine("// Consider adding it as a user input parameter");
+      })
       .export();
 
     logger.debug("Generated not-found function", {
@@ -498,7 +510,7 @@ export class WrapperScriptOrchestrator {
             description: p.description || `Parameter: ${p.name}`,
           })),
         })
-        .setBodyText(mainFunctionBody)
+        .setBody((writer) => writer.write(mainFunctionBody))
         .export();
     } else {
       // Create main function without parameters (use default)
