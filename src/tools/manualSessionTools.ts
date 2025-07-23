@@ -422,7 +422,7 @@ export async function handleConvertManualToAnalysisSession(
             harPath,
             cookiePath,
             nextSteps: [
-              "Use analysis_run_initial_analysis to start analyzing the workflow",
+              "Use analysis_start_primary_workflow to start analyzing the workflow",
               "Use analysis_process_next_node to process dependencies",
               "Use analysis_is_complete to check if analysis is finished",
               "Use codegen_generate_wrapper_script to generate executable code",

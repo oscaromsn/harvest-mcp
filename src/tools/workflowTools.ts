@@ -304,12 +304,10 @@ async function runInitialAnalysisForWorkflow(
 ): Promise<CallToolResult & { isError?: boolean }> {
   try {
     // Import analysis tools dynamically to avoid circular imports
-    const { handleRunInitialAnalysisWithConfig } = await import(
-      "./analysisTools.js"
-    );
+    const { handleStartPrimaryWorkflow } = await import("./analysisTools.js");
 
-    steps.push("🔍 Running initial analysis to identify target action URL");
-    const result = await handleRunInitialAnalysisWithConfig(
+    steps.push("🔍 Running workflow discovery to identify primary workflow");
+    const result = await handleStartPrimaryWorkflow(
       { sessionId: argsObj.sessionId },
       context
     );

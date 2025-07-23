@@ -793,13 +793,13 @@ export class SessionManager {
         if (!masterNode) {
           blockers.push("Master node ID is set but node does not exist in DAG");
           recommendations.push(
-            "Re-run 'analysis_run_initial_analysis' to properly create master node"
+            "Re-run 'analysis_start_primary_workflow' to properly create master node"
           );
         }
       } else {
         blockers.push("Master node has not been identified");
         recommendations.push(
-          "Run 'analysis_run_initial_analysis' to identify the target action URL"
+          "Run 'analysis_start_primary_workflow' to identify the target action URL"
         );
 
         // Also check for actionUrl when there's no master node at all
@@ -1316,7 +1316,7 @@ export class SessionManager {
       if (!analysis.diagnostics.hasMasterNode) {
         currentState = "NEEDS_INITIAL_ANALYSIS";
         nextActions = [
-          "Run 'analysis_run_initial_analysis' to identify target action URL",
+          "Run 'analysis_start_primary_workflow' to identify target action URL",
         ];
         estimatedCompletion = 10;
       } else if (

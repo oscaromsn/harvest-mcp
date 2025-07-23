@@ -533,7 +533,7 @@ export async function handleGetCompletionBlockers(
       nextAction = "Continue with 'analysis_process_next_node'";
     } else if (analysis.diagnostics.totalNodes === 0) {
       status = "analysis_not_started";
-      nextAction = "Start with 'analysis_run_initial_analysis'";
+      nextAction = "Start with 'analysis_start_primary_workflow'";
     } else {
       status = "analysis_stalled";
       nextAction = "Check session status and consider restarting analysis";
@@ -1457,7 +1457,7 @@ export async function handleResetAnalysis(
             preservedOverrides: manualOverrides.length,
             message: "Analysis reset successfully",
             nextStep:
-              "Run analysis_run_initial_analysis to restart the workflow",
+              "Run analysis_start_primary_workflow to restart the workflow",
           }),
         },
       ],
