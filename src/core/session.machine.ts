@@ -59,6 +59,11 @@ const SessionContextSchema = z.object({
   generatedCode: z.string().optional(),
   authAnalysis: z.any().optional(), // AuthenticationAnalysis - external type, kept as z.any() for compatibility
   error: SessionErrorSchema.optional(),
+  // Legacy compatibility properties migrated from SessionState
+  actionUrl: z.string().optional(),
+  masterNodeId: z.string().optional(),
+  authReadiness: z.any().optional(), // AuthReadiness - external type, kept as z.any() for compatibility
+  bootstrapAnalysis: z.any().optional(), // BootstrapAnalysis - external type, kept as z.any() for compatibility
 });
 
 const SessionEventSchema = z.discriminatedUnion("type", [
@@ -67,6 +72,7 @@ const SessionEventSchema = z.discriminatedUnion("type", [
     harPath: z.string(),
     cookiePath: z.string().optional(),
     prompt: z.string(),
+    inputVariables: z.record(z.string()).optional(),
   }),
   z.object({
     type: z.literal("HAR_PARSED"),
@@ -105,6 +111,38 @@ const SessionEventSchema = z.discriminatedUnion("type", [
   }),
   z.object({
     type: z.literal("RESET"),
+  }),
+  // New events for state management
+  z.object({
+    type: z.literal("SET_MASTER_NODE"),
+    nodeId: z.string(),
+    actionUrl: z.string().optional(),
+  }),
+  z.object({
+    type: z.literal("ADD_LOG"),
+    level: z.string(),
+    message: z.string(),
+    data: z.any().optional(),
+  }),
+  z.object({
+    type: z.literal("UPDATE_AUTH_ANALYSIS"),
+    authAnalysis: z.any(), // AuthenticationAnalysis - external type
+  }),
+  z.object({
+    type: z.literal("SET_ACTION_URL"),
+    actionUrl: z.string(),
+  }),
+  z.object({
+    type: z.literal("UPDATE_AUTH_READINESS"),
+    authReadiness: z.any(), // AuthReadiness - external type
+  }),
+  z.object({
+    type: z.literal("UPDATE_BOOTSTRAP_ANALYSIS"),
+    bootstrapAnalysis: z.any(), // BootstrapAnalysis - external type
+  }),
+  z.object({
+    type: z.literal("UPDATE_PROCESSING_QUEUE"),
+    nodeIds: z.array(z.string()),
   }),
 ]);
 
@@ -161,8 +199,13 @@ export const sessionMachine = setup({
             workflowGroups: new Map<string, WorkflowGroup>(),
             toBeProcessedNodes: [],
             inProcessNodeDynamicParts: [],
-            inputVariables: {},
+            inputVariables: startEvent.inputVariables || {},
             logs: [],
+            // Initialize legacy compatibility properties
+            actionUrl: undefined,
+            masterNodeId: undefined,
+            authReadiness: undefined,
+            bootstrapAnalysis: undefined,
           };
         }
       }
@@ -325,6 +368,105 @@ export const sessionMachine = setup({
         logs: [...context.logs, logEntry],
       };
     }),
+
+    // New actions for state management
+    setMasterNode: assign(({ event }) => {
+      if (!event.type.startsWith("xstate.")) {
+        const parsedEvent = SessionEventSchema.parse(event);
+        if (parsedEvent.type === "SET_MASTER_NODE") {
+          return {
+            masterNodeId: parsedEvent.nodeId,
+            actionUrl: parsedEvent.actionUrl,
+          };
+        }
+      }
+      return {};
+    }),
+
+    addLogEntry: assign(({ context, event }) => {
+      if (!event.type.startsWith("xstate.")) {
+        const parsedEvent = SessionEventSchema.parse(event);
+        if (parsedEvent.type === "ADD_LOG") {
+          const logEntry: LogEntry = {
+            timestamp: new Date(),
+            level: parsedEvent.level as LogEntry["level"],
+            message: parsedEvent.message,
+            data: parsedEvent.data,
+          };
+
+          // Keep only last 1000 log entries to prevent memory bloat
+          const updatedLogs = [...context.logs, logEntry];
+          if (updatedLogs.length > 1000) {
+            updatedLogs.splice(0, updatedLogs.length - 1000);
+          }
+
+          return {
+            logs: updatedLogs,
+          };
+        }
+      }
+      return {};
+    }),
+
+    updateAuthAnalysis: assign(({ event }) => {
+      if (!event.type.startsWith("xstate.")) {
+        const parsedEvent = SessionEventSchema.parse(event);
+        if (parsedEvent.type === "UPDATE_AUTH_ANALYSIS") {
+          return {
+            authAnalysis: parsedEvent.authAnalysis,
+          };
+        }
+      }
+      return {};
+    }),
+
+    setActionUrl: assign(({ event }) => {
+      if (!event.type.startsWith("xstate.")) {
+        const parsedEvent = SessionEventSchema.parse(event);
+        if (parsedEvent.type === "SET_ACTION_URL") {
+          return {
+            actionUrl: parsedEvent.actionUrl,
+          };
+        }
+      }
+      return {};
+    }),
+
+    updateAuthReadiness: assign(({ event }) => {
+      if (!event.type.startsWith("xstate.")) {
+        const parsedEvent = SessionEventSchema.parse(event);
+        if (parsedEvent.type === "UPDATE_AUTH_READINESS") {
+          return {
+            authReadiness: parsedEvent.authReadiness,
+          };
+        }
+      }
+      return {};
+    }),
+
+    updateBootstrapAnalysis: assign(({ event }) => {
+      if (!event.type.startsWith("xstate.")) {
+        const parsedEvent = SessionEventSchema.parse(event);
+        if (parsedEvent.type === "UPDATE_BOOTSTRAP_ANALYSIS") {
+          return {
+            bootstrapAnalysis: parsedEvent.bootstrapAnalysis,
+          };
+        }
+      }
+      return {};
+    }),
+
+    updateProcessingQueue: assign(({ event }) => {
+      if (!event.type.startsWith("xstate.")) {
+        const parsedEvent = SessionEventSchema.parse(event);
+        if (parsedEvent.type === "UPDATE_PROCESSING_QUEUE") {
+          return {
+            toBeProcessedNodes: parsedEvent.nodeIds,
+          };
+        }
+      }
+      return {};
+    }),
   },
   actors: {
     parseHarFiles: fromPromise(
@@ -467,31 +609,74 @@ export const sessionMachine = setup({
         const { generateWrapperScript } = await import("./CodeGenerator.js");
 
         // Create a temporary session for code generation
+        // Since HarvestSession now uses FSM context getters, we need to create a mock FSM
+        const mockFsm = {
+          getSnapshot: () => ({
+            context: context,
+            value: "codeGenerated" as const,
+          }),
+        };
+
         const tempSession = {
           id: context.sessionId,
-          prompt: context.prompt,
-          harData: context.harData,
-          cookieData: context.cookieData,
-          dagManager: context.dagManager,
-          state: {
-            actionUrl:
-              context.activeWorkflowId && context.workflowGroups
-                ? context.workflowGroups.get(context.activeWorkflowId)
-                    ?.masterNodeId
-                : undefined,
-            masterNodeId:
-              context.activeWorkflowId && context.workflowGroups
-                ? context.workflowGroups.get(context.activeWorkflowId)
-                    ?.masterNodeId
-                : undefined,
-            workflowGroups: context.workflowGroups || new Map(),
-            activeWorkflowId: context.activeWorkflowId,
-            inputVariables: context.inputVariables,
-            authAnalysis: context.authAnalysis,
-            logs: context.logs,
-            toBeProcessedNodes: context.toBeProcessedNodes,
-            inProcessNodeDynamicParts: context.inProcessNodeDynamicParts,
-            isComplete: true,
+          fsm: mockFsm as any,
+          createdAt: new Date(),
+          lastActivity: new Date(),
+
+          // FSM context getters - match the pattern from SessionManager
+          get prompt() {
+            return context.prompt;
+          },
+          get harData() {
+            return context.harData as any;
+          },
+          get cookieData() {
+            return context.cookieData;
+          },
+          get dagManager() {
+            return context.dagManager;
+          },
+          get workflowGroups() {
+            return context.workflowGroups || new Map();
+          },
+          get selectedWorkflowId() {
+            return context.activeWorkflowId;
+          },
+          get logs() {
+            return context.logs;
+          },
+          get generatedCode() {
+            return context.generatedCode;
+          },
+          get authAnalysis() {
+            return context.authAnalysis;
+          },
+          get actionUrl() {
+            return context.actionUrl;
+          },
+          get masterNodeId() {
+            return context.masterNodeId;
+          },
+          get inProcessNodeId() {
+            return context.inProcessNodeId;
+          },
+          get toBeProcessedNodes() {
+            return context.toBeProcessedNodes;
+          },
+          get inProcessNodeDynamicParts() {
+            return context.inProcessNodeDynamicParts;
+          },
+          get inputVariables() {
+            return context.inputVariables;
+          },
+          get isComplete() {
+            return true;
+          },
+          get authReadiness() {
+            return context.authReadiness;
+          },
+          get bootstrapAnalysis() {
+            return context.bootstrapAnalysis;
           },
         } as HarvestSession;
 
@@ -528,6 +713,11 @@ export const sessionMachine = setup({
       generatedCode: undefined,
       authAnalysis: undefined,
       error: undefined,
+      // Initialize new legacy compatibility properties
+      actionUrl: undefined,
+      masterNodeId: undefined,
+      authReadiness: undefined,
+      bootstrapAnalysis: undefined,
     };
   },
   states: {
@@ -537,6 +727,14 @@ export const sessionMachine = setup({
           target: "parsingHar",
           actions: "initializeContext",
         },
+        // Global state management events
+        SET_MASTER_NODE: { actions: "setMasterNode" },
+        ADD_LOG: { actions: "addLogEntry" },
+        UPDATE_AUTH_ANALYSIS: { actions: "updateAuthAnalysis" },
+        SET_ACTION_URL: { actions: "setActionUrl" },
+        UPDATE_AUTH_READINESS: { actions: "updateAuthReadiness" },
+        UPDATE_BOOTSTRAP_ANALYSIS: { actions: "updateBootstrapAnalysis" },
+        UPDATE_PROCESSING_QUEUE: { actions: "updateProcessingQueue" },
       },
     },
 
@@ -571,6 +769,16 @@ export const sessionMachine = setup({
           }),
         },
       },
+      on: {
+        // Global state management events
+        SET_MASTER_NODE: { actions: "setMasterNode" },
+        ADD_LOG: { actions: "addLogEntry" },
+        UPDATE_AUTH_ANALYSIS: { actions: "updateAuthAnalysis" },
+        SET_ACTION_URL: { actions: "setActionUrl" },
+        UPDATE_AUTH_READINESS: { actions: "updateAuthReadiness" },
+        UPDATE_BOOTSTRAP_ANALYSIS: { actions: "updateBootstrapAnalysis" },
+        UPDATE_PROCESSING_QUEUE: { actions: "updateProcessingQueue" },
+      },
     },
 
     discoveringWorkflows: {
@@ -603,6 +811,16 @@ export const sessionMachine = setup({
           }),
         },
       },
+      on: {
+        // Global state management events
+        SET_MASTER_NODE: { actions: "setMasterNode" },
+        ADD_LOG: { actions: "addLogEntry" },
+        UPDATE_AUTH_ANALYSIS: { actions: "updateAuthAnalysis" },
+        SET_ACTION_URL: { actions: "setActionUrl" },
+        UPDATE_AUTH_READINESS: { actions: "updateAuthReadiness" },
+        UPDATE_BOOTSTRAP_ANALYSIS: { actions: "updateBootstrapAnalysis" },
+        UPDATE_PROCESSING_QUEUE: { actions: "updateProcessingQueue" },
+      },
     },
 
     awaitingWorkflowSelection: {
@@ -618,6 +836,14 @@ export const sessionMachine = setup({
           target: "processingDependencies",
           actions: ["selectWorkflow", "populateProcessingQueue"],
         },
+        // Global state management events
+        SET_MASTER_NODE: { actions: "setMasterNode" },
+        ADD_LOG: { actions: "addLogEntry" },
+        UPDATE_AUTH_ANALYSIS: { actions: "updateAuthAnalysis" },
+        SET_ACTION_URL: { actions: "setActionUrl" },
+        UPDATE_AUTH_READINESS: { actions: "updateAuthReadiness" },
+        UPDATE_BOOTSTRAP_ANALYSIS: { actions: "updateBootstrapAnalysis" },
+        UPDATE_PROCESSING_QUEUE: { actions: "updateProcessingQueue" },
       },
     },
 
@@ -639,6 +865,14 @@ export const sessionMachine = setup({
             target: "readyForCodeGen",
           },
         ],
+        // Global state management events
+        SET_MASTER_NODE: { actions: "setMasterNode" },
+        ADD_LOG: { actions: "addLogEntry" },
+        UPDATE_AUTH_ANALYSIS: { actions: "updateAuthAnalysis" },
+        SET_ACTION_URL: { actions: "setActionUrl" },
+        UPDATE_AUTH_READINESS: { actions: "updateAuthReadiness" },
+        UPDATE_BOOTSTRAP_ANALYSIS: { actions: "updateBootstrapAnalysis" },
+        UPDATE_PROCESSING_QUEUE: { actions: "updateProcessingQueue" },
       },
     },
 
@@ -668,6 +902,16 @@ export const sessionMachine = setup({
           }),
         },
       },
+      on: {
+        // Global state management events
+        SET_MASTER_NODE: { actions: "setMasterNode" },
+        ADD_LOG: { actions: "addLogEntry" },
+        UPDATE_AUTH_ANALYSIS: { actions: "updateAuthAnalysis" },
+        SET_ACTION_URL: { actions: "setActionUrl" },
+        UPDATE_AUTH_READINESS: { actions: "updateAuthReadiness" },
+        UPDATE_BOOTSTRAP_ANALYSIS: { actions: "updateBootstrapAnalysis" },
+        UPDATE_PROCESSING_QUEUE: { actions: "updateProcessingQueue" },
+      },
     },
 
     readyForCodeGen: {
@@ -675,6 +919,14 @@ export const sessionMachine = setup({
         GENERATE_CODE: {
           target: "generatingCode",
         },
+        // Global state management events
+        SET_MASTER_NODE: { actions: "setMasterNode" },
+        ADD_LOG: { actions: "addLogEntry" },
+        UPDATE_AUTH_ANALYSIS: { actions: "updateAuthAnalysis" },
+        SET_ACTION_URL: { actions: "setActionUrl" },
+        UPDATE_AUTH_READINESS: { actions: "updateAuthReadiness" },
+        UPDATE_BOOTSTRAP_ANALYSIS: { actions: "updateBootstrapAnalysis" },
+        UPDATE_PROCESSING_QUEUE: { actions: "updateProcessingQueue" },
       },
     },
 
@@ -701,15 +953,43 @@ export const sessionMachine = setup({
           }),
         },
       },
+      on: {
+        // Global state management events
+        SET_MASTER_NODE: { actions: "setMasterNode" },
+        ADD_LOG: { actions: "addLogEntry" },
+        UPDATE_AUTH_ANALYSIS: { actions: "updateAuthAnalysis" },
+        SET_ACTION_URL: { actions: "setActionUrl" },
+        UPDATE_AUTH_READINESS: { actions: "updateAuthReadiness" },
+        UPDATE_BOOTSTRAP_ANALYSIS: { actions: "updateBootstrapAnalysis" },
+        UPDATE_PROCESSING_QUEUE: { actions: "updateProcessingQueue" },
+      },
     },
 
     codeGenerated: {
       type: "final",
+      on: {
+        // Global state management events (even in final states for completeness)
+        SET_MASTER_NODE: { actions: "setMasterNode" },
+        ADD_LOG: { actions: "addLogEntry" },
+        UPDATE_AUTH_ANALYSIS: { actions: "updateAuthAnalysis" },
+        SET_ACTION_URL: { actions: "setActionUrl" },
+        UPDATE_AUTH_READINESS: { actions: "updateAuthReadiness" },
+        UPDATE_BOOTSTRAP_ANALYSIS: { actions: "updateBootstrapAnalysis" },
+      },
     },
 
     failed: {
       type: "final",
       entry: "storeError",
+      on: {
+        // Global state management events (even in final states for completeness)
+        SET_MASTER_NODE: { actions: "setMasterNode" },
+        ADD_LOG: { actions: "addLogEntry" },
+        UPDATE_AUTH_ANALYSIS: { actions: "updateAuthAnalysis" },
+        SET_ACTION_URL: { actions: "setActionUrl" },
+        UPDATE_AUTH_READINESS: { actions: "updateAuthReadiness" },
+        UPDATE_BOOTSTRAP_ANALYSIS: { actions: "updateBootstrapAnalysis" },
+      },
     },
   },
 });
@@ -724,35 +1004,88 @@ export function createCompletionAnalysis(
 ): CompletionAnalysis {
   const unresolvedNodes = context.dagManager.getUnresolvedNodes();
   const totalNodes = context.dagManager.getNodeCount();
-  const workflow = context.activeWorkflowId
-    ? context.workflowGroups.get(context.activeWorkflowId)
-    : undefined;
+
+  const blockers: string[] = [];
+  const recommendations: string[] = [];
+
+  // Check for unresolved dependencies
+  if (unresolvedNodes.length > 0) {
+    blockers.push("Unresolved dependencies in DAG");
+  }
+
+  // Check for master node existence and recover actionUrl if needed
+  if (context.masterNodeId) {
+    const masterNode = context.dagManager.getNode(context.masterNodeId);
+    if (!masterNode) {
+      // Only add blocker if actionUrl is also not set
+      // If actionUrl is explicitly set, we can proceed even without the master node in DAG
+      if (!context.actionUrl || context.actionUrl.trim() === "") {
+        blockers.push("Master node ID is set but node does not exist in DAG");
+      }
+    } else if (!context.actionUrl && masterNode.content?.key?.url) {
+      // Recovery logic: if actionUrl is missing but master node has a URL, recover it
+      // Note: This modifies the context during analysis, which is a side effect
+      // In a pure functional approach, this would be handled differently
+      context.actionUrl = masterNode.content.key.url;
+    }
+  }
+
+  // Add recommendations based on current state - match legacy SessionManager logic
+  // For master node identification, only consider session context, not workflow
+  const hasMasterNode = !!context.masterNodeId;
+  const hasActionUrl = !!(context.actionUrl && context.actionUrl.trim() !== "");
+  const hasUnresolvedNodes = unresolvedNodes.length > 0;
+  const hasQueuedNodes = context.toBeProcessedNodes.length > 0;
+
+  if (!hasMasterNode || !hasActionUrl) {
+    recommendations.push(
+      "Run 'analysis_start_primary_workflow' to identify the target action URL"
+    );
+  } else if (hasUnresolvedNodes || hasQueuedNodes) {
+    recommendations.push(
+      "Continue processing with 'analysis_process_next_node' until queue is empty"
+    );
+  } else {
+    recommendations.push("All dependencies resolved. Ready to generate code.");
+  }
+
+  // Add specific blocker-based recommendations
+  if (!hasMasterNode) {
+    blockers.push("Master node has not been identified");
+  }
+  if (!hasActionUrl) {
+    blockers.push("Target action URL has not been identified");
+  }
+  if (hasQueuedNodes) {
+    blockers.push(
+      `${context.toBeProcessedNodes.length} nodes are still pending in the processing queue`
+    );
+  }
 
   return {
     isComplete:
-      unresolvedNodes.length === 0 && context.toBeProcessedNodes.length === 0,
-    blockers:
-      unresolvedNodes.length > 0 ? ["Unresolved dependencies in DAG"] : [],
-    recommendations:
-      context.toBeProcessedNodes.length > 0
-        ? ["Continue processing remaining nodes"]
-        : [],
+      hasMasterNode &&
+      hasActionUrl &&
+      unresolvedNodes.length === 0 &&
+      context.toBeProcessedNodes.length === 0,
+    blockers,
+    recommendations,
     diagnostics: {
-      hasMasterNode: !!workflow?.masterNodeId,
+      hasMasterNode: !!context.masterNodeId,
       dagComplete: unresolvedNodes.length === 0,
       queueEmpty: context.toBeProcessedNodes.length === 0,
       totalNodes,
       unresolvedNodes: unresolvedNodes.length,
       pendingInQueue: context.toBeProcessedNodes.length,
-      hasActionUrl: !!workflow?.masterNodeId,
+      hasActionUrl: !!(context.actionUrl && context.actionUrl.trim() !== ""),
       authAnalysisComplete: !!context.authAnalysis,
-      authReadiness: true, // Simplified for now
-      authErrors: 0, // Simplified for now
-      allNodesClassified: true, // Simplified for now
-      nodesNeedingClassification: 0, // Simplified for now
-      bootstrapAnalysisComplete: true, // Simplified for now
-      sessionConstantsCount: 0, // Simplified for now
-      unresolvedSessionConstants: 0, // Simplified for now
+      authReadiness: !!context.authReadiness,
+      authErrors: 0, // TODO: Extract from authAnalysis when available
+      allNodesClassified: true, // TODO: Implement node classification tracking
+      nodesNeedingClassification: 0, // TODO: Implement node classification tracking
+      bootstrapAnalysisComplete: !!context.bootstrapAnalysis,
+      sessionConstantsCount: 0, // TODO: Implement session constants tracking
+      unresolvedSessionConstants: 0, // TODO: Implement session constants tracking
     },
   };
 }
