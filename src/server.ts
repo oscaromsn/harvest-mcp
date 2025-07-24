@@ -366,7 +366,7 @@ export class HarvestMCPServer {
         }
 
         const session = this.sessionManager.getSession(sessionId);
-        const logText = session.state.logs
+        const logText = session.logs
           .map(
             (log) =>
               `[${log.timestamp.toISOString()}] ${log.level.toUpperCase()}: ${log.message}`
@@ -405,7 +405,7 @@ export class HarvestMCPServer {
         const statusData = {
           sessionId,
           isComplete,
-          nodesRemaining: session.state.toBeProcessedNodes.length,
+          nodesRemaining: session.toBeProcessedNodes.length,
           totalNodes: session.dagManager.getNodeCount(),
           unresolvedNodes: unresolvedNodes.length,
           createdAt: session.createdAt.toISOString(),
@@ -413,8 +413,8 @@ export class HarvestMCPServer {
           prompt: session.prompt,
           hasHARData: session.harData.requests.length > 0,
           hasCookieData: Object.keys(session.cookieData || {}).length > 0,
-          inputVariables: session.state.inputVariables,
-          logs: session.state.logs.length,
+          inputVariables: session.inputVariables,
+          logs: session.logs.length,
         };
 
         return {
@@ -445,7 +445,7 @@ export class HarvestMCPServer {
         const session = this.sessionManager.getSession(sessionId);
 
         // Check if code has been generated
-        if (!session.state.generatedCode) {
+        if (!session.generatedCode) {
           throw new HarvestError(
             "Generated code not available. Run codegen.generate_wrapper_script first.",
             "CODE_NOT_GENERATED",
@@ -457,7 +457,7 @@ export class HarvestMCPServer {
           contents: [
             {
               uri: `harvest://${sessionId}/generated_code.ts`,
-              text: session.state.generatedCode,
+              text: session.generatedCode,
               mimeType: "text/typescript",
             },
           ],
@@ -776,7 +776,7 @@ export class HarvestMCPServer {
           analysisResult: {
             isComplete: analysis.isComplete,
             totalNodes: analysis.diagnostics.totalNodes,
-            codeGenerated: !!session.state.generatedCode,
+            codeGenerated: !!session.generatedCode,
           },
           availableArtifacts: {
             // Core analysis artifacts
@@ -796,7 +796,7 @@ export class HarvestMCPServer {
               description: "Session status and progress",
             },
             // Generated code artifact (if available)
-            ...(session.state.generatedCode && {
+            ...(session.generatedCode && {
               generatedCode: {
                 uri: `harvest://${sessionId}/generated_code.ts`,
                 type: "text/typescript",
@@ -824,7 +824,7 @@ export class HarvestMCPServer {
             harQuality: session.harData.validation?.quality || "unknown",
             totalRequests: session.harData.requests.length,
             hasAuthCookies: !!session.cookieData,
-            generatedCodeSize: session.state.generatedCode?.length || 0,
+            generatedCodeSize: session.generatedCode?.length || 0,
           },
         };
 

@@ -4,11 +4,15 @@ import { getConfig } from "../config/index.js";
 import {
   type AuthenticationAnalysis,
   type CompletionAnalysis,
+  type CookieData,
+  type DAGManager,
   type HarvestSession,
   type LogEntry,
+  type ParsedHARData,
   type SessionInfo,
   SessionNotFoundError,
   type SessionStartParams,
+  type WorkflowGroup,
 } from "../types/index.js";
 import { createComponentLogger } from "../utils/logger.js";
 import { SessionFsmService } from "./SessionFsmService.js";
@@ -96,38 +100,80 @@ export class SessionManager {
   getSession(sessionId: string): HarvestSession {
     // Query FSM service directly for session data
     try {
-      const context = this.fsmService.getContext(sessionId);
-      const state = this.fsmService.getCurrentState(sessionId);
+      const fsm = this.fsmService.getSessionMachine(sessionId);
 
-      // Construct HarvestSession directly from FSM context
+      // Construct HarvestSession with getters that query FSM context
       const session: HarvestSession = {
         id: sessionId,
-        prompt: context.prompt,
-        harData: context.harData as any, // Keep as any for backward compatibility
-        cookieData: context.cookieData as any,
-        dagManager: context.dagManager as any,
-        fsm: this.fsmService.getSessionMachine(sessionId),
-        workflowGroups: context.workflowGroups as any,
-        selectedWorkflowId: context.activeWorkflowId,
+        fsm,
         createdAt: new Date(), // Approximation - FSM doesn't track creation time
         lastActivity: new Date(),
-        state: {
-          activeWorkflowId: context.activeWorkflowId,
-          workflowGroups: context.workflowGroups as any,
-          toBeProcessedNodes: context.toBeProcessedNodes,
-          inProcessNodeDynamicParts: context.inProcessNodeDynamicParts,
-          inputVariables: context.inputVariables,
-          authAnalysis: context.authAnalysis as any,
-          logs: context.logs as any,
-          isComplete: state === "codeGenerated" || state === "readyForCodeGen",
-          masterNodeId: context.activeWorkflowId
-            ? (context.workflowGroups as any)?.get(context.activeWorkflowId)
-                ?.masterNodeId
-            : undefined,
-          actionUrl: context.activeWorkflowId
-            ? (context.workflowGroups as any)?.get(context.activeWorkflowId)
-                ?.masterNodeId
-            : undefined,
+
+        // FSM context getters - all properties are readonly and derived from FSM
+        get prompt() {
+          return fsm.getSnapshot().context.prompt;
+        },
+        get harData() {
+          return fsm.getSnapshot().context.harData as ParsedHARData;
+        },
+        get cookieData() {
+          return fsm.getSnapshot().context.cookieData as CookieData | undefined;
+        },
+        get dagManager() {
+          return fsm.getSnapshot().context.dagManager as DAGManager;
+        },
+        get workflowGroups() {
+          return fsm.getSnapshot().context.workflowGroups as Map<
+            string,
+            WorkflowGroup
+          >;
+        },
+        get selectedWorkflowId() {
+          return fsm.getSnapshot().context.activeWorkflowId;
+        },
+        get logs() {
+          return fsm.getSnapshot().context.logs as LogEntry[];
+        },
+        get generatedCode() {
+          return fsm.getSnapshot().context.generatedCode;
+        },
+        get authAnalysis() {
+          return fsm.getSnapshot().context.authAnalysis as
+            | AuthenticationAnalysis
+            | undefined;
+        },
+
+        // Legacy compatibility properties
+        get actionUrl() {
+          return fsm.getSnapshot().context.actionUrl;
+        },
+        get masterNodeId() {
+          return fsm.getSnapshot().context.masterNodeId;
+        },
+        get inProcessNodeId() {
+          return fsm.getSnapshot().context.inProcessNodeId;
+        },
+        get toBeProcessedNodes() {
+          return fsm.getSnapshot().context.toBeProcessedNodes;
+        },
+        get inProcessNodeDynamicParts() {
+          return fsm.getSnapshot().context.inProcessNodeDynamicParts;
+        },
+        get inputVariables() {
+          return fsm.getSnapshot().context.inputVariables;
+        },
+        get isComplete() {
+          const currentState = fsm.getSnapshot().value as string;
+          return (
+            currentState === "codeGenerated" ||
+            currentState === "readyForCodeGen"
+          );
+        },
+        get authReadiness() {
+          return fsm.getSnapshot().context.authReadiness as any;
+        },
+        get bootstrapAnalysis() {
+          return fsm.getSnapshot().context.bootstrapAnalysis as any;
         },
       };
 
@@ -194,7 +240,7 @@ export class SessionManager {
   }
 
   /**
-   * Add a log entry to a session
+   * Add a log entry to a session using FSM events
    */
   addLog(
     sessionId: string,
@@ -203,27 +249,13 @@ export class SessionManager {
     data?: unknown
   ): void {
     try {
-      // Get current FSM context
-      const context = this.fsmService.getContext(sessionId);
-
-      const logEntry: LogEntry = {
-        timestamp: new Date(),
+      // Send ADD_LOG event to FSM
+      this.fsmService.sendEvent(sessionId, {
+        type: "ADD_LOG",
         level,
         message,
         data,
-      };
-
-      // Add log directly to FSM context
-      // Note: This is a temporary approach until we implement proper log events
-      const updatedLogs = [...context.logs, logEntry];
-
-      // Keep only last 1000 log entries to prevent memory bloat
-      if (updatedLogs.length > 1000) {
-        updatedLogs.splice(0, updatedLogs.length - 1000);
-      }
-
-      // Update the FSM context logs directly (this is a known limitation)
-      context.logs = updatedLogs;
+      });
     } catch (_error) {
       // Session doesn't exist, ignore the log
       logger.warn("Failed to add log to non-existent session", { sessionId });
@@ -313,7 +345,7 @@ export class SessionManager {
   }
 
   /**
-   * Repopulate processing queue with unresolved nodes
+   * Repopulate processing queue with unresolved nodes using FSM events
    */
   repopulateProcessingQueue(sessionId: string): {
     success: boolean;
@@ -323,12 +355,13 @@ export class SessionManager {
     try {
       const session = this.getSession(sessionId);
       const unresolvedNodes = session.dagManager.getUnresolvedNodes();
+      const nodeIds = unresolvedNodes.map((node) => node.nodeId);
 
-      // Clear current queue and repopulate
-      session.state.toBeProcessedNodes = [];
-      for (const node of unresolvedNodes) {
-        session.state.toBeProcessedNodes.push(node.nodeId);
-      }
+      // Update processing queue via FSM event
+      this.fsmService.sendEvent(sessionId, {
+        type: "UPDATE_PROCESSING_QUEUE",
+        nodeIds,
+      });
 
       this.addLog(
         sessionId,
@@ -357,7 +390,7 @@ export class SessionManager {
   }
 
   /**
-   * Manually add a specific node to the processing queue
+   * Manually add a specific node to the processing queue using FSM events
    */
   addNodeToQueue(
     sessionId: string,
@@ -382,15 +415,19 @@ export class SessionManager {
       }
 
       // Check if node is already in queue
-      if (session.state.toBeProcessedNodes.includes(nodeId)) {
+      if (session.toBeProcessedNodes.includes(nodeId)) {
         return {
           success: false,
           message: `Node ${nodeId} is already in processing queue`,
         };
       }
 
-      // Add to queue
-      session.state.toBeProcessedNodes.push(nodeId);
+      // Add to queue via FSM event
+      const updatedQueue = [...session.toBeProcessedNodes, nodeId];
+      this.fsmService.sendEvent(sessionId, {
+        type: "UPDATE_PROCESSING_QUEUE",
+        nodeIds: updatedQueue,
+      });
 
       this.addLog(
         sessionId,
@@ -422,7 +459,7 @@ export class SessionManager {
     try {
       const session = this.getSession(sessionId);
       const unresolvedNodes = session.dagManager.getUnresolvedNodes();
-      const queueLength = session.state.toBeProcessedNodes.length;
+      const queueLength = session.toBeProcessedNodes.length;
       const unresolvedNodeCount = unresolvedNodes.length;
 
       const recommendations: string[] = [];
@@ -519,22 +556,15 @@ export class SessionManager {
   }
 
   /**
-   * Set master node ID in both legacy state and workflow groups
+   * Set master node ID using FSM events
    */
   setMasterNodeId(sessionId: string, nodeId: string): void {
     try {
-      const session = this.getSession(sessionId);
-      session.state.masterNodeId = nodeId;
-
-      // Also update the workflow groups if active workflow exists
-      if (session.state.activeWorkflowId) {
-        const workflow = session.state.workflowGroups.get(
-          session.state.activeWorkflowId
-        );
-        if (workflow) {
-          workflow.masterNodeId = nodeId;
-        }
-      }
+      // Send SET_MASTER_NODE event to FSM
+      this.fsmService.sendEvent(sessionId, {
+        type: "SET_MASTER_NODE",
+        nodeId,
+      });
 
       logger.debug("Master node ID updated", { sessionId, nodeId });
     } catch (error) {
@@ -547,12 +577,15 @@ export class SessionManager {
   }
 
   /**
-   * Set action URL in both legacy state and workflow groups
+   * Set action URL using FSM events
    */
   setActionUrl(sessionId: string, actionUrl: string): void {
     try {
-      const session = this.getSession(sessionId);
-      session.state.actionUrl = actionUrl;
+      // Send SET_ACTION_URL event to FSM
+      this.fsmService.sendEvent(sessionId, {
+        type: "SET_ACTION_URL",
+        actionUrl,
+      });
 
       logger.debug("Action URL updated", { sessionId, actionUrl });
     } catch (error) {
@@ -637,7 +670,7 @@ export class SessionManager {
     };
 
     // Check if authentication analysis has been performed
-    const authAnalysis = session.state.authAnalysis;
+    const authAnalysis = session.authAnalysis;
     const harValidation = session.harData.validation;
 
     if (authAnalysis) {
@@ -743,16 +776,22 @@ export class SessionManager {
       // Run authentication analysis using the new AuthenticationAgent
       const authAnalysis = await analyzeAuthentication(session);
 
-      // Store the analysis in session state
-      session.state.authAnalysis = authAnalysis;
+      // Store the analysis using FSM events
+      this.fsmService.sendEvent(sessionId, {
+        type: "UPDATE_AUTH_ANALYSIS",
+        authAnalysis,
+      });
 
       // Update authentication readiness
       const readiness = this.analyzeAuthenticationReadiness(session);
-      session.state.authReadiness = {
-        isAuthComplete: readiness.isReady,
-        authBlockers: readiness.blockers,
-        authRecommendations: readiness.recommendations,
-      };
+      this.fsmService.sendEvent(sessionId, {
+        type: "UPDATE_AUTH_READINESS",
+        authReadiness: {
+          isAuthComplete: readiness.isReady,
+          authBlockers: readiness.blockers,
+          authRecommendations: readiness.recommendations,
+        },
+      });
 
       this.addLog(
         sessionId,
