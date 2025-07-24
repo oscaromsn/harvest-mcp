@@ -203,7 +203,7 @@ export class DependencyFlowGenerator {
     }
 
     // Determine final return type (last step's function return type)
-    const masterNodeId = this.session.state.masterNodeId;
+    const masterNodeId = this.session.masterNodeId;
     let returnType = "ApiResponse";
 
     if (masterNodeId) {

@@ -236,11 +236,11 @@ export class CompletedSessionManager {
     }
 
     // Cache generated code
-    if (session.state.generatedCode) {
+    if (session.generatedCode) {
       const codeFilename = "generated_code.ts";
       const codePath = join(sessionDir, codeFilename);
 
-      await writeFile(codePath, session.state.generatedCode, { mode: 0o644 });
+      await writeFile(codePath, session.generatedCode, { mode: 0o644 });
       const codeStats = await stat(codePath);
 
       artifacts.generatedCode = {
@@ -260,7 +260,7 @@ export class CompletedSessionManager {
       analysisResult: {
         isComplete: analysis.isComplete,
         totalNodes: analysis.diagnostics.totalNodes,
-        codeGenerated: !!session.state.generatedCode,
+        codeGenerated: !!session.generatedCode,
       },
       artifactsAvailable: [
         "metadata",
@@ -272,7 +272,7 @@ export class CompletedSessionManager {
         harQuality: session.harData.validation?.quality || "unknown",
         totalRequests: session.harData.requests.length,
         hasAuthCookies: !!session.cookieData,
-        generatedCodeSize: session.state.generatedCode?.length || 0,
+        generatedCodeSize: session.generatedCode?.length || 0,
       },
     };
 
@@ -295,7 +295,7 @@ export class CompletedSessionManager {
         harQuality: session.harData.validation?.quality || "unknown",
         totalRequests: session.harData.requests.length,
         hasAuthCookies: !!session.cookieData,
-        generatedCodeSize: session.state.generatedCode?.length || 0,
+        generatedCodeSize: session.generatedCode?.length || 0,
         cachePath: sessionDir,
       },
     };

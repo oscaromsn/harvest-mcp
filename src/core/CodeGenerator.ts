@@ -19,8 +19,9 @@ export async function generateWrapperScript(
     throw new Error("Session is null or undefined");
   }
 
-  if (!session.state) {
-    throw new Error("Session state is missing");
+  // Session validation - no longer checking state since it's FSM-based
+  if (!session.harData) {
+    throw new Error("Session HAR data is missing");
   }
 
   if (!session.prompt) {

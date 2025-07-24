@@ -20,6 +20,7 @@ import type {
 } from "../types/index.js";
 import { createComponentLogger } from "../utils/logger.js";
 import { expandTilde } from "../utils/pathUtils.js";
+import { DAGManager as DAGManagerImpl } from "./DAGManager.js";
 
 const logger = createComponentLogger("har-parser");
 
@@ -310,42 +311,104 @@ function createTemporarySessionForAuth(
   }
 
   // Create minimal session structure
+  const harData = {
+    requests,
+    urls: [],
+    validation: {
+      isValid: true,
+      quality: "good" as const,
+      issues: [],
+      recommendations: [],
+      stats: {
+        totalEntries: entries.length,
+        relevantEntries: requests.length,
+        apiRequests: requests.length,
+        postRequests: requests.filter((r) => r.method === "POST").length,
+        responsesWithContent: 0,
+        authRequests: 0,
+        tokenRequests: 0,
+        authErrors: 0,
+      },
+      authAnalysis: createEmptyAuthAnalysis(),
+    },
+  };
+
+  const dagManager = new DAGManagerImpl();
+
   return {
     id: "temp-auth-session",
-    prompt: "Authentication analysis",
-    dagManager: {} as never, // Minimal DAG manager for auth analysis
-    fsm: {} as never, // Minimal FSM for auth analysis - not a real session
-    harData: {
-      requests,
-      urls: [],
-      validation: {
-        isValid: true,
-        quality: "good" as const,
-        issues: [],
-        recommendations: [],
-        stats: {
-          totalEntries: entries.length,
-          relevantEntries: requests.length,
-          apiRequests: requests.length,
-          postRequests: requests.filter((r) => r.method === "POST").length,
-          responsesWithContent: 0,
-          authRequests: 0,
-          tokenRequests: 0,
-          authErrors: 0,
-        },
-        authAnalysis: createEmptyAuthAnalysis(),
-      },
-    },
-    state: {
-      logs: [],
-      toBeProcessedNodes: [],
-      inputVariables: {},
-      isComplete: false,
-      inProcessNodeDynamicParts: [],
-      workflowGroups: new Map(),
-    },
     createdAt: new Date(),
     lastActivity: new Date(),
+
+    // Mock FSM for temporary session creation
+    fsm: {
+      getSnapshot: () => ({
+        context: {
+          logs: [],
+          toBeProcessedNodes: [],
+          inputVariables: {},
+          inProcessNodeDynamicParts: [],
+          workflowGroups: new Map(),
+        },
+        value: "parsingHar" as const,
+      }),
+    } as any,
+
+    // Required getters for HarvestSession interface
+    get prompt() {
+      return "Authentication analysis";
+    },
+    get harData() {
+      return harData;
+    },
+    get cookieData() {
+      return undefined;
+    },
+    get dagManager() {
+      return dagManager;
+    },
+    get workflowGroups() {
+      return new Map();
+    },
+    get selectedWorkflowId() {
+      return undefined;
+    },
+    get logs() {
+      return [];
+    },
+    get generatedCode() {
+      return undefined;
+    },
+    get authAnalysis() {
+      return undefined;
+    },
+    get actionUrl() {
+      return undefined;
+    },
+    get masterNodeId() {
+      return undefined;
+    },
+    get inProcessNodeId() {
+      return undefined;
+    },
+    get toBeProcessedNodes() {
+      return [];
+    },
+    get inProcessNodeDynamicParts() {
+      return [];
+    },
+    get inputVariables() {
+      return {};
+    },
+    get isComplete() {
+      return false;
+    },
+    get authReadiness() {
+      return undefined;
+    },
+    get bootstrapAnalysis() {
+      return undefined;
+    },
   };
 }
 
