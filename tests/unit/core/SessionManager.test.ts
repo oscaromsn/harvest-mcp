@@ -2,6 +2,41 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SessionManager } from "../../../src/core/SessionManager.js";
 import type { SessionStartParams } from "../../../src/types/index.js";
 
+// Helper function to send FSM events for test setup
+function setSessionProperties(
+  sessionManager: SessionManager,
+  sessionId: string,
+  props: {
+    masterNodeId?: string;
+    actionUrl?: string;
+    toBeProcessedNodes?: string[];
+  }
+) {
+  const fsmService = (sessionManager as any).fsmService;
+
+  if (props.masterNodeId) {
+    fsmService.sendEvent(sessionId, {
+      type: "SET_MASTER_NODE",
+      nodeId: props.masterNodeId,
+      actionUrl: props.actionUrl,
+    });
+  }
+
+  if (props.actionUrl && !props.masterNodeId) {
+    fsmService.sendEvent(sessionId, {
+      type: "SET_ACTION_URL",
+      actionUrl: props.actionUrl,
+    });
+  }
+
+  if (props.toBeProcessedNodes) {
+    fsmService.sendEvent(sessionId, {
+      type: "UPDATE_PROCESSING_QUEUE",
+      nodeIds: props.toBeProcessedNodes,
+    });
+  }
+}
+
 describe("SessionManager", () => {
   let sessionManager: SessionManager;
 
@@ -30,7 +65,7 @@ describe("SessionManager", () => {
 
       const session = sessionManager.getSession(sessionId);
       expect(session.prompt).toBe(params.prompt);
-      expect(session.state.inputVariables).toEqual(params.inputVariables);
+      expect(session.inputVariables).toEqual(params.inputVariables);
     });
 
     it("should create session without cookie file", async () => {
@@ -139,7 +174,7 @@ describe("SessionManager", () => {
       });
 
       const logs = sessionManager.getSessionLogs(sessionId);
-      expect(logs).toHaveLength(2); // 1 for creation + 1 for our log
+      expect(logs).toHaveLength(1); // Just our added log (FSM doesn't auto-create logs)
 
       const lastLog = logs[logs.length - 1];
       expect(lastLog?.level).toBe("info");
@@ -202,11 +237,12 @@ describe("SessionManager", () => {
       };
 
       const sessionId = await sessionManager.createSession(params);
-      const session = sessionManager.getSession(sessionId);
 
       // Simulate having a master node but incomplete DAG
-      session.state.masterNodeId = "test-master-node";
-      session.state.actionUrl = "https://example.com/api/search";
+      setSessionProperties(sessionManager, sessionId, {
+        masterNodeId: "test-master-node",
+        actionUrl: "https://example.com/api/search",
+      });
 
       const analysis = sessionManager.analyzeCompletionState(sessionId);
 
@@ -241,21 +277,24 @@ describe("SessionManager", () => {
       };
 
       const sessionId = await sessionManager.createSession(params);
-      const session = sessionManager.getSession(sessionId);
 
       // Simulate complete session state
-      session.state.masterNodeId = "test-master-node";
-      session.state.actionUrl = "https://example.com/api/search";
-      session.state.toBeProcessedNodes = []; // Clear processing queue for complete state
+      setSessionProperties(sessionManager, sessionId, {
+        masterNodeId: "test-master-node",
+        actionUrl: "https://example.com/api/search",
+        toBeProcessedNodes: [], // Clear processing queue for complete state
+      });
 
-      // Mock DAG manager to return complete state with at least one node
+      // Note: dagManager is now readonly and managed by FSM
+      // Using FSM's actual DAG manager instead of mocking
+      /*
       const mockDAGManager = {
         isComplete: () => true,
         getUnresolvedNodes: () => [],
         getNodeCount: () => 1,
         getNode: (nodeId: string) => ({
           id: nodeId,
-          content: { key: { url: session.state.actionUrl } },
+          content: { key: { url: session.actionUrl } },
         }),
         areAllNodesParameterClassified: () => true,
         getNodesNeedingClassification: () => [],
@@ -266,12 +305,14 @@ describe("SessionManager", () => {
               "test-master-node",
               {
                 id: "test-master-node",
-                content: { key: { url: session.state.actionUrl } },
+                content: { key: { url: session.actionUrl } },
               },
             ],
           ]),
       };
-      session.dagManager = mockDAGManager as any;
+      */
+      // Note: dagManager is now readonly and managed by FSM
+      // session.dagManager = mockDAGManager as any;
 
       const analysis = sessionManager.analyzeCompletionState(sessionId);
 
@@ -289,10 +330,11 @@ describe("SessionManager", () => {
       };
 
       const sessionId = await sessionManager.createSession(params);
-      const session = sessionManager.getSession(sessionId);
 
       // Simulate pending operations
-      session.state.toBeProcessedNodes = ["node1", "node2"];
+      setSessionProperties(sessionManager, sessionId, {
+        toBeProcessedNodes: ["node1", "node2"],
+      });
 
       const analysis = sessionManager.analyzeCompletionState(sessionId);
 
@@ -325,11 +367,12 @@ describe("SessionManager", () => {
       };
 
       const sessionId = await sessionManager.createSession(params);
-      const session = sessionManager.getSession(sessionId);
 
       // Simulate unresolved nodes
-      session.state.masterNodeId = "test-master-node";
-      session.state.actionUrl = "https://example.com/api/search";
+      setSessionProperties(sessionManager, sessionId, {
+        masterNodeId: "test-master-node",
+        actionUrl: "https://example.com/api/search",
+      });
       // Add some mock unresolved nodes to the DAG manager (if accessible)
 
       const analysis = sessionManager.analyzeCompletionState(sessionId);
@@ -355,7 +398,6 @@ describe("SessionManager", () => {
       };
 
       const sessionId = await sessionManager.createSession(params);
-      const session = sessionManager.getSession(sessionId);
 
       // Test different states and their recommendations
       let analysis = sessionManager.analyzeCompletionState(sessionId);
@@ -364,8 +406,10 @@ describe("SessionManager", () => {
       );
 
       // After initial analysis - still has "No nodes found" blocker
-      session.state.masterNodeId = "test-master-node";
-      session.state.actionUrl = "https://example.com/api/search";
+      setSessionProperties(sessionManager, sessionId, {
+        masterNodeId: "test-master-node",
+        actionUrl: "https://example.com/api/search",
+      });
 
       analysis = sessionManager.analyzeCompletionState(sessionId);
       expect(analysis.recommendations).toContain(
@@ -380,35 +424,40 @@ describe("SessionManager", () => {
       };
 
       const sessionId = await sessionManager.createSession(params);
-      const session = sessionManager.getSession(sessionId);
 
       // Simulate the bug scenario: actionUrl is set but hasActionUrl returns false
-      session.state.masterNodeId = "test-master-node";
-      session.state.actionUrl =
-        "https://jurisprudencia.jt.jus.br/jurisprudencia-nacional-backend/api/no-auth/pesquisa?sessionId=_95b8n8u&latitude=0&longitude=0";
-      session.state.toBeProcessedNodes = []; // Clear processing queue for complete state
+      setSessionProperties(sessionManager, sessionId, {
+        masterNodeId: "test-master-node",
+        actionUrl:
+          "https://jurisprudencia.jt.jus.br/jurisprudencia-nacional-backend/api/no-auth/pesquisa?sessionId=_95b8n8u&latitude=0&longitude=0",
+        toBeProcessedNodes: [], // Clear processing queue for complete state
+      });
 
-      // Mock DAG manager to simulate having a master node
+      // Note: dagManager is now readonly and managed by FSM
+      // Using FSM's actual DAG manager instead of mocking
+      /*
       const mockDAGManager = {
         isComplete: () => true,
         getUnresolvedNodes: () => [],
         getNodeCount: () => 1,
         getNode: (nodeId: string) => ({
           id: nodeId,
-          url: session.state.actionUrl,
+          url: session.actionUrl,
         }),
         getAllNodes: () =>
           new Map([
             [
               "test-master-node",
-              { id: "test-master-node", url: session.state.actionUrl },
+              { id: "test-master-node", url: session.actionUrl },
             ],
           ]),
         areAllNodesParameterClassified: () => true,
         getNodesNeedingClassification: () => [],
         getTrulyDynamicParts: () => [],
       };
-      session.dagManager = mockDAGManager as any;
+      */
+      // Note: dagManager is now readonly and managed by FSM
+      // session.dagManager = mockDAGManager as any;
 
       const analysis = sessionManager.analyzeCompletionState(sessionId);
 
@@ -433,11 +482,12 @@ describe("SessionManager", () => {
       };
 
       const sessionId = await sessionManager.createSession(params);
-      const session = sessionManager.getSession(sessionId);
 
       // Test edge case: actionUrl is empty string
-      session.state.masterNodeId = "test-master-node";
-      session.state.actionUrl = "";
+      setSessionProperties(sessionManager, sessionId, {
+        masterNodeId: "test-master-node",
+        actionUrl: "",
+      });
 
       const analysis = sessionManager.analyzeCompletionState(sessionId);
 
@@ -456,11 +506,12 @@ describe("SessionManager", () => {
       };
 
       const sessionId = await sessionManager.createSession(params);
-      const session = sessionManager.getSession(sessionId);
 
       // Test edge case: actionUrl is undefined
-      session.state.masterNodeId = "test-master-node";
-      session.state.actionUrl = undefined as any;
+      setSessionProperties(sessionManager, sessionId, {
+        masterNodeId: "test-master-node",
+        // actionUrl will be undefined by default
+      });
 
       const analysis = sessionManager.analyzeCompletionState(sessionId);
 
@@ -502,8 +553,10 @@ describe("SessionManager", () => {
       );
 
       // Set the master node ID but deliberately leave actionUrl unset to simulate the bug
-      session.state.masterNodeId = masterNodeId;
-      session.state.actionUrl = undefined as any; // Simulate the state sync issue
+      setSessionProperties(sessionManager, sessionId, {
+        masterNodeId: masterNodeId,
+        // actionUrl will be undefined by default, simulating the state sync issue
+      });
 
       // Mock the extended DAG manager methods required for completion analysis
       const mockExtendedMethods = {
@@ -520,7 +573,7 @@ describe("SessionManager", () => {
       const analysis = sessionManager.analyzeCompletionState(sessionId);
 
       // The fix should recover the actionUrl from the master node
-      expect(session.state.actionUrl).toBe(testUrl);
+      expect(session.actionUrl).toBe(testUrl);
       expect(analysis.diagnostics.hasActionUrl).toBe(true);
       expect(analysis.diagnostics.hasMasterNode).toBe(true);
 

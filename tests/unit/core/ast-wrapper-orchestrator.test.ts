@@ -14,11 +14,23 @@ function createMockSession(): HarvestSession {
   return {
     id: "test-session",
     prompt: "Test API Client",
-    state: {
-      isComplete: true,
-      masterNodeId: "node1",
-      workflowGroups: new Map(),
+    harData: {
+      requests: [],
+      urls: [],
+      validation: null,
     },
+    cookieData: null,
+    fsm: {} as any,
+    workflowGroups: new Map(),
+    logs: [],
+    toBeProcessedNodes: [],
+    inProcessNodeDynamicParts: [],
+    inputVariables: {},
+    isComplete: true,
+    masterNodeId: "node1",
+    actionUrl: undefined,
+    createdAt: new Date(),
+    lastActivity: new Date(),
     dagManager: {
       isComplete: () => true,
       topologicalSort: () => ["node1"],
@@ -62,7 +74,7 @@ function createMockSession(): HarvestSession {
           ],
         ]),
     } as any,
-  } as HarvestSession;
+  } as unknown as HarvestSession;
 }
 
 describe("AST WrapperScriptOrchestrator", () => {

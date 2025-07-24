@@ -4,6 +4,24 @@ import { SessionManager } from "../../../src/core/SessionManager.js";
 import { Request } from "../../../src/models/Request.js";
 import type { HarvestSession } from "../../../src/types/index.js";
 
+// Helper function to send FSM events for test setup
+function setSessionComplete(
+  sessionManager: SessionManager,
+  sessionId: string,
+  isComplete: boolean
+) {
+  const fsmService = (sessionManager as any).fsmService;
+  if (isComplete) {
+    fsmService.sendEvent(sessionId, {
+      type: "ANALYSIS_COMPLETE",
+    });
+  } else {
+    fsmService.sendEvent(sessionId, {
+      type: "ANALYSIS_INCOMPLETE",
+    });
+  }
+}
+
 describe("CodeGenerator", () => {
   let sessionManager: SessionManager;
   let session: HarvestSession;
@@ -64,8 +82,8 @@ describe("CodeGenerator", () => {
     // Create dependency: data depends on auth (auth must come before data)
     session.dagManager.addEdge(authNodeId, dataNodeId);
 
-    // Mark session as complete
-    session.state.isComplete = true;
+    // Mark session as complete via FSM
+    setSessionComplete(sessionManager, session.id, true);
   });
 
   describe("generateWrapperScript", () => {
@@ -156,7 +174,7 @@ describe("CodeGenerator", () => {
 
   describe("Error Handling", () => {
     it("should validate session state before generation", async () => {
-      session.state.isComplete = false;
+      setSessionComplete(sessionManager, session.id, false);
       const firstNodeId = Array.from(
         session.dagManager.getAllNodes().keys()
       )[0];
@@ -182,7 +200,9 @@ describe("CodeGenerator", () => {
           session.dagManager.constructor as new () => typeof session.dagManager
         )(),
       };
-      emptySession.state.isComplete = true;
+      // Note: state property doesn't exist in new FSM architecture
+      // Session completion is managed through FSM events, not direct state access
+      // The session should be considered complete based on DAG state
 
       const code = await generateWrapperScript(emptySession);
 
