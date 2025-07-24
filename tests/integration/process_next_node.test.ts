@@ -78,14 +78,12 @@ describe("Process Next Node Integration", () => {
         },
       },
       dagManager: new DAGManager(),
-      state: {
-        toBeProcessedNodes: [],
-        inputVariables: { username: "user@example.com" },
-        inProcessNodeDynamicParts: [],
-        isComplete: false,
-        logs: [],
-        workflowGroups: new Map(),
-      },
+      toBeProcessedNodes: [],
+      inputVariables: { username: "user@example.com" },
+      inProcessNodeDynamicParts: [],
+      isComplete: false,
+      logs: [],
+      workflowGroups: new Map(),
       createdAt: new Date(),
       lastActivity: new Date(),
       fsm: {} as any, // Mock FSM for testing
@@ -104,7 +102,7 @@ describe("Process Next Node Integration", () => {
             throw new Error("Session not found");
           }
 
-          if (session.state.toBeProcessedNodes.length === 0) {
+          if (session.toBeProcessedNodes.length === 0) {
             return {
               content: [
                 {
@@ -166,7 +164,7 @@ describe("Process Next Node Integration", () => {
         }
       );
 
-      session.state.toBeProcessedNodes.push(masterNodeId);
+      session.toBeProcessedNodes.push(masterNodeId);
 
       const mockServer = {
         handleProcessNextNode: async (args: { sessionId: string }) => {
@@ -174,7 +172,7 @@ describe("Process Next Node Integration", () => {
           if (!session) {
             throw new Error("Session not found");
           }
-          const nodeId = session.state.toBeProcessedNodes.shift();
+          const nodeId = session.toBeProcessedNodes.shift();
           if (nodeId === undefined) {
             throw new Error(
               "Test setup failed: processing queue is unexpectedly empty."
@@ -226,7 +224,7 @@ describe("Process Next Node Integration", () => {
                   status: "completed",
                   dynamicPartsFound: mockDynamicParts.length,
                   newNodesAdded: 1,
-                  remainingNodes: session.state.toBeProcessedNodes.length,
+                  remainingNodes: session.toBeProcessedNodes.length,
                   totalNodes: session.dagManager.getNodeCount(),
                 }),
               },
@@ -264,7 +262,7 @@ describe("Process Next Node Integration", () => {
         { dynamicParts: [] }
       );
 
-      session.state.toBeProcessedNodes.push(jsNodeId);
+      session.toBeProcessedNodes.push(jsNodeId);
 
       const mockServer = {
         handleProcessNextNode: (args: { sessionId: string }) => {
@@ -272,7 +270,7 @@ describe("Process Next Node Integration", () => {
           if (!session) {
             throw new Error("Session not found");
           }
-          const nodeId = session.state.toBeProcessedNodes.shift();
+          const nodeId = session.toBeProcessedNodes.shift();
           if (nodeId === undefined) {
             throw new Error(
               "Test setup failed: processing queue is unexpectedly empty."
@@ -298,7 +296,7 @@ describe("Process Next Node Integration", () => {
                     nodeId,
                     status: "skipped_javascript",
                     message: "Skipped JavaScript file",
-                    remainingNodes: session.state.toBeProcessedNodes.length,
+                    remainingNodes: session.toBeProcessedNodes.length,
                   }),
                 },
               ],
@@ -332,7 +330,7 @@ describe("Process Next Node Integration", () => {
 
   describe("Error Handling", () => {
     it("should handle missing node gracefully", () => {
-      session.state.toBeProcessedNodes.push("non-existent-node");
+      session.toBeProcessedNodes.push("non-existent-node");
 
       const mockServer = {
         handleProcessNextNode: (args: { sessionId: string }) => {
@@ -340,7 +338,7 @@ describe("Process Next Node Integration", () => {
           if (!session) {
             throw new Error("Session not found");
           }
-          const nodeId = session.state.toBeProcessedNodes.shift();
+          const nodeId = session.toBeProcessedNodes.shift();
           if (nodeId === undefined) {
             throw new Error(
               "Test setup failed: processing queue is unexpectedly empty."

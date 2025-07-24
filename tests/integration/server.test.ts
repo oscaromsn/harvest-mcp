@@ -109,9 +109,7 @@ describe("MCP Server Integration", () => {
       // Step 2: Verify session exists
       const session = sessionManager.getSession(sessionId);
       expect(session.prompt).toBe(sessionParams.prompt);
-      expect(session.state.inputVariables).toEqual(
-        sessionParams.inputVariables
-      );
+      expect(session.inputVariables).toEqual(sessionParams.inputVariables);
 
       // Step 3: Add some logs (simulating analysis)
       sessionManager.addLog(sessionId, "info", "Starting analysis");

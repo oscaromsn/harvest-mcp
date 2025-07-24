@@ -89,10 +89,9 @@ describe("Code Generation Integration Tests", () => {
     // Create dependency: search depends on auth
     session.dagManager.addEdge(authNodeId, searchNodeId);
 
-    // Mark analysis as complete
-    session.state.isComplete = true;
-    session.state.actionUrl = "https://api.example.com/search";
-    session.state.masterNodeId = searchNodeId;
+    // Mark analysis as complete using FSM events
+    sessionManager.setActionUrl(sessionId, "https://api.example.com/search");
+    sessionManager.setMasterNodeId(sessionId, searchNodeId);
   }
 
   describe("codegen.generate_wrapper_script tool", () => {
@@ -137,20 +136,19 @@ describe("Code Generation Integration Tests", () => {
     });
 
     it("should store generated code in session state", async () => {
-      expect(session.state.generatedCode).toBeUndefined();
+      expect(session.generatedCode).toBeUndefined();
 
       await handleGenerateWrapperScript(
         { sessionId },
         server.getCodegenToolContext()
       );
 
-      expect(session.state.generatedCode).toBeDefined();
-      expect(session.state.generatedCode).toContain("async function");
+      expect(session.generatedCode).toBeDefined();
+      expect(session.generatedCode).toContain("async function");
     });
 
     it("should fail when analysis is not complete", async () => {
-      // Mark analysis as incomplete
-      session.state.isComplete = false;
+      // Analysis will be incomplete due to unresolved nodes
       const firstNodeId = Array.from(
         session.dagManager.getAllNodes().keys()
       )[0];
@@ -197,13 +195,13 @@ describe("Code Generation Integration Tests", () => {
       );
 
       // Check that generated code is stored in session
-      expect(session.state.generatedCode).toBeDefined();
-      expect(session.state.generatedCode).toContain("async function");
+      expect(session.generatedCode).toBeDefined();
+      expect(session.generatedCode).toContain("async function");
     });
 
     it("should fail when code has not been generated yet", () => {
       // Test that generated code is not available initially
-      expect(session.state.generatedCode).toBeUndefined();
+      expect(session.generatedCode).toBeUndefined();
     });
 
     it("should provide access to generated code via session state", async () => {
@@ -214,7 +212,7 @@ describe("Code Generation Integration Tests", () => {
       );
 
       // Verify code is accessible
-      const generatedCode = session.state.generatedCode;
+      const generatedCode = session.generatedCode;
       expect(generatedCode).toBeDefined();
       expect(generatedCode).toContain("export {");
     });

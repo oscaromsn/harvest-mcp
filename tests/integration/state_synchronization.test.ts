@@ -7,6 +7,41 @@ import { handleGenerateWrapperScript } from "../../src/tools/codegenTools.js";
 import { handleGetCompletionBlockers } from "../../src/tools/debugTools.js";
 import { handleSessionStart } from "../../src/tools/sessionTools.js";
 
+// Helper function to send FSM events for test setup
+function setSessionProperties(
+  sessionManager: SessionManager,
+  sessionId: string,
+  props: {
+    masterNodeId?: string;
+    actionUrl?: string;
+    toBeProcessedNodes?: string[];
+  }
+) {
+  const fsmService = (sessionManager as any).fsmService;
+
+  if (props.masterNodeId) {
+    fsmService.sendEvent(sessionId, {
+      type: "SET_MASTER_NODE",
+      nodeId: props.masterNodeId,
+      actionUrl: props.actionUrl,
+    });
+  }
+
+  if (props.actionUrl && !props.masterNodeId) {
+    fsmService.sendEvent(sessionId, {
+      type: "SET_ACTION_URL",
+      actionUrl: props.actionUrl,
+    });
+  }
+
+  if (props.toBeProcessedNodes) {
+    fsmService.sendEvent(sessionId, {
+      type: "UPDATE_PROCESSING_QUEUE",
+      nodeIds: props.toBeProcessedNodes,
+    });
+  }
+}
+
 describe("State Synchronization", () => {
   let sessionManager: SessionManager;
   let server: HarvestMCPServer;
@@ -59,29 +94,33 @@ describe("State Synchronization", () => {
       );
 
       // Set up session state conditions required for completion
-      session.state.masterNodeId = testNodeId;
-      session.state.actionUrl = "https://example.com/api/action";
+      setSessionProperties(sessionManager, testSessionId, {
+        masterNodeId: testNodeId,
+        actionUrl: "https://example.com/api/action",
+      });
 
       // Initially both should be false
-      expect(session.state.isComplete).toBe(false);
+      expect(session.isComplete).toBe(false);
       expect(session.dagManager.isComplete()).toBe(false);
 
       // Manually resolve dynamic parts to make DAG complete
       session.dagManager.updateNode(testNodeId, { dynamicParts: [] });
 
       // Empty the processing queue since we've resolved all nodes manually
-      session.state.toBeProcessedNodes = [];
+      setSessionProperties(sessionManager, testSessionId, {
+        toBeProcessedNodes: [],
+      });
 
       // DAG should now be complete, but session state should still be false
       expect(session.dagManager.isComplete()).toBe(true);
-      expect(session.state.isComplete).toBe(false);
+      expect(session.isComplete).toBe(false);
 
       // Sync completion state
       sessionManager.analyzeCompletionState(testSessionId);
 
       // Both should now be true
       expect(session.dagManager.isComplete()).toBe(true);
-      expect(session.state.isComplete).toBe(true);
+      expect(session.isComplete).toBe(true);
     });
 
     it("should not change session state when DAG is incomplete", () => {
@@ -104,11 +143,13 @@ describe("State Synchronization", () => {
       );
 
       // Set up session state conditions (master node and action URL)
-      session.state.masterNodeId = testNodeId;
-      session.state.actionUrl = "https://example.com/api/action";
+      setSessionProperties(sessionManager, testSessionId, {
+        masterNodeId: testNodeId,
+        actionUrl: "https://example.com/api/action",
+      });
 
       // Initially both should be false
-      expect(session.state.isComplete).toBe(false);
+      expect(session.isComplete).toBe(false);
       expect(session.dagManager.isComplete()).toBe(false);
 
       // Sync completion state
@@ -116,7 +157,7 @@ describe("State Synchronization", () => {
 
       // Both should still be false
       expect(session.dagManager.isComplete()).toBe(false);
-      expect(session.state.isComplete).toBe(false);
+      expect(session.isComplete).toBe(false);
     });
 
     it("should handle invalid session ID gracefully", () => {
@@ -148,25 +189,29 @@ describe("State Synchronization", () => {
       );
 
       // Set up required session state
-      session.state.masterNodeId = testNodeId;
-      session.state.actionUrl = "https://example.com/api/test";
+      setSessionProperties(sessionManager, testSessionId, {
+        masterNodeId: testNodeId,
+        actionUrl: "https://example.com/api/test",
+      });
 
       // Initially should be incomplete
       expect(session.dagManager.isComplete()).toBe(false);
-      expect(session.state.isComplete).toBe(false);
+      expect(session.isComplete).toBe(false);
 
       // Manually resolve dynamic parts
       session.dagManager.updateNode(testNodeId, { dynamicParts: [] });
 
       // Empty the processing queue since we've resolved all nodes manually
-      session.state.toBeProcessedNodes = [];
+      setSessionProperties(sessionManager, testSessionId, {
+        toBeProcessedNodes: [],
+      });
 
       // Sync completion state
       sessionManager.analyzeCompletionState(testSessionId);
 
       // Should now be complete
       expect(session.dagManager.isComplete()).toBe(true);
-      expect(session.state.isComplete).toBe(true);
+      expect(session.isComplete).toBe(true);
     });
 
     it("should provide completion blocker analysis", async () => {
@@ -213,7 +258,7 @@ describe("State Synchronization", () => {
 
       // DAG is complete but session state is not
       expect(session.dagManager.isComplete()).toBe(true);
-      expect(session.state.isComplete).toBe(false);
+      expect(session.isComplete).toBe(false);
 
       // Code generation should now work (using DAG as primary check)
       try {
@@ -234,7 +279,7 @@ describe("State Synchronization", () => {
         expect(typeof codeResult.code).toBe("string");
 
         // Session state should now be synced
-        expect(session.state.isComplete).toBe(true);
+        expect(session.isComplete).toBe(true);
       } catch (error) {
         // If it still fails, the error message should be more actionable
         expect((error as Error).message).toContain("Code generation failed");

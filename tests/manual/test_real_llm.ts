@@ -147,7 +147,7 @@ async function testRealLLMIntegration() {
 
       console.log("Testing workflow discovery with mock data...");
       const workflows = await discoverWorkflows(
-        mockSession as import("../../src/types/index.js").HarvestSession
+        mockSession as unknown as import("../../src/types/index.js").HarvestSession
       );
       console.log(`✅ Discovered ${workflows.size} workflows`);
 

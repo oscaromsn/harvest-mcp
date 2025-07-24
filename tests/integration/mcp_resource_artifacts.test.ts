@@ -49,10 +49,12 @@ describe("MCP Resource Artifact Serving", () => {
 
       const session = sessionManager.getSession(sessionId);
 
-      // Simulate completed session state
-      session.state.masterNodeId = "test-master-node";
-      session.state.actionUrl = "https://api.example.com/search";
-      session.state.generatedCode = `// Generated TypeScript code
+      // Simulate completed session state using FSM events
+      sessionManager.setMasterNodeId(sessionId, "test-master-node");
+      sessionManager.setActionUrl(sessionId, "https://api.example.com/search");
+      sessionManager.sendFsmEvent(sessionId, {
+        type: "CODE_GENERATED",
+        code: `// Generated TypeScript code
 export async function executeWorkflow() {
   const response = await fetch("https://api.example.com/search", {
     method: "POST",
@@ -60,15 +62,20 @@ export async function executeWorkflow() {
     body: JSON.stringify({ query: "test" })
   });
   return response.json();
-}`;
+}`,
+      });
 
       // Mock DAG manager to return complete state
+      // Note: dagManager is now readonly and managed by FSM
+      // We rely on the actual FSM's DAG manager state instead of mocking
+      /*
       const mockDAGManager = {
         isComplete: () => true,
         getUnresolvedNodes: () => [],
         getNodeCount: () => 1,
       };
       session.dagManager = mockDAGManager as any;
+      */
 
       const analysis = sessionManager.analyzeCompletionState(sessionId);
       expect(analysis.isComplete).toBe(true);
@@ -93,16 +100,23 @@ export async function executeWorkflow() {
       const session = sessionManager.getSession(sessionId);
 
       // Setup completed session
-      session.state.masterNodeId = "test-master-node";
-      session.state.actionUrl = "https://api.example.com/search";
-      session.state.generatedCode = "console.log('test code');";
+      sessionManager.setMasterNodeId(sessionId, "test-master-node");
+      sessionManager.setActionUrl(sessionId, "https://api.example.com/search");
+      sessionManager.sendFsmEvent(sessionId, {
+        type: "CODE_GENERATED",
+        code: "console.log('test code');",
+      });
 
+      // Note: dagManager is now readonly and managed by FSM
+      // We rely on the actual FSM's DAG manager state instead of mocking
+      /*
       const mockDAGManager = {
         isComplete: () => true,
         getUnresolvedNodes: () => [],
         getNodeCount: () => 1,
       };
       session.dagManager = mockDAGManager as any;
+      */
 
       const analysis = sessionManager.analyzeCompletionState(sessionId);
       await completedSessionManager.cacheCompletedSession(session, analysis);
@@ -139,15 +153,19 @@ export async function executeWorkflow() {
       }
 
       const session = sessionManager.getSession(sessionId);
-      session.state.masterNodeId = "test-master-node";
-      session.state.actionUrl = "https://api.example.com/search";
+      sessionManager.setMasterNodeId(sessionId, "test-master-node");
+      sessionManager.setActionUrl(sessionId, "https://api.example.com/search");
 
+      // Note: dagManager is now readonly and managed by FSM
+      // We rely on the actual FSM's DAG manager state instead of mocking
+      /*
       const mockDAGManager = {
         isComplete: () => true,
         getUnresolvedNodes: () => [],
         getNodeCount: () => 1,
       };
       session.dagManager = mockDAGManager as any;
+      */
 
       const analysis = sessionManager.analyzeCompletionState(sessionId);
       await completedSessionManager.cacheCompletedSession(session, analysis);
@@ -179,16 +197,23 @@ export async function executeWorkflow() {
       }
 
       const session = sessionManager.getSession(sessionId);
-      session.state.masterNodeId = "test-master-node";
-      session.state.actionUrl = "https://api.example.com/search";
-      session.state.generatedCode = "test code";
+      sessionManager.setMasterNodeId(sessionId, "test-master-node");
+      sessionManager.setActionUrl(sessionId, "https://api.example.com/search");
+      sessionManager.sendFsmEvent(sessionId, {
+        type: "CODE_GENERATED",
+        code: "test code",
+      });
 
+      // Note: dagManager is now readonly and managed by FSM
+      // We rely on the actual FSM's DAG manager state instead of mocking
+      /*
       const mockDAGManager = {
         isComplete: () => true,
         getUnresolvedNodes: () => [],
         getNodeCount: () => 1,
       };
       session.dagManager = mockDAGManager as any;
+      */
 
       const analysis = sessionManager.analyzeCompletionState(sessionId);
       const cachedArtifacts =
@@ -211,18 +236,22 @@ export async function executeWorkflow() {
       }
 
       const session = sessionManager.getSession(sessionId);
-      session.state.masterNodeId = "test-master-node";
-      session.state.actionUrl = "https://api.example.com/search";
+      sessionManager.setMasterNodeId(sessionId, "test-master-node");
+      sessionManager.setActionUrl(sessionId, "https://api.example.com/search");
 
       // Ensure we have HAR data
       expect(session.harData.requests.length).toBeGreaterThan(0);
 
+      // Note: dagManager is now readonly and managed by FSM
+      // We rely on the actual FSM's DAG manager state instead of mocking
+      /*
       const mockDAGManager = {
         isComplete: () => true,
         getUnresolvedNodes: () => [],
         getNodeCount: () => 1,
       };
       session.dagManager = mockDAGManager as any;
+      */
 
       const analysis = sessionManager.analyzeCompletionState(sessionId);
       const cachedArtifacts =
@@ -250,17 +279,20 @@ export async function executeWorkflow() {
       }
 
       const session = sessionManager.getSession(sessionId);
-      session.state.masterNodeId = "test-master-node";
-      session.state.actionUrl = "https://api.example.com/search";
+      sessionManager.setMasterNodeId(sessionId, "test-master-node");
+      sessionManager.setActionUrl(sessionId, "https://api.example.com/search");
 
       // Check if we have cookie data
       if (session.cookieData) {
+        // Note: dagManager is now readonly and managed by FSM
+        /*
         const mockDAGManager = {
           isComplete: () => true,
           getUnresolvedNodes: () => [],
           getNodeCount: () => 1,
         };
         session.dagManager = mockDAGManager as any;
+        */
 
         const analysis = sessionManager.analyzeCompletionState(sessionId);
         const cachedArtifacts =
@@ -374,15 +406,19 @@ export async function executeWorkflow() {
       }
 
       const session = sessionManager.getSession(sessionId);
-      session.state.masterNodeId = "test-master-node";
-      session.state.actionUrl = "https://api.example.com/search";
+      sessionManager.setMasterNodeId(sessionId, "test-master-node");
+      sessionManager.setActionUrl(sessionId, "https://api.example.com/search");
 
+      // Note: dagManager is now readonly and managed by FSM
+      // We rely on the actual FSM's DAG manager state instead of mocking
+      /*
       const mockDAGManager = {
         isComplete: () => true,
         getUnresolvedNodes: () => [],
         getNodeCount: () => 1,
       };
       session.dagManager = mockDAGManager as any;
+      */
 
       const analysis = sessionManager.analyzeCompletionState(sessionId);
       await completedSessionManager.cacheCompletedSession(session, analysis);

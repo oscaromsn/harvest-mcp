@@ -12,13 +12,27 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SessionManager } from "../../src/core/SessionManager.js";
+
+// Helper function to send FSM events for test setup
+function setProcessingQueue(
+  sessionManager: SessionManager,
+  sessionId: string,
+  nodeIds: string[]
+) {
+  const fsmService = (sessionManager as any).fsmService;
+  fsmService.sendEvent(sessionId, {
+    type: "UPDATE_PROCESSING_QUEUE",
+    nodeIds,
+  });
+}
+
 import { findDependencies } from "../../src/agents/DependencyAgent.js";
 import { identifyDynamicParts } from "../../src/agents/DynamicPartsAgent.js";
 import { identifyInputVariables } from "../../src/agents/InputVariablesAgent.js";
 // Integration tests use modern workflow discovery
 import type { LLMClient } from "../../src/core/LLMClient.js";
 import { resetLLMClient, setLLMClient } from "../../src/core/LLMClient.js";
-import { SessionManager } from "../../src/core/SessionManager.js";
 import type {
   DynamicPartsResponse,
   HarvestSession,
@@ -104,7 +118,8 @@ describe("Sprint 4: Comprehensive Dependency Resolution & Graph Building", () =>
   }
 
   async function createMasterNodeForDependencyTest(
-    session: HarvestSession
+    session: HarvestSession,
+    sessionManager: SessionManager
   ): Promise<{ actionUrl: string; masterNodeId: string }> {
     // Modern workflow discovery handles URL identification
     const actionUrl = session.harData.urls[0]?.url || "test-url";
@@ -124,7 +139,7 @@ describe("Sprint 4: Comprehensive Dependency Resolution & Graph Building", () =>
       value: masterRequest.response || null,
     });
 
-    session.state.toBeProcessedNodes = [masterNodeId];
+    setProcessingQueue(sessionManager, session.id, [masterNodeId]);
     return { actionUrl, masterNodeId };
   }
 
@@ -137,9 +152,9 @@ describe("Sprint 4: Comprehensive Dependency Resolution & Graph Building", () =>
 
     while (
       processCount < maxIterations &&
-      session.state.toBeProcessedNodes.length > 0
+      session.toBeProcessedNodes.length > 0
     ) {
-      const nodeToProcess = session.state.toBeProcessedNodes.shift();
+      const nodeToProcess = session.toBeProcessedNodes.shift();
       if (nodeToProcess === undefined) {
         throw new Error(
           "Test setup failed: processing queue is unexpectedly empty."
@@ -169,13 +184,13 @@ describe("Sprint 4: Comprehensive Dependency Resolution & Graph Building", () =>
   ): Promise<void> {
     const dynamicParts = await identifyDynamicParts(
       curlCommand,
-      session.state.inputVariables || {}
+      session.inputVariables || {}
     );
 
     let finalDynamicParts = dynamicParts;
     if (
-      session.state.inputVariables &&
-      Object.keys(session.state.inputVariables).length > 0
+      session.inputVariables &&
+      Object.keys(session.inputVariables).length > 0
     ) {
       const mockInputVarsResponse: InputVariablesResponse =
         createMockInputVariablesResponse();
@@ -183,7 +198,7 @@ describe("Sprint 4: Comprehensive Dependency Resolution & Graph Building", () =>
 
       const inputVarResult = await identifyInputVariables(
         curlCommand,
-        session.state.inputVariables,
+        session.inputVariables,
         dynamicParts
       );
       finalDynamicParts = inputVarResult.removedDynamicParts;
@@ -219,7 +234,7 @@ describe("Sprint 4: Comprehensive Dependency Resolution & Graph Building", () =>
         value: reqDep.sourceRequest.response || null,
       });
       session.dagManager.addEdge(nodeToProcess, depNodeId);
-      session.state.toBeProcessedNodes.push(depNodeId);
+      session.toBeProcessedNodes.push(depNodeId);
     }
 
     for (const notFoundPart of dependencies.notFoundParts) {
@@ -253,7 +268,10 @@ describe("Sprint 4: Comprehensive Dependency Resolution & Graph Building", () =>
   describe("Complex Multi-Step Dependency Resolution", () => {
     it("should resolve multi-level dependency chains correctly", async () => {
       const session = await setupComplexDependencySession();
-      const { masterNodeId } = await createMasterNodeForDependencyTest(session);
+      const { masterNodeId } = await createMasterNodeForDependencyTest(
+        session,
+        sessionManager
+      );
       await processDependencyChain(session, masterNodeId);
       await validateDependencyResolutionResults(session);
     });

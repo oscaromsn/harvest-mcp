@@ -53,7 +53,7 @@ class TestHarvestMCPServer {
     try {
       const session = this.sessionManager.getSession(params.sessionId);
 
-      if (session.state.toBeProcessedNodes.length === 0) {
+      if (session.toBeProcessedNodes.length === 0) {
         return {
           content: [
             {
@@ -68,7 +68,7 @@ class TestHarvestMCPServer {
         };
       }
 
-      const nodeId = session.state.toBeProcessedNodes.shift();
+      const nodeId = session.toBeProcessedNodes.shift();
       if (nodeId === undefined) {
         throw new Error(
           "Test setup failed: processing queue is unexpectedly empty."
@@ -93,7 +93,7 @@ class TestHarvestMCPServer {
               status: "completed",
               dynamicPartsFound: 0,
               newNodesAdded: 0,
-              remainingNodes: session.state.toBeProcessedNodes.length,
+              remainingNodes: session.toBeProcessedNodes.length,
               totalNodes: session.dagManager.getNodeCount(),
             }),
           },
@@ -117,7 +117,7 @@ class TestHarvestMCPServer {
       const session = this.sessionManager.getSession(params.sessionId);
       const isComplete = session.dagManager.isComplete();
       const nodeCount = session.dagManager.getNodeCount();
-      const remainingToProcess = session.state.toBeProcessedNodes.length;
+      const remainingToProcess = session.toBeProcessedNodes.length;
 
       return {
         content: [

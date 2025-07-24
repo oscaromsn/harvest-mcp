@@ -130,9 +130,12 @@ describe("Complete Analysis Workflow Integration", () => {
       }
     );
 
-    session.state.actionUrl = actionUrl;
-    session.state.masterNodeId = masterNodeId;
-    session.state.toBeProcessedNodes.push(masterNodeId);
+    sessionManager.setActionUrl(session.id, actionUrl);
+    sessionManager.setMasterNodeId(session.id, masterNodeId);
+    sessionManager.sendFsmEvent(session.id, {
+      type: "UPDATE_PROCESSING_QUEUE",
+      nodeIds: [...session.toBeProcessedNodes, masterNodeId],
+    });
 
     expect(session.dagManager.getNodeCount()).toBe(1);
     return { actionUrl, masterNodeId };
@@ -144,12 +147,19 @@ describe("Complete Analysis Workflow Integration", () => {
   ): Promise<void> {
     console.log("Step 2: Dynamic Parts Identification");
 
-    const nodeToProcess = session.state.toBeProcessedNodes.shift();
+    const currentQueue = [...session.toBeProcessedNodes];
+    const nodeToProcess = currentQueue.shift();
     if (nodeToProcess === undefined) {
       throw new Error(
         "Test setup failed: processing queue is unexpectedly empty."
       );
     }
+
+    // Update the processing queue with the remaining nodes
+    sessionManager.sendFsmEvent(session.id, {
+      type: "UPDATE_PROCESSING_QUEUE",
+      nodeIds: currentQueue,
+    });
 
     const node = session.dagManager.getNode(nodeToProcess);
     if (!node) {
@@ -187,7 +197,7 @@ describe("Complete Analysis Workflow Integration", () => {
 
     const dynamicParts = await identifyDynamicParts(
       curlCommand,
-      session.state.inputVariables || {}
+      session.inputVariables || {}
     );
 
     console.log(
@@ -214,8 +224,8 @@ describe("Complete Analysis Workflow Integration", () => {
     let identifiedInputVars: Record<string, string> = {};
 
     if (
-      session.state.inputVariables &&
-      Object.keys(session.state.inputVariables).length > 0
+      session.inputVariables &&
+      Object.keys(session.inputVariables).length > 0
     ) {
       const mockInputVarsResponse: InputVariablesResponse = {
         identified_variables: [],
@@ -224,7 +234,7 @@ describe("Complete Analysis Workflow Integration", () => {
 
       const inputVarResult = await identifyInputVariables(
         curlCommand,
-        session.state.inputVariables,
+        session.inputVariables,
         dynamicParts
       );
 
@@ -333,7 +343,10 @@ describe("Complete Analysis Workflow Integration", () => {
       );
 
       session.dagManager.addEdge(nodeToProcess, depNodeId);
-      session.state.toBeProcessedNodes.push(depNodeId);
+      sessionManager.sendFsmEvent(session.id, {
+        type: "UPDATE_PROCESSING_QUEUE",
+        nodeIds: [...session.toBeProcessedNodes, depNodeId],
+      });
       added++;
     }
     return added;
@@ -363,7 +376,7 @@ describe("Complete Analysis Workflow Integration", () => {
     console.log("Step 5: Workflow Validation");
 
     const finalNodeCount = session.dagManager.getNodeCount();
-    const remainingNodes = session.state.toBeProcessedNodes.length;
+    const remainingNodes = session.toBeProcessedNodes.length;
     const isComplete = session.dagManager.isComplete();
 
     console.log(
@@ -371,8 +384,8 @@ describe("Complete Analysis Workflow Integration", () => {
     );
 
     expect(finalNodeCount).toBeGreaterThan(0);
-    expect(session.state.actionUrl).toBe(actionUrl);
-    expect(session.state.masterNodeId).toBe(masterNodeId);
+    expect(session.actionUrl).toBe(actionUrl);
+    expect(session.masterNodeId).toBe(masterNodeId);
 
     const dagExport = session.dagManager.toJSON();
     expect(dagExport.nodes.length).toBe(finalNodeCount);

@@ -81,10 +81,13 @@ describe("One-Shot Prompt Integration Tests", () => {
       );
 
       session.dagManager.addEdge(searchNodeId, downloadNodeId);
-      session.state.isComplete = true;
-      session.state.actionUrl = downloadRequest.url;
-      session.state.masterNodeId = downloadNodeId;
-      session.state.toBeProcessedNodes = [];
+      // Set up completed session state using FSM events
+      sessionManager.setActionUrl(sessionId, downloadRequest.url);
+      sessionManager.setMasterNodeId(sessionId, downloadNodeId);
+      sessionManager.sendFsmEvent(sessionId, {
+        type: "UPDATE_PROCESSING_QUEUE",
+        nodeIds: [],
+      });
 
       // Test the one-shot functionality by simulating what it would do
       // (The actual prompt would be called by MCP client)
@@ -159,11 +162,9 @@ describe("One-Shot Prompt Integration Tests", () => {
       expect(session.id).toBe(sessionId);
 
       // Verify that the logs track progress
-      expect(session.state.logs.length).toBeGreaterThan(0);
+      expect(session.logs.length).toBeGreaterThan(0);
       expect(
-        session.state.logs.some((log) =>
-          log.message.includes("Session created")
-        )
+        session.logs.some((log) => log.message.includes("Session created"))
       ).toBe(true);
 
       console.log("✅ Progress tracking functionality verified");
@@ -209,9 +210,9 @@ describe("One-Shot Prompt Integration Tests", () => {
         }
       );
 
-      session.state.isComplete = true;
-      session.state.actionUrl = simpleRequest.url;
-      session.state.masterNodeId = nodeId;
+      // Set up completed session state using FSM events
+      sessionManager.setActionUrl(sessionId, simpleRequest.url);
+      sessionManager.setMasterNodeId(sessionId, nodeId);
 
       // Generate code and verify result structure
       const codeResult = await handleGenerateWrapperScript(
@@ -299,9 +300,10 @@ ${generatedCode}
         }
       );
 
-      session.state.actionUrl = incompleteRequest.url;
-      session.state.masterNodeId = nodeId;
-      session.state.isComplete = false; // Explicitly incomplete
+      // Set up incomplete session state using FSM events
+      sessionManager.setActionUrl(sessionId, incompleteRequest.url);
+      sessionManager.setMasterNodeId(sessionId, nodeId);
+      // Note: session will be incomplete due to unresolved nodes in DAG
 
       // Try to generate code - should fail
       try {
@@ -371,7 +373,7 @@ ${generatedCode}
         );
       }
 
-      expect(variablesSession.state.inputVariables).toEqual({
+      expect(variablesSession.inputVariables).toEqual({
         user_id: "12345",
         api_key: "test_key",
       });
@@ -444,10 +446,13 @@ ${generatedCode}
       );
 
       session.dagManager.addEdge(authNodeId, dataNodeId);
-      session.state.isComplete = true;
-      session.state.actionUrl = dataRequest.url;
-      session.state.masterNodeId = dataNodeId;
-      session.state.toBeProcessedNodes = [];
+      // Set up completed session state using FSM events
+      sessionManager.setActionUrl(sessionId, dataRequest.url);
+      sessionManager.setMasterNodeId(sessionId, dataNodeId);
+      sessionManager.sendFsmEvent(sessionId, {
+        type: "UPDATE_PROCESSING_QUEUE",
+        nodeIds: [],
+      });
 
       // Step 3: Code generation
       const codeResult = await handleGenerateWrapperScript(
@@ -480,7 +485,7 @@ ${generatedCode}
       // Simulate the final one-shot result format
       const workflowSummary = [
         `✅ Session created: ${sessionId}`,
-        `✅ Initial analysis complete - Action URL: ${session.state.actionUrl}`,
+        `✅ Initial analysis complete - Action URL: ${session.actionUrl}`,
         "✅ Analysis completed after 2 iterations",
         `✅ Code generation successful - ${generatedCode.length} characters generated`,
       ];
