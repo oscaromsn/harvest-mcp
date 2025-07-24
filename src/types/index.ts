@@ -271,17 +271,46 @@ export interface WorkflowGroup {
 
 export interface HarvestSession {
   id: string;
-  prompt: string;
-  harData: ParsedHARData;
-  cookieData?: CookieData | undefined;
-  dagManager: DAGManager;
-  state: SessionState;
-  createdAt: Date;
-  lastActivity: Date;
-  workflowGroups?: Map<string, WorkflowGroup> | undefined;
-  selectedWorkflowId?: string | undefined;
   /** XState FSM interpreter instance for managing session state transitions */
   fsm: import("../core/SessionFsmService.js").SessionActor;
+
+  // FSM context getters - all state now derived from FSM context
+  readonly prompt: string;
+  readonly harData: ParsedHARData;
+  readonly cookieData?: CookieData | undefined;
+  readonly dagManager: DAGManager;
+  readonly workflowGroups: Map<string, WorkflowGroup>;
+  readonly selectedWorkflowId?: string | undefined;
+  readonly logs: LogEntry[];
+  readonly generatedCode?: string | undefined;
+  readonly authAnalysis?: AuthenticationAnalysis | undefined;
+
+  // Legacy compatibility properties - now derived from FSM context
+  readonly actionUrl?: string | undefined;
+  readonly masterNodeId?: string | undefined;
+  readonly inProcessNodeId?: string | undefined;
+  readonly toBeProcessedNodes: string[];
+  readonly inProcessNodeDynamicParts: string[];
+  readonly inputVariables: Record<string, string>;
+  readonly isComplete: boolean;
+  readonly authReadiness?:
+    | {
+        isAuthComplete: boolean;
+        authBlockers: string[];
+        authRecommendations: string[];
+      }
+    | undefined;
+  readonly bootstrapAnalysis?:
+    | {
+        isNeeded: boolean;
+        bootstrapUrl?: string | undefined;
+        parameters: Array<{ name: string; source: BootstrapParameterSource }>;
+      }
+    | undefined;
+
+  // Metadata properties (not derived from FSM context)
+  createdAt: Date;
+  lastActivity: Date;
 }
 
 export interface SessionState {
@@ -1169,8 +1198,55 @@ export class SessionManagerAdapter
   }
 
   updateSessionState(sessionId: string, updates: Partial<SessionState>): void {
-    const session = this.getSession(sessionId);
-    Object.assign(session.state, updates);
+    // Legacy method - now using FSM events for state updates
+    // Convert updates to FSM events based on the properties being updated
+    if (updates.masterNodeId !== undefined) {
+      this.sessionManager.setMasterNodeId(sessionId, updates.masterNodeId);
+    }
+    if (updates.actionUrl !== undefined) {
+      this.sessionManager.setActionUrl(sessionId, updates.actionUrl);
+    }
+    if (updates.authAnalysis !== undefined) {
+      this.sessionManager.sendFsmEvent(sessionId, {
+        type: "UPDATE_AUTH_ANALYSIS",
+        authAnalysis: updates.authAnalysis,
+      });
+    }
+    if (updates.authReadiness !== undefined) {
+      this.sessionManager.sendFsmEvent(sessionId, {
+        type: "UPDATE_AUTH_READINESS",
+        authReadiness: updates.authReadiness,
+      });
+    }
+    if (updates.bootstrapAnalysis !== undefined) {
+      this.sessionManager.sendFsmEvent(sessionId, {
+        type: "UPDATE_BOOTSTRAP_ANALYSIS",
+        bootstrapAnalysis: updates.bootstrapAnalysis,
+      });
+    }
+    if (updates.toBeProcessedNodes !== undefined) {
+      this.sessionManager.sendFsmEvent(sessionId, {
+        type: "UPDATE_PROCESSING_QUEUE",
+        nodeIds: updates.toBeProcessedNodes,
+      });
+    }
+    // Log any unmapped updates
+    const handledKeys = new Set([
+      "masterNodeId",
+      "actionUrl",
+      "authAnalysis",
+      "authReadiness",
+      "bootstrapAnalysis",
+      "toBeProcessedNodes",
+    ]);
+    const unmappedKeys = Object.keys(updates).filter(
+      (key) => !handledKeys.has(key)
+    );
+    if (unmappedKeys.length > 0) {
+      console.warn(
+        `SessionManagerAdapter.updateSessionState: Unmapped update keys: ${unmappedKeys.join(", ")}`
+      );
+    }
   }
 
   // SessionManagement implementation
